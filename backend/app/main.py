@@ -488,6 +488,67 @@ def ticket_from_outlier(oid: int):
 
 
 # --------------------------------------------------------------------------- #
+# Insights / Signal Reader (MEASURE) — ranks angles by saves+follows, NOT views
+# --------------------------------------------------------------------------- #
+def _recompute_angle(s, angle_name: str) -> None:
+    from sqlmodel import select
+    if not angle_name:
+        return
+    tids = [t.id for t in s.exec(select(Ticket).where(Ticket.angle == angle_name)).all()]
+    rows = s.exec(select(Perf).where(Perf.ticket_id.in_(tids))).all() if tids else []
+    scores = [p.saves + p.follows for p in rows]   # the needle metric
+    a = s.get(Angle, angle_name) or Angle(angle=angle_name)
+    a.posts_count = len({p.ticket_id for p in rows})
+    a.avg_score = round(sum(scores) / len(scores), 2) if scores else 0.0
+    s.add(a)
+
+
+@app.post("/api/perf")
+def log_perf(body: LogPerf):
+    from datetime import datetime
+    with get_session() as s:
+        t = s.get(Ticket, body.ticket_id)
+        if not t:
+            raise HTTPException(404, "ticket not found")
+        s.add(Perf(**body.model_dump()))
+        t.stage = "posted"
+        if not t.posted_at:
+            t.posted_at = datetime.utcnow()
+        s.add(t)
+        s.commit()
+        _recompute_angle(s, t.angle)
+        s.commit()
+    return {"ok": True}
+
+
+@app.get("/api/insights")
+def insights():
+    from sqlmodel import select
+    with get_session() as s:
+        tickets = s.exec(select(Ticket)).all()
+        perfs = s.exec(select(Perf)).all()
+        angles = s.exec(select(Angle).order_by(Angle.avg_score.desc())).all()
+    tmap = {t.id: t for t in tickets}
+    by_ticket: dict[int, int] = {}
+    for p in perfs:
+        by_ticket[p.ticket_id] = by_ticket.get(p.ticket_id, 0) + p.saves + p.follows
+    top = sorted(by_ticket.items(), key=lambda kv: kv[1], reverse=True)[:8]
+    return {
+        "kpis": {
+            "tickets": len(tickets),
+            "posted": len([t for t in tickets if t.stage == "posted"]),
+            "views": sum(p.views for p in perfs),
+            "follows": sum(p.follows for p in perfs),
+            "saves": sum(p.saves for p in perfs),
+            "sends": sum(p.sends for p in perfs),
+        },
+        "top": [{"ticket_id": tid, "angle": (tmap[tid].angle if tid in tmap else ""),
+                 "score": sc} for tid, sc in top],
+        "angles": [a.model_dump() for a in angles],
+    }
+
+
+# --------------------------------------------------------------------------- #
 # Native assemble routes (beat uploads → reel) + long-form hookup
 # --------------------------------------------------------------------------- #
 from .pipeline import assemble  # noqa: E402

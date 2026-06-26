@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { api, Beat, Clip, ExportItem, Outlier, Presets, Project, Ticket } from "./api";
+import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
+import { api, Beat, Clip, ExportItem, InsightsData, Outlier, Presets, Project, Ticket } from "./api";
 import { CaptionOverlay } from "./CaptionOverlay";
 import { CaptionStyle, FALLBACK_PRESETS, groupLines, Word, wordsInRange } from "./captionStyles";
 import { Sidebar } from "./Sidebar";
@@ -507,7 +507,78 @@ function Library() {
 
 /* ------------------------------ Insights ------------------------------- */
 function Insights() {
-  return <div className="page"><div className="page-head"><h2>Insights</h2></div><div className="muted">Signal Reader — built in Phase 5.</div></div>;
+  const [data, setData] = useState<InsightsData | null>(null);
+  const [tickets, setTickets] = useState<Ticket[]>([]);
+  const refresh = () => { api.getInsights().then(setData); api.listTickets().then(setTickets); };
+  useEffect(() => { refresh(); }, []);
+
+  const k = data?.kpis;
+  const kpi = (label: string, val: number, accent = false) => (
+    <div className={"kpi" + (accent ? " kpi-accent" : "")}><div className="kpi-val">{val}</div><div className="kpi-label">{label}</div></div>
+  );
+  return (
+    <div className="page">
+      <div className="page-head"><h2>Insights</h2><span className="muted">Signal Reader · ranks angles by saves + follows</span></div>
+      <div className="kpi-row">
+        {kpi("Tickets", k?.tickets ?? 0)}{kpi("Posted", k?.posted ?? 0)}
+        {kpi("Follows", k?.follows ?? 0, true)}{kpi("Saves", k?.saves ?? 0, true)}
+        {kpi("Views", k?.views ?? 0)}{kpi("Sends", k?.sends ?? 0)}
+      </div>
+
+      <PerfLogger tickets={tickets} onLogged={refresh} />
+
+      <div className="ins-cols">
+        <div>
+          <h3 className="ins-h">Angle ranking <span className="muted">(saves + follows)</span></h3>
+          {!data || data.angles.length === 0 ? <div className="muted">No angles ranked yet — log some performance below.</div> : (
+            <table className="ins-table"><thead><tr><th>Angle</th><th>Posts</th><th>Avg score</th></tr></thead>
+              <tbody>{data.angles.map((a) => <tr key={a.angle}><td>{a.angle}</td><td>{a.posts_count}</td><td><b>{a.avg_score}</b></td></tr>)}</tbody>
+            </table>
+          )}
+        </div>
+        <div>
+          <h3 className="ins-h">Top performers</h3>
+          {!data || data.top.length === 0 ? <div className="muted">No performance logged yet.</div> : (
+            <table className="ins-table"><thead><tr><th>#</th><th>Angle</th><th>Saves+Follows</th></tr></thead>
+              <tbody>{data.top.map((t, i) => <tr key={t.ticket_id}><td>{i + 1}</td><td>{t.angle || `Ticket ${t.ticket_id}`}</td><td><b>{t.score}</b></td></tr>)}</tbody>
+            </table>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PerfLogger({ tickets, onLogged }: { tickets: Ticket[]; onLogged: () => void }) {
+  const [tid, setTid] = useState<number | "">("");
+  const [platform, setPlatform] = useState("tt");
+  const [f, setF] = useState({ views: 0, follows: 0, saves: 0, sends: 0 });
+  const [busy, setBusy] = useState(false);
+  const toast = useToast();
+  const num = (k: keyof typeof f) => (e: ChangeEvent<HTMLInputElement>) => setF({ ...f, [k]: parseInt(e.target.value || "0", 10) || 0 });
+  const log = async () => {
+    if (tid === "") { toast("Pick a ticket", "err"); return; }
+    setBusy(true);
+    try { await api.logPerf({ ticket_id: tid as number, platform, ...f }); toast("Performance logged", "ok"); setF({ views: 0, follows: 0, saves: 0, sends: 0 }); onLogged(); }
+    catch (e: any) { toast(`Failed: ${e?.message || e}`, "err"); } finally { setBusy(false); }
+  };
+  return (
+    <div className="perf-log">
+      <h3 className="ins-h">Log performance</h3>
+      <div className="perf-row">
+        <select value={tid} onChange={(e) => setTid(e.target.value ? parseInt(e.target.value, 10) : "")}>
+          <option value="">Select ticket…</option>
+          {tickets.map((t) => <option key={t.id} value={t.id}>{t.angle || `Ticket ${t.id}`} ({t.stage})</option>)}
+        </select>
+        <select value={platform} onChange={(e) => setPlatform(e.target.value)}><option value="tt">TikTok</option><option value="ig">Instagram</option><option value="yt">YouTube</option></select>
+        <label>Views<input type="number" value={f.views} onChange={num("views")} /></label>
+        <label>Follows<input type="number" value={f.follows} onChange={num("follows")} /></label>
+        <label>Saves<input type="number" value={f.saves} onChange={num("saves")} /></label>
+        <label>Sends<input type="number" value={f.sends} onChange={num("sends")} /></label>
+        <button className="primary" onClick={log} disabled={busy}>{busy ? "…" : "Log"}</button>
+      </div>
+    </div>
+  );
 }
 
 /* ------------------------------- Home ---------------------------------- */

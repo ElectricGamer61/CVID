@@ -115,6 +115,12 @@ export interface Outlier {
   created_at: string;
 }
 
+export interface InsightsData {
+  kpis: { tickets: number; posted: number; views: number; follows: number; saves: number; sends: number };
+  top: { ticket_id: number; angle: string; score: number }[];
+  angles: { angle: string; outlier_id: number | null; posts_count: number; avg_score: number }[];
+}
+
 export interface ExportItem {
   kind: "clip" | "reel";
   id: number;
@@ -221,6 +227,11 @@ export const api = {
     fetch(`/api/tickets/from-outlier/${oid}`, { method: "POST" }).then((r) => r.json()),
 
   listExports: (): Promise<ExportItem[]> => fetch("/api/exports").then((r) => r.json()),
+
+  // --- Insights (Signal Reader) ---
+  getInsights: (): Promise<InsightsData> => fetch("/api/insights").then((r) => r.json()),
+  logPerf: (body: { ticket_id: number; platform: string; views: number; follows: number; saves: number; sends: number }): Promise<{ ok: boolean }> =>
+    fetch("/api/perf", { method: "POST", headers: J, body: JSON.stringify(body) }).then((r) => r.json()),
 
   sourceUrl: (pid: number) => `/api/projects/${pid}/source`,
   previewUrl: (cid: number) => `/api/clips/${cid}/preview`,
