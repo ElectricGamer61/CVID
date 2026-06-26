@@ -15,6 +15,7 @@ __pycache__/
 # node
 frontend/node_modules/
 frontend/dist/
+*.tsbuildinfo
 
 # os
 .DS_Store
