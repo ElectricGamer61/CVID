@@ -228,6 +228,23 @@ function TicketDetail({ tid, stages, presets, onClose, onChanged }: { tid: numbe
   };
   const pickHook = (h: string) => { patchT({ hook_text: h }); setHooks(null); toast("Hook set", "ok"); };
 
+  const [asm, setAsm] = useState<{ state: string; stage: string; error: string | null } | null>(null);
+  const assembleReel = async () => {
+    try {
+      await api.assembleTicket(tid);
+      setAsm({ state: "running", stage: "Starting", error: null });
+      const poll = setInterval(async () => {
+        const st = await api.assembleStatus(tid);
+        setAsm(st);
+        if (st.state === "done" || st.state === "error" || st.state === "idle") {
+          clearInterval(poll); load(); onChanged();
+          if (st.state === "done") toast("Reel assembled", "ok");
+          if (st.state === "error") toast(`Assemble failed: ${st.error}`, "err");
+        }
+      }, 1500);
+    } catch (e: any) { toast(`Assemble failed: ${e?.message || e}`, "err"); }
+  };
+
   const formats = presets?.formats ?? ["reel", "carousel"];
   const modes = presets?.capture_modes ?? ["longform-clip", "native-short", "repurpose"];
 
@@ -291,6 +308,21 @@ function TicketDetail({ tid, stages, presets, onClose, onChanged }: { tid: numbe
                   </div>
                 </>
               )}
+
+              {ticket.capture_mode === "native-short" && beats.length > 0 && (
+                <div className="assemble-box">
+                  <button className="primary" onClick={assembleReel} disabled={asm?.state === "running"}>
+                    {asm?.state === "running" ? `⏳ ${asm.stage}…` : ticket.clip_url ? "↻ Re-assemble reel" : "🎬 Assemble reel"}
+                  </button>
+                  {asm?.state === "error" && <div className="err">{asm.error}</div>}
+                  {ticket.clip_url && asm?.state !== "running" && (
+                    <div className="reel-out">
+                      <video src={api.ticketDownloadUrl(tid)} controls playsInline className="reel-video" />
+                      <button onClick={() => downloadFile(api.ticketDownloadUrl(tid), safeFileName(ticket.angle || "reel"), toast)}>⬇ Download reel</button>
+                    </div>
+                  )}
+                </div>
+              )}
             </>
           );
         })()}
@@ -303,12 +335,25 @@ function TicketDetail({ tid, stages, presets, onClose, onChanged }: { tid: numbe
 function BeatRow({ b, first, last, onChanged, onReorder, toast }: {
   b: Beat; first: boolean; last: boolean; onChanged: () => void; onReorder: (b: Beat, d: 1 | -1) => void; toast: Notify;
 }) {
+  const clipInput = useRef<HTMLInputElement>(null);
+  const voInput = useRef<HTMLInputElement>(null);
+  const [up, setUp] = useState<"" | "clip" | "vo">("");
   const save = async (field: keyof Beat, val: string) => {
     if ((b[field] ?? "") === val) return;
     await api.patchBeat(b.id, { [field]: val } as Partial<Beat>); onChanged();
   };
   const toggleProof = async () => { await api.patchBeat(b.id, { is_proof_beat: !b.is_proof_beat }); onChanged(); };
   const del = async () => { await api.deleteBeat(b.id); toast("Beat removed", "ok"); onChanged(); };
+  const upClip = async (file?: File) => {
+    if (!file) return; setUp("clip");
+    try { await api.uploadBeatClip(b.id, file); toast("Clip uploaded", "ok"); onChanged(); }
+    catch (e: any) { toast(`Upload failed: ${e?.message || e}`, "err"); } finally { setUp(""); }
+  };
+  const upVo = async (file?: File) => {
+    if (!file) return; setUp("vo");
+    try { await api.uploadBeatVoiceover(b.id, file); toast("Voiceover uploaded", "ok"); onChanged(); }
+    catch (e: any) { toast(`Upload failed: ${e?.message || e}`, "err"); } finally { setUp(""); }
+  };
   return (
     <div className={"beat beat-edit" + (b.is_proof_beat && !b.clip_path ? " beat-warn" : "")}>
       <div className="beat-idx">{b.order_index + 1}</div>
@@ -317,6 +362,16 @@ function BeatRow({ b, first, last, onChanged, onReorder, toast }: {
         <input className="beat-in" defaultValue={b.on_screen_text} placeholder="On-screen text…" onBlur={(e) => save("on_screen_text", e.target.value)} />
         <input className="beat-in" defaultValue={b.caption} placeholder="Caption (karaoke)…" onBlur={(e) => save("caption", e.target.value)} />
         <input className="beat-in" defaultValue={b.shot_cue} placeholder="Shot cue (what to film)…" onBlur={(e) => save("shot_cue", e.target.value)} />
+        <div className="beat-media">
+          <button className={"slot" + (b.clip_path ? " filled" : "")} onClick={() => clipInput.current?.click()} disabled={up === "clip"}>
+            {up === "clip" ? "…" : b.clip_path ? "✓ Clip" : "＋ Clip"}
+          </button>
+          <button className={"slot" + (b.voiceover_path ? " filled" : "")} onClick={() => voInput.current?.click()} disabled={up === "vo"}>
+            {up === "vo" ? "…" : b.voiceover_path ? "✓ Voiceover" : "＋ Voiceover"}
+          </button>
+          <input ref={clipInput} type="file" accept="video/*" hidden onChange={(e) => upClip(e.target.files?.[0])} />
+          <input ref={voInput} type="file" accept="audio/*" hidden onChange={(e) => upVo(e.target.files?.[0])} />
+        </div>
         {b.is_proof_beat && !b.clip_path && <div className="beat-warn-txt">⚠ proof beat — needs a clip showing the product/label</div>}
       </div>
       <div className="beat-ctl">

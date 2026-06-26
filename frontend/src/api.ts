@@ -190,6 +190,22 @@ export const api = {
   reorderBeats: (tid: number, ids: number[]): Promise<{ beats: Beat[] }> =>
     fetch(`/api/tickets/${tid}/beats/reorder`, { method: "POST", headers: J, body: JSON.stringify({ ids }) }).then((r) => r.json()),
 
+  uploadBeatClip: (bid: number, file: File): Promise<{ clip_path: string }> => {
+    const fd = new FormData(); fd.append("file", file);
+    return fetch(`/api/beats/${bid}/clip`, { method: "POST", body: fd }).then((r) => r.json());
+  },
+  uploadBeatVoiceover: (bid: number, file: File): Promise<{ voiceover_path: string }> => {
+    const fd = new FormData(); fd.append("file", file);
+    return fetch(`/api/beats/${bid}/voiceover`, { method: "POST", body: fd }).then((r) => r.json());
+  },
+  assembleTicket: (tid: number): Promise<{ status: string }> =>
+    fetch(`/api/tickets/${tid}/assemble`, { method: "POST" }).then(async (r) => { if (!r.ok) throw new Error((await r.json()).detail || r.status); return r.json(); }),
+  assembleStatus: (tid: number): Promise<{ state: string; stage: string; error: string | null }> =>
+    fetch(`/api/tickets/${tid}/assemble-status`).then((r) => r.json()),
+  useClip: (tid: number, cid: number): Promise<Ticket> =>
+    fetch(`/api/tickets/${tid}/use-clip/${cid}`, { method: "POST" }).then((r) => r.json()),
+  ticketDownloadUrl: (tid: number) => `/api/tickets/${tid}/download`,
+
   scriptFactory: (tid: number, brief = ""): Promise<TicketWithBeats> =>
     fetch(`/api/tickets/${tid}/script-factory`, { method: "POST", headers: J, body: JSON.stringify({ brief }) }).then((r) => r.json()),
   hookForge: (tid: number, brief = ""): Promise<{ hooks: string[] }> =>

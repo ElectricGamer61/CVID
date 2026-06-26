@@ -371,6 +371,14 @@ input[type=range] { width: 100%; accent-color: var(--primary); }
 .hook-chip { text-align: left; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-sm); padding: 8px 11px; cursor: pointer; font-size: 13px; color: var(--text); }
 .hook-chip:hover { border-color: var(--primary); background: var(--primary-soft); }
 
+/* beat media slots + assemble */
+.beat-media { display: flex; gap: 6px; margin-top: 4px; }
+.beat-media .slot { font-size: 11.5px; padding: 5px 10px; border: 1px dashed var(--border-2); border-radius: 8px; background: var(--surface-2); cursor: pointer; color: var(--muted); }
+.beat-media .slot.filled { border-style: solid; border-color: var(--accent); color: var(--accent); background: var(--accent-soft); font-weight: 600; }
+.assemble-box { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--border); }
+.reel-out { margin-top: 12px; display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
+.reel-video { width: 220px; aspect-ratio: 9/16; background: #000; border-radius: var(--r-sm); }
+
 /* intake / swipe file */
 .intake-form { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r); padding: 16px; box-shadow: var(--shadow-sm); }
 .intake-form textarea { width: 100%; font-family: inherit; font-size: 13px; border: 1px solid var(--border-2); border-radius: var(--r-sm); padding: 8px 10px; background: var(--surface-2); resize: vertical; }

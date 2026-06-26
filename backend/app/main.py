@@ -29,6 +29,8 @@ app.add_middleware(
 )
 
 _render_pool = ThreadPoolExecutor(max_workers=2)
+# Transient assemble progress per ticket (no schema change needed): id -> {state,stage,error}
+_assemble_status: dict[int, dict] = {}
 
 
 @app.on_event("startup")
@@ -483,6 +485,127 @@ def ticket_from_outlier(oid: int):
                    hook_text=o.hook or "", stage="outlier")
         s.add(t); s.commit(); s.refresh(t)
         return {"ticket": t.model_dump(), "beats": []}
+
+
+# --------------------------------------------------------------------------- #
+# Native assemble routes (beat uploads → reel) + long-form hookup
+# --------------------------------------------------------------------------- #
+from .pipeline import assemble  # noqa: E402
+
+
+def _beat_media_dir(tid: int, bid: int) -> Path:
+    d = assemble.ticket_dir(tid) / "beats" / str(bid)
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+@app.post("/api/beats/{bid}/clip")
+async def upload_beat_clip(bid: int, file: UploadFile = File(...)):
+    with get_session() as s:
+        b = s.get(Beat, bid)
+        if not b:
+            raise HTTPException(404, "beat not found")
+        tid = b.ticket_id
+    dest = _beat_media_dir(tid, bid) / "clip.mp4"
+    with dest.open("wb") as f:
+        shutil.copyfileobj(file.file, f)
+    _set_beat_media(bid, clip_path=str(dest))
+    return {"clip_path": str(dest)}
+
+
+@app.post("/api/beats/{bid}/voiceover")
+async def upload_beat_voiceover(bid: int, file: UploadFile = File(...)):
+    with get_session() as s:
+        b = s.get(Beat, bid)
+        if not b:
+            raise HTTPException(404, "beat not found")
+        tid = b.ticket_id
+    mdir = _beat_media_dir(tid, bid)
+    raw = mdir / f"vo_raw_{file.filename or 'audio'}"
+    with raw.open("wb") as f:
+        shutil.copyfileobj(file.file, f)
+    wav = mdir / "voiceover.wav"
+    try:
+        ingest.extract_audio(raw, wav)      # normalise to 16k mono wav
+    finally:
+        raw.unlink(missing_ok=True)
+    _set_beat_media(bid, voiceover_path=str(wav))
+    return {"voiceover_path": str(wav)}
+
+
+def _set_beat_media(bid: int, **fields):
+    with get_session() as s:
+        b = s.get(Beat, bid)
+        if b:
+            for k, v in fields.items():
+                setattr(b, k, v)
+            s.add(b); s.commit()
+
+
+def _assemble_job(tid: int):
+    _assemble_status[tid] = {"state": "running", "stage": "Starting", "error": None}
+    try:
+        reel = assemble.assemble_ticket(tid, progress=lambda m: _assemble_status.__setitem__(
+            tid, {"state": "running", "stage": m, "error": None}))
+        with get_session() as s:
+            t = s.get(Ticket, tid)
+            t.clip_url = str(reel)
+            if t.stage in ("outlier", "scripted", "staged", "sourced"):
+                t.stage = "assembled"
+            s.add(t); s.commit()
+        _assemble_status[tid] = {"state": "done", "stage": "Done", "error": None}
+    except Exception as e:  # noqa: BLE001
+        traceback.print_exc()
+        _assemble_status[tid] = {"state": "error", "stage": "", "error": f"{e}"}
+
+
+@app.post("/api/tickets/{tid}/assemble")
+def assemble_ticket_route(tid: int):
+    """Kick off native assembly of a ticket's beats into a reel (background)."""
+    from sqlmodel import select
+    with get_session() as s:
+        if not s.get(Ticket, tid):
+            raise HTTPException(404, "ticket not found")
+        beats = s.exec(select(Beat).where(Beat.ticket_id == tid)).all()
+        if not beats:
+            raise HTTPException(400, "ticket has no beats to assemble")
+        gaps = [b for b in beats if b.is_proof_beat and not (b.clip_path and Path(b.clip_path).exists())]
+        if gaps:
+            raise HTTPException(400, f"{len(gaps)} proof beat(s) missing a clip — add the product/label footage first")
+    _render_pool.submit(_assemble_job, tid)
+    return {"status": "assembling"}
+
+
+@app.get("/api/tickets/{tid}/assemble-status")
+def assemble_status(tid: int):
+    return _assemble_status.get(tid, {"state": "idle", "stage": "", "error": None})
+
+
+@app.post("/api/tickets/{tid}/use-clip/{cid}")
+def ticket_use_clip(tid: int, cid: int):
+    """Long-form hookup: point a longform-clip ticket at a rendered project clip."""
+    with get_session() as s:
+        t = s.get(Ticket, tid)
+        c = s.get(Clip, cid)
+        if not t or not c:
+            raise HTTPException(404, "ticket or clip not found")
+        if not c.output_path or not Path(c.output_path).exists():
+            raise HTTPException(400, "clip is not rendered yet")
+        t.clip_url = c.output_path
+        t.project_id = c.project_id
+        t.stage = "assembled"
+        s.add(t); s.commit(); s.refresh(t)
+        return t.model_dump()
+
+
+@app.get("/api/tickets/{tid}/download")
+def download_ticket(tid: int):
+    with get_session() as s:
+        t = s.get(Ticket, tid)
+        if not t or not t.clip_url or not Path(t.clip_url).exists():
+            raise HTTPException(404, "no assembled reel for this ticket")
+        return FileResponse(t.clip_url, media_type="video/mp4",
+                            filename=f"{t.angle or 'reel'}.mp4")
 
 
 # --------------------------------------------------------------------------- #
