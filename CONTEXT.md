@@ -79,6 +79,16 @@ ingest → transcribe → brain → (reframe + captions) → render
   fetches source up to **2160p** so high-res exports have real detail (4K is still a lanczos
   upscale of the 9:16 crop — see §8).
 
+- **assemble.py** (native path) — `assemble_ticket(ticket_id)` stitches a ticket's **Beats**
+  into one 9:16 reel via local ffmpeg: proof-guard → per beat, 9:16-render the uploaded clip +
+  **even-split the known `beat.caption` words across the voiceover duration** (no transcription
+  guess) + burn ASS + top overlay `on_screen_text` + mux the VO audio → ffmpeg `concat` in
+  `order_index` → `data/tickets/{id}/reel.mp4`. Pure ids-in/path-out with `# FUTURE:` storage/
+  worker-swap markers; dispatched via the same `_render_pool` as clip render.
+- **ai.py** — Script Factory + Hook Forge: reuse the brain.py Ollama/Gemini clients to generate
+  a labeled script (parsed by `intake.parse_script`) / candidate hooks, with heuristic fallbacks
+  so the endpoints never hard-fail when no LLM is up.
+
 `jobs.py` runs analysis in a background thread (ingest→transcribe→brain→create clips→proxy),
 writing progress onto the Project row.
 
@@ -124,8 +134,19 @@ writing progress onto the Project row.
   auto-split beats) · `POST /api/tickets/{tid}/import-script` (re-import, replaces beats) ·
   `GET /api/tickets` · `GET /api/tickets/{tid}` (ticket + ordered beats) · `PATCH /api/tickets/{tid}`
   (stage advance etc., validates stage/format/capture_mode) · `DELETE /api/tickets/{tid}`.
-- **Beats:** `PATCH /api/beats/{bid}` — edit fields incl. **toggle `is_proof_beat`** (so heuristic
-  false-flags like "3 swaps" can be turned off).
+- **Beats:** `PATCH /api/beats/{bid}` (edit fields incl. **toggle `is_proof_beat`**), add
+  (`POST /api/tickets/{tid}/beats`), `DELETE /api/beats/{bid}`, reorder
+  (`POST /api/tickets/{tid}/beats/reorder`), uploads (`POST /api/beats/{bid}/clip` and
+  `/voiceover`).
+- **AI buttons:** `POST /api/tickets/{tid}/script-factory` (fills beats), `/hook-forge` (hooks).
+- **Assemble:** `POST /api/tickets/{tid}/assemble` (native, background) + `/assemble-status`;
+  `POST /api/tickets/{tid}/use-clip/{cid}` (long-form: point at a rendered clip);
+  `GET /api/tickets/{tid}/download` (reel).
+- **Outliers:** `POST/GET /api/outliers`, `DELETE /api/outliers/{oid}`,
+  `POST /api/tickets/from-outlier/{oid}`.
+- **Insights:** `POST /api/perf` (logs stats, recomputes Angle rollup), `GET /api/insights`
+  (KPIs, top performers, angle ranking by saves+follows). `GET /api/exports` (all rendered clips
+  + reels).
 - **Script import** lives in `backend/app/intake.py::parse_script(text)` → `{hook, beats[]}`:
   deterministic (no LLM), splits on `BEAT`/`Beat N`/`## `/`---`/`1.`, reads labeled fields
   (Spoken/On-screen/Caption/Shot/Proof), defaults caption→spoken line, flags proof on an explicit
@@ -139,8 +160,15 @@ Light "Soft-UI" theme (Plus Jakarta Sans). **Layout mirrors wayin**: left **Side
 project opens a **MomentsGrid** (clip cards: thumbnail, viral score /100, hook line, actions
 Edit/Download/Re-export/Delete) → click a card → **ClipEditor**.
 
-- **App.tsx** — routes (home | **board** | project | editor), shell, Home/NewProject/ProjectCard,
-  MomentsGrid/MomentCard, ClipEditor, Timeline, StyleEditor, CaptionTextEditor, **Board**.
+- **App.tsx** — routes (home | **board** | **intake** | **insights** | **library** | project |
+  editor), shell, Home/NewProject/ProjectCard, MomentsGrid/MomentCard, ClipEditor, Timeline,
+  StyleEditor, CaptionTextEditor, **Board**, **Intake**, **Insights**, **Library/Exports**.
+- **Pipeline screens (Sidebar):** **Intake** (paste outliers → swipe file → spin tickets),
+  **Board** (kanban), **Insights** (Signal Reader: KPIs, perf-logging, angle ranking by
+  saves+follows), **Exports** (all rendered clips + reels, download). **TicketDetail** drawer is a
+  full editor: edit ticket + per-beat fields, add/reorder/delete beats, **proof toggle**, AI
+  buttons (Script Factory / Hook Forge), per-beat **clip + voiceover upload**, and **Assemble reel**
+  (native) → progress → player + download. Reusable `downloadFile()` saves to the remembered folder.
 - **Board** (Sidebar → "Board") — pipeline kanban: a column per `stage`, ticket cards (lane
   A/B/R badge from capture_mode, format, angle, hook, ◀▶ hand stage-advance, delete), Lane A/B
   hint at the Sourced column. **+ New ticket** modal pastes a Claude script → auto-split beats.
