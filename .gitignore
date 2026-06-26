@@ -1,0 +1,21 @@
+# data + models + outputs
+data/
+*.db
+
+# python
+backend/.venv/
+__pycache__/
+*.pyc
+.env
+
+# logs / scratch
+*.log
+*.log.out
+
+# node
+frontend/node_modules/
+frontend/dist/
+
+# os
+.DS_Store
+Thumbs.db

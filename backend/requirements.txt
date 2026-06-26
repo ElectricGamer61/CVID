@@ -1,0 +1,19 @@
+# Cvideo backend deps. Install inside the venv (Python 3.11).
+# NOTE: torch is intentionally NOT here — the MVP uses faster-whisper (CTranslate2),
+# which needs no PyTorch and thus avoids the RTX 5070 / sm_120 PyTorch issue.
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+sqlmodel==0.0.22
+python-multipart==0.0.20
+yt-dlp==2025.6.9
+faster-whisper==1.1.1
+# opencv-contrib (not plain opencv-python) — includes the YuNet DNN face detector
+# (cv2.FaceDetectorYN) used for speaker-tracked reframe.
+opencv-contrib-python==4.13.0.92
+numpy==2.2.1
+requests==2.32.3
+ollama==0.4.5
+google-generativeai==0.8.3
+# GPU runtime libs for CTranslate2 (cuBLAS + cuDNN 9). Safe no-ops if GPU unused.
+nvidia-cublas-cu12==12.8.4.1
+nvidia-cudnn-cu12==9.7.1.26
