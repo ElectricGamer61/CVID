@@ -1,4 +1,4 @@
-type View = "home" | "board" | "library";
+type View = "home" | "board" | "intake" | "insights" | "library";
 
 const ICONS: Record<string, JSX.Element> = {
   home: (
@@ -10,6 +10,16 @@ const ICONS: Record<string, JSX.Element> = {
     <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <rect x="3" y="3" width="5" height="18" rx="1.5" /><rect x="10" y="3" width="5" height="12" rx="1.5" />
       <rect x="17" y="3" width="4" height="8" rx="1.5" />
+    </svg>
+  ),
+  intake: (
+    <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 3v12" /><path d="M7 10l5 5 5-5" /><path d="M4 21h16" />
+    </svg>
+  ),
+  insights: (
+    <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M4 19V5" /><path d="M4 19h16" /><rect x="7" y="11" width="3" height="5" /><rect x="13" y="7" width="3" height="9" />
     </svg>
   ),
   library: (
@@ -26,7 +36,7 @@ const ICONS: Record<string, JSX.Element> = {
   ),
 };
 
-export function Sidebar({ view, onHome, onBoard, onLibrary }: { view: View; onHome: () => void; onBoard?: () => void; onLibrary?: () => void }) {
+export function Sidebar({ view, onHome, onBoard, onIntake, onInsights, onLibrary }: { view: View; onHome: () => void; onBoard?: () => void; onIntake?: () => void; onInsights?: () => void; onLibrary?: () => void }) {
   const item = (key: string, label: string, active: boolean, onClick?: () => void) => (
     <button className={"nav-item" + (active ? " on" : "")} onClick={onClick} title={label} disabled={!onClick}>
       {ICONS[key]}
@@ -40,7 +50,9 @@ export function Sidebar({ view, onHome, onBoard, onLibrary }: { view: View; onHo
       </button>
       <nav className="nav">
         {item("home", "Home", view === "home", onHome)}
+        {item("intake", "Intake", view === "intake", onIntake)}
         {item("board", "Board", view === "board", onBoard)}
+        {item("insights", "Insights", view === "insights", onInsights)}
         {item("library", "Exports", view === "library", onLibrary)}
       </nav>
       <div className="nav-bottom">{item("settings", "Settings", false)}</div>

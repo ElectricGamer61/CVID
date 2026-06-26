@@ -103,6 +103,18 @@ export interface NewTicketBody {
   script?: string;
 }
 
+export interface Outlier {
+  id: number;
+  url: string;
+  hook: string;
+  structure: string;
+  why_popped: string;
+  caption: string;
+  angle: string;
+  power_phrases: string[];
+  created_at: string;
+}
+
 export interface ExportItem {
   kind: "clip" | "reel";
   id: number;
@@ -171,6 +183,21 @@ export const api = {
     fetch(`/api/tickets/${tid}`, { method: "DELETE" }).then((r) => r.json()),
   patchBeat: (bid: number, body: Partial<Beat>): Promise<Beat> =>
     fetch(`/api/beats/${bid}`, { method: "PATCH", headers: J, body: JSON.stringify(body) }).then((r) => r.json()),
+  addBeat: (tid: number): Promise<Beat> =>
+    fetch(`/api/tickets/${tid}/beats`, { method: "POST" }).then((r) => r.json()),
+  deleteBeat: (bid: number): Promise<{ deleted: number }> =>
+    fetch(`/api/beats/${bid}`, { method: "DELETE" }).then((r) => r.json()),
+  reorderBeats: (tid: number, ids: number[]): Promise<{ beats: Beat[] }> =>
+    fetch(`/api/tickets/${tid}/beats/reorder`, { method: "POST", headers: J, body: JSON.stringify({ ids }) }).then((r) => r.json()),
+
+  // --- Outliers (swipe file) ---
+  listOutliers: (): Promise<Outlier[]> => fetch("/api/outliers").then((r) => r.json()),
+  createOutlier: (body: Partial<Outlier>): Promise<Outlier> =>
+    fetch("/api/outliers", { method: "POST", headers: J, body: JSON.stringify(body) }).then((r) => r.json()),
+  deleteOutlier: (oid: number): Promise<{ deleted: number }> =>
+    fetch(`/api/outliers/${oid}`, { method: "DELETE" }).then((r) => r.json()),
+  ticketFromOutlier: (oid: number): Promise<TicketWithBeats> =>
+    fetch(`/api/tickets/from-outlier/${oid}`, { method: "POST" }).then((r) => r.json()),
 
   listExports: (): Promise<ExportItem[]> => fetch("/api/exports").then((r) => r.json()),
 

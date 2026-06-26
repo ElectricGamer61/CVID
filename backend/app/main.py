@@ -16,7 +16,7 @@ from pydantic import BaseModel
 
 import settings
 from . import intake
-from .db import Beat, Clip, Project, Ticket, get_session, init_db
+from .db import Angle, Beat, Clip, Outlier, Perf, Project, Ticket, get_session, init_db
 from .jobs import get_words, submit_analyze
 from .pipeline import captions as caps
 from .pipeline import ingest, reframe, render
@@ -100,6 +100,29 @@ class BeatPatch(BaseModel):
     shot_cue: Optional[str] = None
     order_index: Optional[int] = None
     is_proof_beat: Optional[bool] = None   # manual override of the auto proof-flag
+
+
+class CreateOutlier(BaseModel):
+    url: str = ""
+    hook: str = ""
+    structure: str = ""
+    why_popped: str = ""
+    caption: str = ""
+    angle: str = ""
+    power_phrases: list = []
+
+
+class ReorderBeats(BaseModel):
+    ids: list[int]                         # beat ids in the desired order
+
+
+class LogPerf(BaseModel):
+    ticket_id: int
+    platform: str = ""                     # tt | ig | yt
+    views: int = 0
+    follows: int = 0
+    saves: int = 0
+    sends: int = 0
 
 
 def _proj_dict(p: Project) -> dict:
@@ -343,6 +366,86 @@ def list_exports():
                         "subtitle": f"{t.brand} · native", "score": None,
                         "download": f"/api/tickets/{t.id}/download", "thumb": None})
     return out
+
+
+@app.post("/api/tickets/{tid}/beats")
+def add_beat(tid: int):
+    """Append a blank beat to a ticket (manual editing on the native path)."""
+    from sqlmodel import select
+    with get_session() as s:
+        if not s.get(Ticket, tid):
+            raise HTTPException(404, "ticket not found")
+        existing = s.exec(select(Beat).where(Beat.ticket_id == tid)).all()
+        nxt = (max((b.order_index for b in existing), default=-1)) + 1
+        b = Beat(ticket_id=tid, order_index=nxt)
+        s.add(b); s.commit(); s.refresh(b)
+        return b.model_dump()
+
+
+@app.delete("/api/beats/{bid}")
+def delete_beat(bid: int):
+    with get_session() as s:
+        b = s.get(Beat, bid)
+        if not b:
+            raise HTTPException(404, "beat not found")
+        s.delete(b); s.commit()
+    return {"deleted": bid}
+
+
+@app.post("/api/tickets/{tid}/beats/reorder")
+def reorder_beats(tid: int, body: ReorderBeats):
+    """Set each beat's order_index from its position in `ids`."""
+    with get_session() as s:
+        if not s.get(Ticket, tid):
+            raise HTTPException(404, "ticket not found")
+        for i, bid in enumerate(body.ids):
+            b = s.get(Beat, bid)
+            if b and b.ticket_id == tid:
+                b.order_index = i
+                s.add(b)
+        s.commit()
+        return {"beats": [b.model_dump() for b in _beats_for(s, tid)]}
+
+
+# --------------------------------------------------------------------------- #
+# Outlier routes (the swipe file / MINE)
+# --------------------------------------------------------------------------- #
+@app.post("/api/outliers")
+def create_outlier(body: CreateOutlier):
+    with get_session() as s:
+        o = Outlier(**body.model_dump())
+        s.add(o); s.commit(); s.refresh(o)
+        return o.model_dump()
+
+
+@app.get("/api/outliers")
+def list_outliers():
+    from sqlmodel import select
+    with get_session() as s:
+        return [o.model_dump() for o in s.exec(select(Outlier).order_by(Outlier.id.desc())).all()]
+
+
+@app.delete("/api/outliers/{oid}")
+def delete_outlier(oid: int):
+    with get_session() as s:
+        o = s.get(Outlier, oid)
+        if not o:
+            raise HTTPException(404, "outlier not found")
+        s.delete(o); s.commit()
+    return {"deleted": oid}
+
+
+@app.post("/api/tickets/from-outlier/{oid}")
+def ticket_from_outlier(oid: int):
+    """Spin a ticket pre-tagged with the outlier's angle (the MINE→ticket step)."""
+    with get_session() as s:
+        o = s.get(Outlier, oid)
+        if not o:
+            raise HTTPException(404, "outlier not found")
+        t = Ticket(brand="NoCrapDiet", angle=o.angle, outlier_id=oid,
+                   hook_text=o.hook or "", stage="outlier")
+        s.add(t); s.commit(); s.refresh(t)
+        return {"ticket": t.model_dump(), "beats": []}
 
 
 # --------------------------------------------------------------------------- #

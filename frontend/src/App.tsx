@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { api, Beat, Clip, ExportItem, Presets, Project, Ticket } from "./api";
+import { api, Beat, Clip, ExportItem, Outlier, Presets, Project, Ticket } from "./api";
 import { CaptionOverlay } from "./CaptionOverlay";
 import { CaptionStyle, FALLBACK_PRESETS, groupLines, Word, wordsInRange } from "./captionStyles";
 import { Sidebar } from "./Sidebar";
@@ -9,6 +9,8 @@ import { exportDirSupported, getExportDir, getExportDirName, pickExportDir } fro
 type Route =
   | { name: "home" }
   | { name: "board" }
+  | { name: "intake" }
+  | { name: "insights" }
   | { name: "library" }
   | { name: "project"; pid: number }
   | { name: "editor"; pid: number; cid: number };
@@ -21,14 +23,17 @@ export default function App() {
   useEffect(() => { api.presets().then(setPresets); }, []);
   const goHome = () => setRoute({ name: "home" });
   const goBoard = () => setRoute({ name: "board" });
+  const goIntake = () => setRoute({ name: "intake" });
+  const goInsights = () => setRoute({ name: "insights" });
   const goLibrary = () => setRoute({ name: "library" });
 
-  const crumbLabel = route.name === "board" ? "Pipeline board" : route.name === "library" ? "Exports" : null;
+  const NAMED: Record<string, string> = { board: "Pipeline board", intake: "Intake", insights: "Insights", library: "Exports" };
+  const crumbLabel = NAMED[route.name] ?? null;
+  const sbView = (["board", "intake", "insights", "library"].includes(route.name) ? route.name : "home") as any;
 
   return (
     <div className="shell">
-      <Sidebar view={route.name === "board" ? "board" : route.name === "library" ? "library" : "home"}
-        onHome={goHome} onBoard={goBoard} onLibrary={goLibrary} />
+      <Sidebar view={sbView} onHome={goHome} onBoard={goBoard} onIntake={goIntake} onInsights={goInsights} onLibrary={goLibrary} />
       <main className="main">
         <header className="topbar">
           <div className="crumbs">
@@ -42,6 +47,8 @@ export default function App() {
         </header>
 
         {route.name === "board" && <Board presets={presets} />}
+        {route.name === "intake" && <Intake onSpun={goBoard} />}
+        {route.name === "insights" && <Insights />}
         {route.name === "library" && <Library />}
         {route.name === "home" && <Home presets={presets} onOpen={(pid) => setRoute({ name: "project", pid })} />}
         {route.name === "project" && (
@@ -109,7 +116,7 @@ function Board({ presets }: { presets: Presets | null }) {
         </div>
       )}
       {showNew && <NewTicketModal presets={presets} onClose={() => setShowNew(false)} onCreated={() => { setShowNew(false); refresh(); }} />}
-      {openId != null && <TicketDetail tid={openId} stages={stages} onClose={() => setOpenId(null)} onChanged={refresh} />}
+      {openId != null && <TicketDetail tid={openId} stages={stages} presets={presets} onClose={() => setOpenId(null)} onChanged={refresh} />}
     </div>
   );
 }
@@ -183,18 +190,31 @@ function NewTicketModal({ presets, onClose, onCreated }: { presets: Presets | nu
   );
 }
 
-function TicketDetail({ tid, stages, onClose, onChanged }: { tid: number; stages: string[]; onClose: () => void; onChanged: () => void }) {
+function TicketDetail({ tid, stages, presets, onClose, onChanged }: { tid: number; stages: string[]; presets: Presets | null; onClose: () => void; onChanged: () => void }) {
   const [data, setData] = useState<{ ticket: Ticket; beats: Beat[] } | null>(null);
+  const toast = useToast();
   const load = () => api.getTicket(tid).then(setData);
   useEffect(() => { load(); }, [tid]);
 
+  const patchT = async (body: Partial<Ticket>) => { await api.patchTicket(tid, body); load(); onChanged(); };
   const move = async (dir: 1 | -1) => {
     if (!data) return;
     const j = stages.indexOf(data.ticket.stage) + dir;
     if (j < 0 || j >= stages.length) return;
-    await api.patchTicket(tid, { stage: stages[j] }); load(); onChanged();
+    patchT({ stage: stages[j] });
   };
-  const toggleProof = async (b: Beat) => { await api.patchBeat(b.id, { is_proof_beat: !b.is_proof_beat }); load(); onChanged(); };
+  const addBeat = async () => { await api.addBeat(tid); load(); onChanged(); };
+  const reorder = async (b: Beat, dir: 1 | -1) => {
+    if (!data) return;
+    const ids = data.beats.map((x) => x.id);
+    const i = ids.indexOf(b.id), j = i + dir;
+    if (j < 0 || j >= ids.length) return;
+    [ids[i], ids[j]] = [ids[j], ids[i]];
+    await api.reorderBeats(tid, ids); load(); onChanged();
+  };
+
+  const formats = presets?.formats ?? ["reel", "carousel"];
+  const modes = presets?.capture_modes ?? ["longform-clip", "native-short", "repurpose"];
 
   return (
     <div className="drawer-back" onClick={onClose}>
@@ -205,49 +225,81 @@ function TicketDetail({ tid, stages, onClose, onChanged }: { tid: number; stages
           return (
             <>
               <div className="drawer-head">
-                <div>
-                  <div className="tkt-angle big">{ticket.angle || "(no angle)"}</div>
-                  <div className="muted">{ticket.brand} · {ticket.format} · lane {laneOf(ticket.capture_mode)} ({ticket.capture_mode})</div>
-                </div>
+                <input className="drawer-angle-input" defaultValue={ticket.angle} placeholder="angle…"
+                  onBlur={(e) => e.target.value !== ticket.angle && patchT({ angle: e.target.value })} />
                 <button className="icon-btn" onClick={onClose} title="Close">✕</button>
+              </div>
+              <div className="drawer-meta-row">
+                <span className={"lane lane-" + laneOf(ticket.capture_mode)}>{laneOf(ticket.capture_mode)}</span>
+                <select value={ticket.capture_mode} onChange={(e) => patchT({ capture_mode: e.target.value })}>{modes.map((m) => <option key={m}>{m}</option>)}</select>
+                <select value={ticket.format} onChange={(e) => patchT({ format: e.target.value })}>{formats.map((f) => <option key={f}>{f}</option>)}</select>
               </div>
               <div className="drawer-stage">
                 <button className="icon-btn" onClick={() => move(-1)} disabled={stages.indexOf(ticket.stage) <= 0}>◀</button>
                 <span className="stage-pill">{STAGE_LABELS[ticket.stage] ?? ticket.stage}</span>
                 <button className="icon-btn" onClick={() => move(1)} disabled={stages.indexOf(ticket.stage) >= stages.length - 1}>▶</button>
               </div>
-              {ticket.hook_text && <div className="drawer-hook">Hook: “{ticket.hook_text}”</div>}
+              <label className="field">Hook
+                <input defaultValue={ticket.hook_text} placeholder="first-frame hook…"
+                  onBlur={(e) => e.target.value !== ticket.hook_text && patchT({ hook_text: e.target.value })} />
+              </label>
+
               <div className="drawer-sec-head">
                 <h4>Beats ({beats.length})</h4>
                 {proofGaps > 0 && <span className="warn-chip">⚠ {proofGaps} proof beat{proofGaps > 1 ? "s" : ""} missing a clip</span>}
               </div>
+
               {beats.length === 0 ? (
                 <ReimportBox tid={tid} empty onDone={() => { load(); onChanged(); }} />
               ) : (
                 <>
                   <div className="beats">
-                    {beats.map((b) => (
-                      <div key={b.id} className={"beat" + (b.is_proof_beat && !b.clip_path ? " beat-warn" : "")}>
-                        <div className="beat-idx">{b.order_index + 1}</div>
-                        <div className="beat-body">
-                          {b.spoken_line && <div className="beat-spoken">{b.spoken_line}</div>}
-                          {b.on_screen_text && <div className="beat-meta"><b>On-screen:</b> {b.on_screen_text}</div>}
-                          {b.caption && <div className="beat-meta"><b>Caption:</b> {b.caption}</div>}
-                          {b.shot_cue && <div className="beat-meta"><b>Shot:</b> {b.shot_cue}</div>}
-                          {b.is_proof_beat && !b.clip_path && <div className="beat-warn-txt">⚠ proof beat — needs a clip showing the product/label</div>}
-                        </div>
-                        <label className="beat-proof" title="Proof beat (states a real number → needs a proof clip)">
-                          <input type="checkbox" checked={b.is_proof_beat} onChange={() => toggleProof(b)} /><span>Proof</span>
-                        </label>
-                      </div>
+                    {beats.map((b, i) => (
+                      <BeatRow key={b.id} b={b} first={i === 0} last={i === beats.length - 1}
+                        onChanged={() => { load(); onChanged(); }} onReorder={reorder} toast={toast} />
                     ))}
                   </div>
-                  <ReimportBox tid={tid} onDone={() => { load(); onChanged(); }} />
+                  <div className="beat-add-row">
+                    <button onClick={addBeat}>+ Add beat</button>
+                    <ReimportBox tid={tid} onDone={() => { load(); onChanged(); }} />
+                  </div>
                 </>
               )}
             </>
           );
         })()}
+      </div>
+    </div>
+  );
+}
+
+/* One editable beat row (uncontrolled inputs → patch on blur to avoid re-render churn). */
+function BeatRow({ b, first, last, onChanged, onReorder, toast }: {
+  b: Beat; first: boolean; last: boolean; onChanged: () => void; onReorder: (b: Beat, d: 1 | -1) => void; toast: Notify;
+}) {
+  const save = async (field: keyof Beat, val: string) => {
+    if ((b[field] ?? "") === val) return;
+    await api.patchBeat(b.id, { [field]: val } as Partial<Beat>); onChanged();
+  };
+  const toggleProof = async () => { await api.patchBeat(b.id, { is_proof_beat: !b.is_proof_beat }); onChanged(); };
+  const del = async () => { await api.deleteBeat(b.id); toast("Beat removed", "ok"); onChanged(); };
+  return (
+    <div className={"beat beat-edit" + (b.is_proof_beat && !b.clip_path ? " beat-warn" : "")}>
+      <div className="beat-idx">{b.order_index + 1}</div>
+      <div className="beat-body">
+        <textarea className="beat-in spoken" rows={2} defaultValue={b.spoken_line} placeholder="Spoken line (teleprompter)…" onBlur={(e) => save("spoken_line", e.target.value)} />
+        <input className="beat-in" defaultValue={b.on_screen_text} placeholder="On-screen text…" onBlur={(e) => save("on_screen_text", e.target.value)} />
+        <input className="beat-in" defaultValue={b.caption} placeholder="Caption (karaoke)…" onBlur={(e) => save("caption", e.target.value)} />
+        <input className="beat-in" defaultValue={b.shot_cue} placeholder="Shot cue (what to film)…" onBlur={(e) => save("shot_cue", e.target.value)} />
+        {b.is_proof_beat && !b.clip_path && <div className="beat-warn-txt">⚠ proof beat — needs a clip showing the product/label</div>}
+      </div>
+      <div className="beat-ctl">
+        <button className="icon-btn" disabled={first} title="Move up" onClick={() => onReorder(b, -1)}>▲</button>
+        <button className="icon-btn" disabled={last} title="Move down" onClick={() => onReorder(b, 1)}>▼</button>
+        <label className="beat-proof" title="Proof beat (states a real number → needs a proof clip)">
+          <input type="checkbox" checked={b.is_proof_beat} onChange={toggleProof} /><span>Proof</span>
+        </label>
+        <button className="icon-btn danger" title="Delete beat" onClick={del}>🗑</button>
       </div>
     </div>
   );
@@ -272,6 +324,62 @@ function ReimportBox({ tid, onDone, empty }: { tid: number; onDone: () => void; 
         {!empty && <button onClick={() => setOpen(false)} disabled={busy}>Cancel</button>}
         <button className="primary" onClick={run} disabled={busy || !script.trim()}>{busy ? "Importing…" : "Import beats"}</button>
       </div>
+    </div>
+  );
+}
+
+/* ------------------------------- Intake -------------------------------- */
+function Intake({ onSpun }: { onSpun: () => void }) {
+  const [outliers, setOutliers] = useState<Outlier[] | null>(null);
+  const [f, setF] = useState({ url: "", hook: "", why_popped: "", angle: "", caption: "" });
+  const [busy, setBusy] = useState(false);
+  const toast = useToast();
+  const refresh = () => api.listOutliers().then(setOutliers);
+  useEffect(() => { refresh(); }, []);
+
+  const add = async () => {
+    if (!f.angle.trim() && !f.hook.trim() && !f.url.trim()) { toast("Add at least an angle, hook, or URL", "err"); return; }
+    setBusy(true);
+    try { await api.createOutlier(f); setF({ url: "", hook: "", why_popped: "", angle: "", caption: "" }); toast("Added to swipe file", "ok"); refresh(); }
+    catch (e: any) { toast(`Failed: ${e?.message || e}`, "err"); } finally { setBusy(false); }
+  };
+  const spin = async (o: Outlier) => { const r = await api.ticketFromOutlier(o.id); toast(`Ticket spun (${r.ticket.angle || "no angle"})`, "ok"); onSpun(); };
+  const del = async (o: Outlier) => { await api.deleteOutlier(o.id); toast("Removed", "ok"); refresh(); };
+
+  return (
+    <div className="page">
+      <div className="page-head"><h2>Intake</h2><span className="muted">paste outliers → swipe file → spin tickets</span></div>
+      <div className="intake-form">
+        <div className="form-row">
+          <label className="field">Angle<input value={f.angle} placeholder="e.g. label-reading" onChange={(e) => setF({ ...f, angle: e.target.value })} /></label>
+          <label className="field">Source URL<input value={f.url} placeholder="https://…" onChange={(e) => setF({ ...f, url: e.target.value })} /></label>
+        </div>
+        <label className="field">Hook<input value={f.hook} placeholder="the scroll-stopping line" onChange={(e) => setF({ ...f, hook: e.target.value })} /></label>
+        <label className="field">Why it popped<textarea rows={2} value={f.why_popped} onChange={(e) => setF({ ...f, why_popped: e.target.value })} /></label>
+        <div className="modal-actions"><button className="primary" onClick={add} disabled={busy}>{busy ? "Adding…" : "+ Add outlier"}</button></div>
+      </div>
+
+      <div className="page-head" style={{ marginTop: 28 }}><h3 style={{ margin: 0 }}>Swipe file</h3><span className="muted">{outliers?.length ?? 0} saved</span></div>
+      {outliers == null ? <div className="muted">Loading…</div> : outliers.length === 0 ? (
+        <div className="empty"><div className="big" style={{ fontSize: 26 }}>✎</div><div style={{ fontWeight: 700, color: "var(--text)" }}>Empty swipe file</div><div>Add an outlier above to start mining angles.</div></div>
+      ) : (
+        <div className="swipe-list">
+          {outliers.map((o) => (
+            <div className="swipe-card" key={o.id}>
+              <div className="swipe-main">
+                <div className="swipe-angle">{o.angle || <span className="muted">(no angle)</span>}</div>
+                {o.hook && <div className="swipe-hook">“{o.hook}”</div>}
+                {o.why_popped && <div className="muted swipe-why">{o.why_popped}</div>}
+                {o.url && <a className="swipe-url" href={o.url} target="_blank" rel="noreferrer">{o.url}</a>}
+              </div>
+              <div className="swipe-actions">
+                <button className="primary" onClick={() => spin(o)}>Spin ticket →</button>
+                <button className="icon-btn danger" title="Delete" onClick={() => del(o)}>🗑</button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -314,6 +422,11 @@ function Library() {
       )}
     </div>
   );
+}
+
+/* ------------------------------ Insights ------------------------------- */
+function Insights() {
+  return <div className="page"><div className="page-head"><h2>Insights</h2></div><div className="muted">Signal Reader — built in Phase 5.</div></div>;
 }
 
 /* ------------------------------- Home ---------------------------------- */
