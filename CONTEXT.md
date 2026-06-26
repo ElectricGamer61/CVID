@@ -94,6 +94,19 @@ writing progress onto the Project row.
   (per-clip caption style), **words_json** (edited caption text). Additive columns are
   added by `_migrate()` (ALTER ADD COLUMN) on startup.
 
+**Pipeline lifecycle tables (Phase 1 — the 10-order content pipeline wrapping the clip engine):**
+- **Ticket** (the spine): brand, **stage** (outlier|scripted|staged|sourced|assembled|ready|
+  scheduled|posted), angle, outlier_id FK, **format** (reel|carousel), **capture_mode**
+  (longform-clip|native-short|repurpose), **project_id FK → Project** (long-form path only),
+  source_ref, hook_text, clip_url (assembler output, both paths), captions/platforms (JSON),
+  scheduled_at/posted_at, created_at.
+- **Beat** (the script-as-timeline; beats ARE the script — no duplicate script blob): ticket_id
+  FK, order_index, spoken_line, on_screen_text, caption, shot_cue, clip_path?, voiceover_path?,
+  **is_proof_beat** (real-number claim → clip must show product/label).
+- **Outlier** (swipe file), **Perf** (per-platform stats), **Angle** (`avg_score = avg(saves+
+  follows)`, the needle metric, NOT views). New tables are created by `create_all` (no `_migrate`
+  needed; `_migrate` stays for Project/Clip only). JSON via `sa_column=Column(JSON)`.
+
 ---
 
 ## 5. API (backend/app/main.py)
@@ -105,7 +118,18 @@ writing progress onto the Project row.
 - `GET /api/projects/{pid}/thumb` · `GET /api/clips/{cid}/thumb` — lazy cached JPGs.
 - `PATCH /api/clips/{cid}` — start/end/title/caption_preset/aspect/crop_center/**style**/**words**.
 - `POST /api/clips/{cid}/render` · `GET /api/clips/{cid}/download` · `/preview` · `DELETE /api/clips/{cid}`.
-- `GET /api/presets` — captions, caption_styles, aspects, brains, transcribe.
+- `GET /api/presets` — captions, caption_styles, aspects, brains, transcribe, resolutions,
+  **stages, formats, capture_modes**.
+- **Tickets:** `POST /api/tickets` · `POST /api/tickets/from-script` (paste script → ticket +
+  auto-split beats) · `POST /api/tickets/{tid}/import-script` (re-import, replaces beats) ·
+  `GET /api/tickets` · `GET /api/tickets/{tid}` (ticket + ordered beats) · `PATCH /api/tickets/{tid}`
+  (stage advance etc., validates stage/format/capture_mode) · `DELETE /api/tickets/{tid}`.
+- **Beats:** `PATCH /api/beats/{bid}` — edit fields incl. **toggle `is_proof_beat`** (so heuristic
+  false-flags like "3 swaps" can be turned off).
+- **Script import** lives in `backend/app/intake.py::parse_script(text)` → `{hook, beats[]}`:
+  deterministic (no LLM), splits on `BEAT`/`Beat N`/`## `/`---`/`1.`, reads labeled fields
+  (Spoken/On-screen/Caption/Shot/Proof), defaults caption→spoken line, flags proof on an explicit
+  `Proof:` **or** a real number in the text.
 
 ---
 
@@ -115,8 +139,14 @@ Light "Soft-UI" theme (Plus Jakarta Sans). **Layout mirrors wayin**: left **Side
 project opens a **MomentsGrid** (clip cards: thumbnail, viral score /100, hook line, actions
 Edit/Download/Re-export/Delete) → click a card → **ClipEditor**.
 
-- **App.tsx** — routes (home | project | editor), shell, Home/NewProject/ProjectCard,
-  MomentsGrid/MomentCard, ClipEditor, Timeline, StyleEditor, CaptionTextEditor.
+- **App.tsx** — routes (home | **board** | project | editor), shell, Home/NewProject/ProjectCard,
+  MomentsGrid/MomentCard, ClipEditor, Timeline, StyleEditor, CaptionTextEditor, **Board**.
+- **Board** (Sidebar → "Board") — pipeline kanban: a column per `stage`, ticket cards (lane
+  A/B/R badge from capture_mode, format, angle, hook, ◀▶ hand stage-advance, delete), Lane A/B
+  hint at the Sourced column. **+ New ticket** modal pastes a Claude script → auto-split beats.
+  Clicking a card opens a **TicketDetail** drawer: stage advance, the beat list with a per-beat
+  **Proof** checkbox (toggle is_proof_beat) and a ⚠ warning when a proof beat has no clip, plus
+  re-import. (Full ticket/beat editing + capture/assemble = later phases.)
 - **ClipEditor** — 9:16 preview (`<video>` CSS-cropped via `objectPosition` = crop_center)
   with live **CaptionOverlay** (DOM, word-by-word, no re-render). Tabs: **Style** (presets +
   swatches/sliders/position/uppercase), **Text** (edit caption words — even-split timing),

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { api, Clip, Presets, Project } from "./api";
+import { api, Beat, Clip, Presets, Project, Ticket } from "./api";
 import { CaptionOverlay } from "./CaptionOverlay";
 import { CaptionStyle, FALLBACK_PRESETS, groupLines, Word, wordsInRange } from "./captionStyles";
 import { Sidebar } from "./Sidebar";
@@ -8,6 +8,7 @@ import { exportDirSupported, getExportDir, getExportDirName, pickExportDir } fro
 
 type Route =
   | { name: "home" }
+  | { name: "board" }
   | { name: "project"; pid: number }
   | { name: "editor"; pid: number; cid: number };
 
@@ -18,20 +19,24 @@ export default function App() {
 
   useEffect(() => { api.presets().then(setPresets); }, []);
   const goHome = () => setRoute({ name: "home" });
+  const goBoard = () => setRoute({ name: "board" });
 
   return (
     <div className="shell">
-      <Sidebar view="home" onHome={goHome} />
+      <Sidebar view={route.name === "board" ? "board" : "home"} onHome={goHome} onBoard={goBoard} />
       <main className="main">
         <header className="topbar">
           <div className="crumbs">
-            <button className="back" onClick={goHome}>Projects</button>
-            {route.name !== "home" && (<><span className="sep">/</span><span className="cur">{projName}</span></>)}
+            {route.name === "board"
+              ? <span className="cur">Pipeline board</span>
+              : <button className="back" onClick={goHome}>Projects</button>}
+            {route.name !== "home" && route.name !== "board" && (<><span className="sep">/</span><span className="cur">{projName}</span></>)}
             {route.name === "editor" && (<><span className="sep">/</span><button className="back" onClick={() => setRoute({ name: "project", pid: route.pid })}>moments</button></>)}
           </div>
           <div className="spacer" />
         </header>
 
+        {route.name === "board" && <Board presets={presets} />}
         {route.name === "home" && <Home presets={presets} onOpen={(pid) => setRoute({ name: "project", pid })} />}
         {route.name === "project" && (
           <MomentsGrid pid={route.pid} onName={setProjName}
@@ -42,6 +47,225 @@ export default function App() {
             onBack={() => setRoute({ name: "project", pid: route.pid })} />
         )}
       </main>
+    </div>
+  );
+}
+
+/* ------------------------------- Board --------------------------------- */
+const STAGE_LABELS: Record<string, string> = {
+  outlier: "Outlier", scripted: "Scripted", staged: "Staged", sourced: "Sourced",
+  assembled: "Assembled", ready: "Ready", scheduled: "Scheduled", posted: "Posted",
+};
+const FALLBACK_STAGES = ["outlier", "scripted", "staged", "sourced", "assembled", "ready", "scheduled", "posted"];
+const laneOf = (m: string) => (m === "longform-clip" ? "A" : m === "native-short" ? "B" : "R");
+
+function Board({ presets }: { presets: Presets | null }) {
+  const [tickets, setTickets] = useState<Ticket[] | null>(null);
+  const [openId, setOpenId] = useState<number | null>(null);
+  const [showNew, setShowNew] = useState(false);
+  const toast = useToast();
+  const stages = presets?.stages ?? FALLBACK_STAGES;
+
+  const refresh = () => api.listTickets().then(setTickets);
+  useEffect(() => { refresh(); const t = setInterval(refresh, 4000); return () => clearInterval(t); }, []);
+
+  const move = async (t: Ticket, dir: 1 | -1) => {
+    const j = stages.indexOf(t.stage) + dir;
+    if (j < 0 || j >= stages.length) return;
+    await api.patchTicket(t.id, { stage: stages[j] }); refresh();
+  };
+  const del = async (t: Ticket) => {
+    if (!confirm(`Delete this ticket${t.angle ? ` (${t.angle})` : ""}?`)) return;
+    await api.deleteTicket(t.id); if (openId === t.id) setOpenId(null);
+    toast("Ticket deleted", "ok"); refresh();
+  };
+
+  return (
+    <div className="board-page">
+      <div className="page-head">
+        <h2>Pipeline board</h2>
+        <button className="primary" onClick={() => setShowNew(true)}>+ New ticket</button>
+      </div>
+      {tickets == null ? <div className="muted">Loading…</div> : (
+        <div className="board">
+          {stages.map((st) => {
+            const col = tickets.filter((t) => t.stage === st);
+            return (
+              <div className="board-col" key={st}>
+                <div className="board-col-head"><span>{STAGE_LABELS[st] ?? st}</span><span className="board-count">{col.length}</span></div>
+                {st === "sourced" && <div className="lane-hint">Lane A · long-form  |  Lane B · native</div>}
+                <div className="board-col-body">
+                  {col.map((t) => <TicketCard key={t.id} t={t} stages={stages} onOpen={() => setOpenId(t.id)} onMove={move} onDelete={del} />)}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {showNew && <NewTicketModal presets={presets} onClose={() => setShowNew(false)} onCreated={() => { setShowNew(false); refresh(); }} />}
+      {openId != null && <TicketDetail tid={openId} stages={stages} onClose={() => setOpenId(null)} onChanged={refresh} />}
+    </div>
+  );
+}
+
+function TicketCard({ t, stages, onOpen, onMove, onDelete }: {
+  t: Ticket; stages: string[]; onOpen: () => void; onMove: (t: Ticket, d: 1 | -1) => void; onDelete: (t: Ticket) => void;
+}) {
+  const i = stages.indexOf(t.stage);
+  return (
+    <div className="tkt-card" onClick={onOpen}>
+      <div className="tkt-top">
+        <span className={"lane lane-" + laneOf(t.capture_mode)} title={t.capture_mode}>{laneOf(t.capture_mode)}</span>
+        <span className="tkt-fmt">{t.format}</span>
+        <span className="spacer" />
+        <button className="icon-btn danger" title="Delete" onClick={(e) => { e.stopPropagation(); onDelete(t); }}>🗑</button>
+      </div>
+      <div className="tkt-angle">{t.angle || <span className="muted">(no angle)</span>}</div>
+      {t.hook_text && <div className="tkt-hook">“{t.hook_text}”</div>}
+      <div className="tkt-foot" onClick={(e) => e.stopPropagation()}>
+        <button className="icon-btn" disabled={i <= 0} title="Back a stage" onClick={() => onMove(t, -1)}>◀</button>
+        <span className="muted tkt-brand">{t.brand}</span>
+        <button className="icon-btn" disabled={i >= stages.length - 1} title="Advance a stage" onClick={() => onMove(t, 1)}>▶</button>
+      </div>
+    </div>
+  );
+}
+
+function NewTicketModal({ presets, onClose, onCreated }: { presets: Presets | null; onClose: () => void; onCreated: () => void }) {
+  const [brand, setBrand] = useState("NoCrapDiet");
+  const [angle, setAngle] = useState("");
+  const [format, setFormat] = useState("reel");
+  const [capture, setCapture] = useState("native-short");
+  const [script, setScript] = useState("");
+  const [busy, setBusy] = useState(false);
+  const toast = useToast();
+  const formats = presets?.formats ?? ["reel", "carousel"];
+  const modes = presets?.capture_modes ?? ["longform-clip", "native-short", "repurpose"];
+
+  const create = async () => {
+    setBusy(true);
+    try {
+      const body = { brand, angle, format, capture_mode: capture, script: script.trim() || undefined };
+      const res = script.trim() ? await api.createTicketFromScript(body) : await api.createTicket(body);
+      const n = res.beats?.length ?? 0;
+      toast(n ? `Ticket created — ${n} beats from script` : "Ticket created", "ok");
+      onCreated();
+    } catch (e: any) { toast(`Failed: ${e?.message || e}`, "err"); } finally { setBusy(false); }
+  };
+
+  return (
+    <div className="modal-back" onClick={onClose}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <h3>New ticket</h3>
+        <div className="form-row">
+          <label className="field">Brand<input value={brand} onChange={(e) => setBrand(e.target.value)} /></label>
+          <label className="field">Angle<input value={angle} placeholder="e.g. label-reading" onChange={(e) => setAngle(e.target.value)} /></label>
+        </div>
+        <div className="form-row">
+          <label className="field">Format<select value={format} onChange={(e) => setFormat(e.target.value)}>{formats.map((f) => <option key={f}>{f}</option>)}</select></label>
+          <label className="field">Capture mode<select value={capture} onChange={(e) => setCapture(e.target.value)}>{modes.map((m) => <option key={m}>{m}</option>)}</select></label>
+        </div>
+        <label className="field">Paste script — auto-splits into beats
+          <textarea rows={9} value={script} placeholder={"HOOK: the scroll-stopping line\n\nBEAT\nSpoken: what you say\nOn-screen: BIG TEXT\nShot: label close-up\nProof: yes"} onChange={(e) => setScript(e.target.value)} />
+        </label>
+        <div className="modal-actions">
+          <button onClick={onClose} disabled={busy}>Cancel</button>
+          <button className="primary" onClick={create} disabled={busy}>{busy ? "Creating…" : "Create ticket"}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function TicketDetail({ tid, stages, onClose, onChanged }: { tid: number; stages: string[]; onClose: () => void; onChanged: () => void }) {
+  const [data, setData] = useState<{ ticket: Ticket; beats: Beat[] } | null>(null);
+  const load = () => api.getTicket(tid).then(setData);
+  useEffect(() => { load(); }, [tid]);
+
+  const move = async (dir: 1 | -1) => {
+    if (!data) return;
+    const j = stages.indexOf(data.ticket.stage) + dir;
+    if (j < 0 || j >= stages.length) return;
+    await api.patchTicket(tid, { stage: stages[j] }); load(); onChanged();
+  };
+  const toggleProof = async (b: Beat) => { await api.patchBeat(b.id, { is_proof_beat: !b.is_proof_beat }); load(); onChanged(); };
+
+  return (
+    <div className="drawer-back" onClick={onClose}>
+      <div className="drawer" onClick={(e) => e.stopPropagation()}>
+        {!data ? <div className="muted">Loading…</div> : (() => {
+          const { ticket, beats } = data;
+          const proofGaps = beats.filter((b) => b.is_proof_beat && !b.clip_path).length;
+          return (
+            <>
+              <div className="drawer-head">
+                <div>
+                  <div className="tkt-angle big">{ticket.angle || "(no angle)"}</div>
+                  <div className="muted">{ticket.brand} · {ticket.format} · lane {laneOf(ticket.capture_mode)} ({ticket.capture_mode})</div>
+                </div>
+                <button className="icon-btn" onClick={onClose} title="Close">✕</button>
+              </div>
+              <div className="drawer-stage">
+                <button className="icon-btn" onClick={() => move(-1)} disabled={stages.indexOf(ticket.stage) <= 0}>◀</button>
+                <span className="stage-pill">{STAGE_LABELS[ticket.stage] ?? ticket.stage}</span>
+                <button className="icon-btn" onClick={() => move(1)} disabled={stages.indexOf(ticket.stage) >= stages.length - 1}>▶</button>
+              </div>
+              {ticket.hook_text && <div className="drawer-hook">Hook: “{ticket.hook_text}”</div>}
+              <div className="drawer-sec-head">
+                <h4>Beats ({beats.length})</h4>
+                {proofGaps > 0 && <span className="warn-chip">⚠ {proofGaps} proof beat{proofGaps > 1 ? "s" : ""} missing a clip</span>}
+              </div>
+              {beats.length === 0 ? (
+                <ReimportBox tid={tid} empty onDone={() => { load(); onChanged(); }} />
+              ) : (
+                <>
+                  <div className="beats">
+                    {beats.map((b) => (
+                      <div key={b.id} className={"beat" + (b.is_proof_beat && !b.clip_path ? " beat-warn" : "")}>
+                        <div className="beat-idx">{b.order_index + 1}</div>
+                        <div className="beat-body">
+                          {b.spoken_line && <div className="beat-spoken">{b.spoken_line}</div>}
+                          {b.on_screen_text && <div className="beat-meta"><b>On-screen:</b> {b.on_screen_text}</div>}
+                          {b.caption && <div className="beat-meta"><b>Caption:</b> {b.caption}</div>}
+                          {b.shot_cue && <div className="beat-meta"><b>Shot:</b> {b.shot_cue}</div>}
+                          {b.is_proof_beat && !b.clip_path && <div className="beat-warn-txt">⚠ proof beat — needs a clip showing the product/label</div>}
+                        </div>
+                        <label className="beat-proof" title="Proof beat (states a real number → needs a proof clip)">
+                          <input type="checkbox" checked={b.is_proof_beat} onChange={() => toggleProof(b)} /><span>Proof</span>
+                        </label>
+                      </div>
+                    ))}
+                  </div>
+                  <ReimportBox tid={tid} onDone={() => { load(); onChanged(); }} />
+                </>
+              )}
+            </>
+          );
+        })()}
+      </div>
+    </div>
+  );
+}
+
+function ReimportBox({ tid, onDone, empty }: { tid: number; onDone: () => void; empty?: boolean }) {
+  const [open, setOpen] = useState(!!empty);
+  const [script, setScript] = useState("");
+  const [busy, setBusy] = useState(false);
+  const toast = useToast();
+  if (!open) return <button className="link-btn" onClick={() => setOpen(true)}>Re-import script…</button>;
+  const run = async () => {
+    setBusy(true);
+    try { const r = await api.importScript(tid, script); toast(`Imported ${r.beats.length} beats`, "ok"); setScript(""); setOpen(!!empty); onDone(); }
+    catch (e: any) { toast(`Failed: ${e?.message || e}`, "err"); } finally { setBusy(false); }
+  };
+  return (
+    <div className="reimport">
+      <div className="muted" style={{ fontSize: 12.5 }}>{empty ? "Paste a script to generate beats:" : "Re-import replaces all beats:"}</div>
+      <textarea rows={6} value={script} placeholder={"HOOK: ...\n\nBEAT\nSpoken: ..."} onChange={(e) => setScript(e.target.value)} />
+      <div className="modal-actions">
+        {!empty && <button onClick={() => setOpen(false)} disabled={busy}>Cancel</button>}
+        <button className="primary" onClick={run} disabled={busy || !script.trim()}>{busy ? "Importing…" : "Import beats"}</button>
+      </div>
     </div>
   );
 }

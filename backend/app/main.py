@@ -15,7 +15,8 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 import settings
-from .db import Clip, Project, get_session, init_db
+from . import intake
+from .db import Beat, Clip, Project, Ticket, get_session, init_db
 from .jobs import get_words, submit_analyze
 from .pipeline import captions as caps
 from .pipeline import ingest, reframe, render
@@ -57,6 +58,48 @@ class ClipPatch(BaseModel):
     crop_center: Optional[float] = None
     style: Optional[dict] = None  # caption style overrides (stored as style_json)
     words: Optional[list] = None  # edited caption words (stored as words_json)
+
+
+class CreateTicket(BaseModel):
+    brand: str = "NoCrapDiet"
+    angle: str = ""
+    format: str = "reel"               # reel | carousel
+    capture_mode: str = "native-short" # longform-clip | native-short | repurpose
+    outlier_id: Optional[int] = None
+    source_ref: str = ""
+    hook_text: str = ""
+    platforms: list = []
+
+
+class TicketFromScript(CreateTicket):
+    script: str = ""                   # pasted script → auto-split into beats
+
+
+class ImportScript(BaseModel):
+    script: str                        # pasted script → replaces this ticket's beats
+
+
+class TicketPatch(BaseModel):
+    stage: Optional[str] = None
+    brand: Optional[str] = None
+    angle: Optional[str] = None
+    format: Optional[str] = None
+    capture_mode: Optional[str] = None
+    source_ref: Optional[str] = None
+    hook_text: Optional[str] = None
+    clip_url: Optional[str] = None
+    project_id: Optional[int] = None
+    outlier_id: Optional[int] = None
+    platforms: Optional[list] = None
+
+
+class BeatPatch(BaseModel):
+    spoken_line: Optional[str] = None
+    on_screen_text: Optional[str] = None
+    caption: Optional[str] = None
+    shot_cue: Optional[str] = None
+    order_index: Optional[int] = None
+    is_proof_beat: Optional[bool] = None   # manual override of the auto proof-flag
 
 
 def _proj_dict(p: Project) -> dict:
@@ -127,6 +170,157 @@ def get_project(pid: int):
 @app.get("/api/projects/{pid}/words")
 def project_words(pid: int):
     return {"words": get_words(pid)}
+
+
+# --------------------------------------------------------------------------- #
+# Ticket routes (the content-pipeline spine)
+# --------------------------------------------------------------------------- #
+_TICKET_FORMATS = {"reel", "carousel"}
+_CAPTURE_MODES = {"longform-clip", "native-short", "repurpose"}
+# Ordered lifecycle stages = the Board columns (the 10 orders collapse to these states).
+STAGES = ["outlier", "scripted", "staged", "sourced", "assembled",
+          "ready", "scheduled", "posted"]
+
+
+def _beats_for(s, tid: int) -> list[Beat]:
+    from sqlmodel import select
+    return s.exec(select(Beat).where(Beat.ticket_id == tid).order_by(Beat.order_index)).all()
+
+
+def _replace_beats(s, tid: int, parsed_beats: list[dict]) -> None:
+    """Delete a ticket's beats and recreate them from parsed script beats."""
+    from sqlmodel import select
+    for b in s.exec(select(Beat).where(Beat.ticket_id == tid)).all():
+        s.delete(b)
+    for pb in parsed_beats:
+        s.add(Beat(ticket_id=tid, order_index=pb["order_index"],
+                   spoken_line=pb["spoken_line"], on_screen_text=pb["on_screen_text"],
+                   caption=pb["caption"], shot_cue=pb["shot_cue"],
+                   is_proof_beat=pb["is_proof_beat"]))
+
+
+def _validate_ticket(body: CreateTicket) -> None:
+    if body.format not in _TICKET_FORMATS:
+        raise HTTPException(400, f"unknown format {body.format!r}")
+    if body.capture_mode not in _CAPTURE_MODES:
+        raise HTTPException(400, f"unknown capture_mode {body.capture_mode!r}")
+
+
+def _new_ticket(body: CreateTicket, hook: str, stage: str) -> Ticket:
+    return Ticket(brand=body.brand, angle=body.angle, format=body.format,
+                  capture_mode=body.capture_mode, outlier_id=body.outlier_id,
+                  source_ref=body.source_ref, hook_text=hook,
+                  platforms=body.platforms, stage=stage)
+
+
+@app.post("/api/tickets")
+def create_ticket(body: CreateTicket):
+    _validate_ticket(body)
+    with get_session() as s:
+        t = _new_ticket(body, body.hook_text, "outlier")
+        s.add(t); s.commit(); s.refresh(t)
+        return {"ticket": t.model_dump(), "beats": []}
+
+
+@app.post("/api/tickets/from-script")
+def create_ticket_from_script(body: TicketFromScript):
+    """Intake: spin a ticket from a pasted Claude script, auto-split into beats."""
+    _validate_ticket(body)
+    parsed = intake.parse_script(body.script)
+    with get_session() as s:
+        t = _new_ticket(body, body.hook_text or parsed["hook"],
+                        "scripted" if parsed["beats"] else "outlier")
+        s.add(t); s.commit(); s.refresh(t)
+        tid = t.id
+        _replace_beats(s, tid, parsed["beats"])
+        s.commit(); s.refresh(t)
+        return {"ticket": t.model_dump(),
+                "beats": [b.model_dump() for b in _beats_for(s, tid)]}
+
+
+@app.post("/api/tickets/{tid}/import-script")
+def import_script(tid: int, body: ImportScript):
+    """Re-import: replace a ticket's beats from a freshly pasted script."""
+    parsed = intake.parse_script(body.script)
+    with get_session() as s:
+        t = s.get(Ticket, tid)
+        if not t:
+            raise HTTPException(404, "ticket not found")
+        if parsed["hook"] and not t.hook_text:
+            t.hook_text = parsed["hook"]
+        if parsed["beats"]:
+            t.stage = "scripted"
+        s.add(t)
+        _replace_beats(s, tid, parsed["beats"])
+        s.commit(); s.refresh(t)
+        return {"ticket": t.model_dump(),
+                "beats": [b.model_dump() for b in _beats_for(s, tid)]}
+
+
+@app.get("/api/tickets")
+def list_tickets():
+    from sqlmodel import select
+    with get_session() as s:
+        rows = s.exec(select(Ticket).order_by(Ticket.id.desc())).all()
+        return [t.model_dump() for t in rows]
+
+
+@app.get("/api/tickets/{tid}")
+def get_ticket(tid: int):
+    with get_session() as s:
+        t = s.get(Ticket, tid)
+        if not t:
+            raise HTTPException(404, "ticket not found")
+        return {"ticket": t.model_dump(),
+                "beats": [b.model_dump() for b in _beats_for(s, tid)]}
+
+
+@app.patch("/api/tickets/{tid}")
+def patch_ticket(tid: int, body: TicketPatch):
+    data = body.model_dump(exclude_none=True)
+    if "stage" in data and data["stage"] not in STAGES:
+        raise HTTPException(400, f"unknown stage {data['stage']!r}")
+    if "format" in data and data["format"] not in _TICKET_FORMATS:
+        raise HTTPException(400, f"unknown format {data['format']!r}")
+    if "capture_mode" in data and data["capture_mode"] not in _CAPTURE_MODES:
+        raise HTTPException(400, f"unknown capture_mode {data['capture_mode']!r}")
+    with get_session() as s:
+        t = s.get(Ticket, tid)
+        if not t:
+            raise HTTPException(404, "ticket not found")
+        for k, v in data.items():
+            setattr(t, k, v)
+        s.add(t); s.commit(); s.refresh(t)
+        return t.model_dump()
+
+
+@app.delete("/api/tickets/{tid}")
+def delete_ticket(tid: int):
+    from sqlmodel import select
+    with get_session() as s:
+        t = s.get(Ticket, tid)
+        if not t:
+            raise HTTPException(404, "ticket not found")
+        for b in s.exec(select(Beat).where(Beat.ticket_id == tid)).all():
+            s.delete(b)
+        s.delete(t)
+        s.commit()
+    return {"deleted": tid}
+
+
+@app.patch("/api/beats/{bid}")
+def patch_beat(bid: int, body: BeatPatch):
+    """Edit a beat — notably toggle is_proof_beat so heuristic false-flags
+    (e.g. '3 swaps') can be turned off."""
+    data = body.model_dump(exclude_none=True)
+    with get_session() as s:
+        b = s.get(Beat, bid)
+        if not b:
+            raise HTTPException(404, "beat not found")
+        for k, v in data.items():
+            setattr(b, k, v)
+        s.add(b); s.commit(); s.refresh(b)
+        return b.model_dump()
 
 
 # --------------------------------------------------------------------------- #
@@ -358,7 +552,10 @@ def list_presets():
             "aspects": list(reframe.ASPECTS.keys()),
             "brains": ["ollama", "gemini", "heuristic"],
             "transcribe": ["local", "elevenlabs"],
-            "resolutions": resolutions}
+            "resolutions": resolutions,
+            "stages": STAGES,
+            "formats": sorted(_TICKET_FORMATS),
+            "capture_modes": sorted(_CAPTURE_MODES)}
 
 
 @app.get("/api/health")

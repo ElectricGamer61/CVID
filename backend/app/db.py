@@ -4,6 +4,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 
+from sqlalchemy import Column, JSON
 from sqlmodel import Field, SQLModel, create_engine, Session
 
 import settings
@@ -50,6 +51,80 @@ class Clip(SQLModel, table=True):
     # JSON list of edited caption words [{start,end,word}] for THIS clip.
     # None -> use the project transcript words.
     words_json: Optional[str] = None
+
+
+# --------------------------------------------------------------------------- #
+# Content-pipeline tables (the 10-order lifecycle that wraps the clip engine).
+# Ticket is the spine; everything hangs off it. Project/Clip above are the
+# ASSEMBLE output a long-form-clip ticket points at.
+# --------------------------------------------------------------------------- #
+class Outlier(SQLModel, table=True):
+    """Swipe file — a viral reference captured at MINE."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    url: str = ""
+    hook: str = ""
+    structure: str = ""
+    why_popped: str = ""
+    caption: str = ""
+    angle: str = ""
+    power_phrases: list = Field(default_factory=list, sa_column=Column(JSON))  # text[]
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class Ticket(SQLModel, table=True):
+    """One row per piece of content — the lifecycle spine."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    brand: str = "NoCrapDiet"          # loads the cartridge
+    stage: str = "outlier"             # outlier|scripted|staged|sourced|assembled|ready|scheduled|posted
+    angle: str = ""                    # keystone field
+    outlier_id: Optional[int] = Field(default=None, foreign_key="outlier.id")
+    # intake routing
+    format: str = "reel"               # reel | carousel
+    capture_mode: str = "native-short" # longform-clip | native-short | repurpose
+    # long-form-clip path links to the existing clip engine (native path uses Beats):
+    project_id: Optional[int] = Field(default=None, foreign_key="project.id")
+    source_ref: str = ""               # 'LF 02:14' | 'native take 7' | 'b-roll set A'
+    hook_text: str = ""                # chosen first-frame hook
+    clip_url: Optional[str] = None     # assembler output — BOTH paths write here
+    captions: Optional[dict] = Field(default=None, sa_column=Column(JSON))  # POST captions {tt,ig,yt}
+    platforms: list = Field(default_factory=list, sa_column=Column(JSON))   # ['tt','ig','yt']
+    scheduled_at: Optional[datetime] = None
+    posted_at: Optional[datetime] = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class Beat(SQLModel, table=True):
+    """The script-as-timeline (native path): one ordered beat = one card."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    ticket_id: int = Field(index=True, foreign_key="ticket.id")
+    order_index: int = 0               # position in the script timeline
+    spoken_line: str = ""              # voiceover script — teleprompter on the VO screen
+    on_screen_text: str = ""           # text overlaid on the video
+    caption: str = ""                  # word-synced caption text (TIMED from VO, not transcribed)
+    shot_cue: str = ""                 # what to film — shown on the clip-capture view
+    clip_path: Optional[str] = None    # uploaded silent video for this beat
+    voiceover_path: Optional[str] = None  # recorded VO audio for this beat
+    is_proof_beat: bool = False        # states a real number → clip MUST show product/label
+
+
+class Perf(SQLModel, table=True):
+    """One row per platform per posted ticket (MEASURE)."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    ticket_id: int = Field(index=True, foreign_key="ticket.id")
+    platform: str = ""                 # tt | ig | yt
+    views: int = 0
+    follows: int = 0
+    saves: int = 0
+    sends: int = 0
+    captured_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class Angle(SQLModel, table=True):
+    """Rollup the board reads for Signal Reader."""
+    angle: str = Field(primary_key=True)
+    outlier_id: Optional[int] = Field(default=None, foreign_key="outlier.id")
+    posts_count: int = 0
+    avg_score: float = 0.0             # avg(saves + follows) — the NEEDLE metric, NOT views
 
 
 _engine = create_engine(f"sqlite:///{settings.DB_PATH}", echo=False,

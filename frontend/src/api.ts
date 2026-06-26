@@ -52,6 +52,55 @@ export interface Presets {
   brains: string[];
   transcribe: string[];
   resolutions: ResolutionOption[];
+  stages: string[];
+  formats: string[];
+  capture_modes: string[];
+}
+
+export interface Ticket {
+  id: number;
+  brand: string;
+  stage: string;
+  angle: string;
+  outlier_id?: number | null;
+  format: string;
+  capture_mode: string;
+  project_id?: number | null;
+  source_ref: string;
+  hook_text: string;
+  clip_url?: string | null;
+  captions?: Record<string, string> | null;
+  platforms: string[];
+  scheduled_at?: string | null;
+  posted_at?: string | null;
+  created_at: string;
+}
+
+export interface Beat {
+  id: number;
+  ticket_id: number;
+  order_index: number;
+  spoken_line: string;
+  on_screen_text: string;
+  caption: string;
+  shot_cue: string;
+  clip_path?: string | null;
+  voiceover_path?: string | null;
+  is_proof_beat: boolean;
+}
+
+export interface TicketWithBeats {
+  ticket: Ticket;
+  beats: Beat[];
+}
+
+export interface NewTicketBody {
+  brand: string;
+  angle: string;
+  format: string;
+  capture_mode: string;
+  hook_text?: string;
+  script?: string;
 }
 
 const J = { "Content-Type": "application/json" };
@@ -96,6 +145,23 @@ export const api = {
     fetch(`/api/clips/${cid}/render`, { method: "POST" }).then((r) => r.json()),
   deleteClip: (cid: number): Promise<{ deleted: number }> =>
     fetch(`/api/clips/${cid}`, { method: "DELETE" }).then((r) => r.json()),
+  // --- Tickets / pipeline ---
+  listTickets: (): Promise<Ticket[]> => fetch("/api/tickets").then((r) => r.json()),
+  getTicket: (tid: number): Promise<TicketWithBeats> =>
+    fetch(`/api/tickets/${tid}`).then((r) => r.json()),
+  createTicket: (body: NewTicketBody): Promise<TicketWithBeats> =>
+    fetch("/api/tickets", { method: "POST", headers: J, body: JSON.stringify(body) }).then((r) => r.json()),
+  createTicketFromScript: (body: NewTicketBody): Promise<TicketWithBeats> =>
+    fetch("/api/tickets/from-script", { method: "POST", headers: J, body: JSON.stringify(body) }).then((r) => r.json()),
+  importScript: (tid: number, script: string): Promise<TicketWithBeats> =>
+    fetch(`/api/tickets/${tid}/import-script`, { method: "POST", headers: J, body: JSON.stringify({ script }) }).then((r) => r.json()),
+  patchTicket: (tid: number, body: Partial<Ticket>): Promise<Ticket> =>
+    fetch(`/api/tickets/${tid}`, { method: "PATCH", headers: J, body: JSON.stringify(body) }).then((r) => r.json()),
+  deleteTicket: (tid: number): Promise<{ deleted: number }> =>
+    fetch(`/api/tickets/${tid}`, { method: "DELETE" }).then((r) => r.json()),
+  patchBeat: (bid: number, body: Partial<Beat>): Promise<Beat> =>
+    fetch(`/api/beats/${bid}`, { method: "PATCH", headers: J, body: JSON.stringify(body) }).then((r) => r.json()),
+
   sourceUrl: (pid: number) => `/api/projects/${pid}/source`,
   previewUrl: (cid: number) => `/api/clips/${cid}/preview`,
   downloadUrl: (cid: number) => `/api/clips/${cid}/download`,
