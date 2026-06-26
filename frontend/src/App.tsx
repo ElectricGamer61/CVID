@@ -213,6 +213,21 @@ function TicketDetail({ tid, stages, presets, onClose, onChanged }: { tid: numbe
     await api.reorderBeats(tid, ids); load(); onChanged();
   };
 
+  const [hooks, setHooks] = useState<string[] | null>(null);
+  const [aiBusy, setAiBusy] = useState<"" | "script" | "hook">("");
+  const runScript = async () => {
+    if (data && data.beats.length && !confirm("Replace all beats with an AI-generated script?")) return;
+    setAiBusy("script");
+    try { const r = await api.scriptFactory(tid); toast(`Script: ${r.beats.length} beats`, "ok"); setData(r); onChanged(); }
+    catch (e: any) { toast(`Script Factory failed: ${e?.message || e}`, "err"); } finally { setAiBusy(""); }
+  };
+  const runHooks = async () => {
+    setAiBusy("hook");
+    try { const r = await api.hookForge(tid); setHooks(r.hooks); }
+    catch (e: any) { toast(`Hook Forge failed: ${e?.message || e}`, "err"); } finally { setAiBusy(""); }
+  };
+  const pickHook = (h: string) => { patchT({ hook_text: h }); setHooks(null); toast("Hook set", "ok"); };
+
   const formats = presets?.formats ?? ["reel", "carousel"];
   const modes = presets?.capture_modes ?? ["longform-clip", "native-short", "repurpose"];
 
@@ -240,9 +255,20 @@ function TicketDetail({ tid, stages, presets, onClose, onChanged }: { tid: numbe
                 <button className="icon-btn" onClick={() => move(1)} disabled={stages.indexOf(ticket.stage) >= stages.length - 1}>▶</button>
               </div>
               <label className="field">Hook
-                <input defaultValue={ticket.hook_text} placeholder="first-frame hook…"
+                <input key={ticket.hook_text} defaultValue={ticket.hook_text} placeholder="first-frame hook…"
                   onBlur={(e) => e.target.value !== ticket.hook_text && patchT({ hook_text: e.target.value })} />
               </label>
+
+              <div className="ai-row">
+                <button onClick={runScript} disabled={!!aiBusy}>{aiBusy === "script" ? "Writing…" : "✨ Run Script Factory"}</button>
+                <button onClick={runHooks} disabled={!!aiBusy}>{aiBusy === "hook" ? "Forging…" : "✨ Run Hook Forge"}</button>
+              </div>
+              {hooks && (
+                <div className="hook-options">
+                  <div className="muted" style={{ fontSize: 12.5, marginBottom: 4 }}>Pick a hook:</div>
+                  {hooks.map((h, i) => <button key={i} className="hook-chip" onClick={() => pickHook(h)}>{h}</button>)}
+                </div>
+              )}
 
               <div className="drawer-sec-head">
                 <h4>Beats ({beats.length})</h4>

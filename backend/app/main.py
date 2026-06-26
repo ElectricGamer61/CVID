@@ -15,7 +15,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 import settings
-from . import intake
+from . import ai, intake
 from .db import Angle, Beat, Clip, Outlier, Perf, Project, Ticket, get_session, init_db
 from .jobs import get_words, submit_analyze
 from .pipeline import captions as caps
@@ -114,6 +114,10 @@ class CreateOutlier(BaseModel):
 
 class ReorderBeats(BaseModel):
     ids: list[int]                         # beat ids in the desired order
+
+
+class AIBrief(BaseModel):
+    brief: str = ""                        # optional extra direction for the LLM
 
 
 class LogPerf(BaseModel):
@@ -278,6 +282,39 @@ def import_script(tid: int, body: ImportScript):
         s.commit(); s.refresh(t)
         return {"ticket": t.model_dump(),
                 "beats": [b.model_dump() for b in _beats_for(s, tid)]}
+
+
+@app.post("/api/tickets/{tid}/script-factory")
+def script_factory(tid: int, body: AIBrief):
+    """AI: generate a script (hook + beats) for the ticket's angle, replacing its beats."""
+    with get_session() as s:
+        t = s.get(Ticket, tid)
+        if not t:
+            raise HTTPException(404, "ticket not found")
+        brand, angle, fmt = t.brand, t.angle, t.format
+    result = ai.script_factory(brand, angle, body.brief, fmt)
+    with get_session() as s:
+        t = s.get(Ticket, tid)
+        if result.get("hook") and not t.hook_text:
+            t.hook_text = result["hook"]
+        if result["beats"]:
+            t.stage = "scripted"
+        s.add(t)
+        _replace_beats(s, tid, result["beats"])
+        s.commit(); s.refresh(t)
+        return {"ticket": t.model_dump(),
+                "beats": [b.model_dump() for b in _beats_for(s, tid)]}
+
+
+@app.post("/api/tickets/{tid}/hook-forge")
+def hook_forge(tid: int, body: AIBrief):
+    """AI: return candidate first-frame hooks (the frontend picks one → sets hook_text)."""
+    with get_session() as s:
+        t = s.get(Ticket, tid)
+        if not t:
+            raise HTTPException(404, "ticket not found")
+        brand, angle = t.brand, t.angle
+    return {"hooks": ai.hook_forge(brand, angle, body.brief)}
 
 
 @app.get("/api/tickets")

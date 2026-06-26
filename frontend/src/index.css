@@ -364,6 +364,12 @@ input[type=range] { width: 100%; accent-color: var(--primary); }
 .beat-in.spoken { font-weight: 600; }
 .beat-ctl { display: flex; flex-direction: column; align-items: center; gap: 4px; }
 .beat-add-row { display: flex; align-items: center; gap: 12px; margin-top: 12px; flex-wrap: wrap; }
+.ai-row { display: flex; gap: 8px; margin: 12px 0 4px; flex-wrap: wrap; }
+.ai-row button { background: var(--primary-soft); color: var(--primary-press); border: 1px solid #d9d4ff; border-radius: var(--r-sm); padding: 8px 12px; font-weight: 600; cursor: pointer; }
+.ai-row button:disabled { opacity: .55; cursor: default; }
+.hook-options { display: flex; flex-direction: column; gap: 6px; margin: 6px 0 4px; }
+.hook-chip { text-align: left; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-sm); padding: 8px 11px; cursor: pointer; font-size: 13px; color: var(--text); }
+.hook-chip:hover { border-color: var(--primary); background: var(--primary-soft); }
 
 /* intake / swipe file */
 .intake-form { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r); padding: 16px; box-shadow: var(--shadow-sm); }

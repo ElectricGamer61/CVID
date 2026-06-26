@@ -190,6 +190,11 @@ export const api = {
   reorderBeats: (tid: number, ids: number[]): Promise<{ beats: Beat[] }> =>
     fetch(`/api/tickets/${tid}/beats/reorder`, { method: "POST", headers: J, body: JSON.stringify({ ids }) }).then((r) => r.json()),
 
+  scriptFactory: (tid: number, brief = ""): Promise<TicketWithBeats> =>
+    fetch(`/api/tickets/${tid}/script-factory`, { method: "POST", headers: J, body: JSON.stringify({ brief }) }).then((r) => r.json()),
+  hookForge: (tid: number, brief = ""): Promise<{ hooks: string[] }> =>
+    fetch(`/api/tickets/${tid}/hook-forge`, { method: "POST", headers: J, body: JSON.stringify({ brief }) }).then((r) => r.json()),
+
   // --- Outliers (swipe file) ---
   listOutliers: (): Promise<Outlier[]> => fetch("/api/outliers").then((r) => r.json()),
   createOutlier: (body: Partial<Outlier>): Promise<Outlier> =>
