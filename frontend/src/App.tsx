@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { api, Beat, Clip, Presets, Project, Ticket } from "./api";
+import { api, Beat, Clip, ExportItem, Presets, Project, Ticket } from "./api";
 import { CaptionOverlay } from "./CaptionOverlay";
 import { CaptionStyle, FALLBACK_PRESETS, groupLines, Word, wordsInRange } from "./captionStyles";
 import { Sidebar } from "./Sidebar";
@@ -9,6 +9,7 @@ import { exportDirSupported, getExportDir, getExportDirName, pickExportDir } fro
 type Route =
   | { name: "home" }
   | { name: "board" }
+  | { name: "library" }
   | { name: "project"; pid: number }
   | { name: "editor"; pid: number; cid: number };
 
@@ -20,23 +21,28 @@ export default function App() {
   useEffect(() => { api.presets().then(setPresets); }, []);
   const goHome = () => setRoute({ name: "home" });
   const goBoard = () => setRoute({ name: "board" });
+  const goLibrary = () => setRoute({ name: "library" });
+
+  const crumbLabel = route.name === "board" ? "Pipeline board" : route.name === "library" ? "Exports" : null;
 
   return (
     <div className="shell">
-      <Sidebar view={route.name === "board" ? "board" : "home"} onHome={goHome} onBoard={goBoard} />
+      <Sidebar view={route.name === "board" ? "board" : route.name === "library" ? "library" : "home"}
+        onHome={goHome} onBoard={goBoard} onLibrary={goLibrary} />
       <main className="main">
         <header className="topbar">
           <div className="crumbs">
-            {route.name === "board"
-              ? <span className="cur">Pipeline board</span>
+            {crumbLabel
+              ? <span className="cur">{crumbLabel}</span>
               : <button className="back" onClick={goHome}>Projects</button>}
-            {route.name !== "home" && route.name !== "board" && (<><span className="sep">/</span><span className="cur">{projName}</span></>)}
+            {route.name !== "home" && !crumbLabel && (<><span className="sep">/</span><span className="cur">{projName}</span></>)}
             {route.name === "editor" && (<><span className="sep">/</span><button className="back" onClick={() => setRoute({ name: "project", pid: route.pid })}>moments</button></>)}
           </div>
           <div className="spacer" />
         </header>
 
         {route.name === "board" && <Board presets={presets} />}
+        {route.name === "library" && <Library />}
         {route.name === "home" && <Home presets={presets} onOpen={(pid) => setRoute({ name: "project", pid })} />}
         {route.name === "project" && (
           <MomentsGrid pid={route.pid} onName={setProjName}
@@ -270,6 +276,46 @@ function ReimportBox({ tid, onDone, empty }: { tid: number; onDone: () => void; 
   );
 }
 
+/* ------------------------------ Library -------------------------------- */
+function Library() {
+  const [items, setItems] = useState<ExportItem[] | null>(null);
+  const toast = useToast();
+  useEffect(() => {
+    const load = () => api.listExports().then(setItems).catch(() => setItems([]));
+    load(); const t = setInterval(load, 5000); return () => clearInterval(t);
+  }, []);
+  if (items == null) return <div className="page"><div className="proj-grid">{[0, 1, 2, 3].map((i) => <div key={i} className="skeleton" style={{ height: 230 }} />)}</div></div>;
+  return (
+    <div className="page">
+      <div className="page-head"><h2>Exports</h2><span className="muted">{items.length} rendered output{items.length === 1 ? "" : "s"}</span></div>
+      {items.length === 0 ? (
+        <div className="empty">
+          <div className="big" style={{ fontSize: 28 }}>⬇</div>
+          <div style={{ fontWeight: 700, color: "var(--text)", fontSize: 16 }}>No exports yet</div>
+          <div>Render a clip or assemble a reel — finished videos collect here for download.</div>
+        </div>
+      ) : (
+        <div className="proj-grid">
+          {items.map((it) => (
+            <div className="exp-card" key={`${it.kind}-${it.id}`}>
+              <div className="exp-thumb">
+                {it.thumb ? <img src={it.thumb} alt="" loading="lazy" onError={(e) => ((e.target as HTMLImageElement).style.visibility = "hidden")} /> : <div className="exp-noimg">🎬</div>}
+                <span className={"exp-kind " + it.kind}>{it.kind}</span>
+                {it.score != null && <span className="exp-score">{it.score}</span>}
+              </div>
+              <div className="exp-body">
+                <div className="exp-title">{it.title}</div>
+                <div className="muted exp-sub">{it.subtitle}</div>
+                <button className="primary exp-dl" onClick={() => downloadFile(it.download, safeFileName(it.title), toast)}>⬇ Download</button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ------------------------------- Home ---------------------------------- */
 function Home({ presets, onOpen }: { presets: Presets | null; onOpen: (id: number) => void }) {
   const [projects, setProjects] = useState<Project[] | null>(null);
@@ -427,50 +473,48 @@ type Notify = (msg: string, kind?: "ok" | "err" | "info") => void;
 
 const clipFileName = (title: string) =>
   `${(title || "clip").replace(/[\\/:*?"<>|]+/g, " ").trim() || "clip"}.mp4`;
+const safeFileName = (title: string) =>
+  `${(title || "export").replace(/[\\/:*?"<>|]+/g, " ").trim() || "export"}.mp4`;
 
-async function streamInto(handle: any, cid: number) {
-  const res = await fetch(api.downloadUrl(cid));
-  if (!res.ok) throw new Error(`server ${res.status}`);
-  const writable = await handle.createWritable();
-  if (res.body) await res.body.pipeTo(writable); // stream to disk (closes writable)
-  else { await writable.write(await res.blob()); await writable.close(); }
-}
-
-/* Download a rendered clip. On Chromium it saves STRAIGHT into the user's
+/* Download any server file. On Chromium it saves STRAIGHT into the user's
    remembered export folder (picked once, persisted in IndexedDB) — no dialog
    after the first time. If no folder is set yet it prompts once. Firefox/Safari
    fall back to a normal browser download. */
-async function downloadClip(cid: number, title: string, notify?: Notify) {
-  const name = clipFileName(title);
-
+async function downloadFile(url: string, name: string, notify?: Notify) {
   if (exportDirSupported()) {
     try {
       let dir = await getExportDir();          // remembered folder (re-verifies permission)
       if (!dir) dir = await pickExportDir();    // first time → choose + remember
       if (!dir) return;                         // user cancelled the folder picker
       const fileHandle = await dir.getFileHandle(name, { create: true });
-      await streamInto(fileHandle, cid);
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`server ${res.status}`);
+      const writable = await fileHandle.createWritable();
+      if (res.body) await res.body.pipeTo(writable);
+      else { await writable.write(await res.blob()); await writable.close(); }
       notify?.(`Saved to "${dir.name}"`, "ok");
     } catch (err: any) {
       notify?.(`Save failed: ${err?.message || err}`, "err");
     }
     return;
   }
-
   // Fallback (Firefox/Safari): normal download to the browser's download location.
   try {
-    const res = await fetch(api.downloadUrl(cid));
+    const res = await fetch(url);
     if (!res.ok) throw new Error(`server ${res.status}`);
-    const url = URL.createObjectURL(await res.blob());
+    const objUrl = URL.createObjectURL(await res.blob());
     const a = document.createElement("a");
-    a.href = url; a.download = name;
+    a.href = objUrl; a.download = name;
     document.body.appendChild(a); a.click(); a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 4000);
+    setTimeout(() => URL.revokeObjectURL(objUrl), 4000);
     notify?.("Downloaded", "ok");
   } catch (err: any) {
     notify?.(`Download failed: ${err?.message || err}`, "err");
   }
 }
+
+const downloadClip = (cid: number, title: string, notify?: Notify) =>
+  downloadFile(api.downloadUrl(cid), clipFileName(title), notify);
 
 function MomentCard({ clip, onEdit, onRender, onDelete }: {
   clip: Clip; onEdit: () => void; onRender: () => void; onDelete: () => void;

@@ -103,6 +103,16 @@ export interface NewTicketBody {
   script?: string;
 }
 
+export interface ExportItem {
+  kind: "clip" | "reel";
+  id: number;
+  title: string;
+  subtitle: string;
+  score: number | null;
+  download: string;
+  thumb: string | null;
+}
+
 const J = { "Content-Type": "application/json" };
 
 export const api = {
@@ -161,6 +171,8 @@ export const api = {
     fetch(`/api/tickets/${tid}`, { method: "DELETE" }).then((r) => r.json()),
   patchBeat: (bid: number, body: Partial<Beat>): Promise<Beat> =>
     fetch(`/api/beats/${bid}`, { method: "PATCH", headers: J, body: JSON.stringify(body) }).then((r) => r.json()),
+
+  listExports: (): Promise<ExportItem[]> => fetch("/api/exports").then((r) => r.json()),
 
   sourceUrl: (pid: number) => `/api/projects/${pid}/source`,
   previewUrl: (cid: number) => `/api/clips/${cid}/preview`,

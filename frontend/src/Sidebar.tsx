@@ -26,7 +26,7 @@ const ICONS: Record<string, JSX.Element> = {
   ),
 };
 
-export function Sidebar({ view, onHome, onBoard }: { view: View; onHome: () => void; onBoard?: () => void }) {
+export function Sidebar({ view, onHome, onBoard, onLibrary }: { view: View; onHome: () => void; onBoard?: () => void; onLibrary?: () => void }) {
   const item = (key: string, label: string, active: boolean, onClick?: () => void) => (
     <button className={"nav-item" + (active ? " on" : "")} onClick={onClick} title={label} disabled={!onClick}>
       {ICONS[key]}
@@ -41,7 +41,7 @@ export function Sidebar({ view, onHome, onBoard }: { view: View; onHome: () => v
       <nav className="nav">
         {item("home", "Home", view === "home", onHome)}
         {item("board", "Board", view === "board", onBoard)}
-        {item("library", "Library", view === "library", onHome)}
+        {item("library", "Exports", view === "library", onLibrary)}
       </nav>
       <div className="nav-bottom">{item("settings", "Settings", false)}</div>
     </aside>

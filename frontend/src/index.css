@@ -339,3 +339,17 @@ input[type=range] { width: 100%; accent-color: var(--primary); }
 .beat-proof input { width: 16px; height: 16px; cursor: pointer; accent-color: var(--warn); }
 .reimport { margin-top: 14px; display: flex; flex-direction: column; gap: 8px; }
 .link-btn { background: none; border: none; color: var(--primary); cursor: pointer; padding: 10px 0 0; font: inherit; text-decoration: underline; align-self: flex-start; }
+
+/* exports / library */
+.exp-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r); overflow: hidden; box-shadow: var(--shadow-sm); transition: box-shadow var(--ease), transform var(--ease); }
+.exp-card:hover { box-shadow: var(--shadow); transform: translateY(-2px); }
+.exp-thumb { position: relative; aspect-ratio: 9 / 16; max-height: 240px; background: var(--surface-3); display: grid; place-items: center; overflow: hidden; }
+.exp-thumb img { width: 100%; height: 100%; object-fit: cover; }
+.exp-noimg { font-size: 40px; opacity: .5; }
+.exp-kind { position: absolute; top: 8px; left: 8px; background: rgba(0,0,0,.55); color: #fff; font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em; padding: 2px 8px; border-radius: 999px; }
+.exp-kind.reel { background: rgba(109,94,252,.92); }
+.exp-score { position: absolute; top: 8px; right: 8px; background: var(--accent); color: #fff; font-weight: 800; font-size: 12px; padding: 2px 8px; border-radius: 999px; }
+.exp-body { padding: 11px 12px 13px; }
+.exp-title { font-weight: 700; color: var(--text); font-size: 14px; line-height: 1.3; }
+.exp-sub { font-size: 12px; margin-top: 2px; }
+.exp-dl { width: 100%; margin-top: 10px; justify-content: center; }

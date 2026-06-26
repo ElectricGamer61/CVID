@@ -323,6 +323,28 @@ def patch_beat(bid: int, body: BeatPatch):
         return b.model_dump()
 
 
+@app.get("/api/exports")
+def list_exports():
+    """Every rendered output across the app — project clips + assembled ticket reels.
+    Powers the Library/Exports screen."""
+    from sqlmodel import select
+    out = []
+    with get_session() as s:
+        for c in s.exec(select(Clip).where(Clip.status == "rendered")).all():
+            proj = s.get(Project, c.project_id)
+            out.append({"kind": "clip", "id": c.id,
+                        "title": c.title or f"Clip {c.idx + 1}",
+                        "subtitle": proj.name if proj else "",
+                        "score": round(c.score), "download": f"/api/clips/{c.id}/download",
+                        "thumb": f"/api/clips/{c.id}/thumb"})
+        for t in s.exec(select(Ticket).where(Ticket.clip_url.is_not(None))).all():
+            out.append({"kind": "reel", "id": t.id,
+                        "title": t.angle or f"Reel {t.id}",
+                        "subtitle": f"{t.brand} · native", "score": None,
+                        "download": f"/api/tickets/{t.id}/download", "thumb": None})
+    return out
+
+
 # --------------------------------------------------------------------------- #
 # Clip routes
 # --------------------------------------------------------------------------- #
