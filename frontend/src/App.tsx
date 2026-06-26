@@ -4,6 +4,7 @@ import { CaptionOverlay } from "./CaptionOverlay";
 import { CaptionStyle, FALLBACK_PRESETS, groupLines, Word, wordsInRange } from "./captionStyles";
 import { Sidebar } from "./Sidebar";
 import { useToast } from "./Toast";
+import { exportDirSupported, getExportDir, getExportDirName, pickExportDir } from "./exportDir";
 
 type Route =
   | { name: "home" }
@@ -198,11 +199,61 @@ function fmtR(a: number, b: number) {
   return `${f(a)} – ${f(b)}`;
 }
 
+type Notify = (msg: string, kind?: "ok" | "err" | "info") => void;
+
+const clipFileName = (title: string) =>
+  `${(title || "clip").replace(/[\\/:*?"<>|]+/g, " ").trim() || "clip"}.mp4`;
+
+async function streamInto(handle: any, cid: number) {
+  const res = await fetch(api.downloadUrl(cid));
+  if (!res.ok) throw new Error(`server ${res.status}`);
+  const writable = await handle.createWritable();
+  if (res.body) await res.body.pipeTo(writable); // stream to disk (closes writable)
+  else { await writable.write(await res.blob()); await writable.close(); }
+}
+
+/* Download a rendered clip. On Chromium it saves STRAIGHT into the user's
+   remembered export folder (picked once, persisted in IndexedDB) — no dialog
+   after the first time. If no folder is set yet it prompts once. Firefox/Safari
+   fall back to a normal browser download. */
+async function downloadClip(cid: number, title: string, notify?: Notify) {
+  const name = clipFileName(title);
+
+  if (exportDirSupported()) {
+    try {
+      let dir = await getExportDir();          // remembered folder (re-verifies permission)
+      if (!dir) dir = await pickExportDir();    // first time → choose + remember
+      if (!dir) return;                         // user cancelled the folder picker
+      const fileHandle = await dir.getFileHandle(name, { create: true });
+      await streamInto(fileHandle, cid);
+      notify?.(`Saved to "${dir.name}"`, "ok");
+    } catch (err: any) {
+      notify?.(`Save failed: ${err?.message || err}`, "err");
+    }
+    return;
+  }
+
+  // Fallback (Firefox/Safari): normal download to the browser's download location.
+  try {
+    const res = await fetch(api.downloadUrl(cid));
+    if (!res.ok) throw new Error(`server ${res.status}`);
+    const url = URL.createObjectURL(await res.blob());
+    const a = document.createElement("a");
+    a.href = url; a.download = name;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+    notify?.("Downloaded", "ok");
+  } catch (err: any) {
+    notify?.(`Download failed: ${err?.message || err}`, "err");
+  }
+}
+
 function MomentCard({ clip, onEdit, onRender, onDelete }: {
   clip: Clip; onEdit: () => void; onRender: () => void; onDelete: () => void;
 }) {
   const rendered = clip.status === "rendered";
   const busy = clip.status === "rendering";
+  const toast = useToast();
   const scoreCls = clip.score >= 75 ? "hi" : clip.score >= 50 ? "mid" : "lo";
   return (
     <div className="moment-card">
@@ -219,7 +270,7 @@ function MomentCard({ clip, onEdit, onRender, onDelete }: {
           <div className={"viral " + scoreCls}><b>{Math.round(clip.score)}</b><span>/100</span></div>
           <div className="moment-actions">
             <button className="sm" onClick={onEdit} title="Edit">✎</button>
-            {rendered && <a href={api.downloadUrl(clip.id)}><button className="sm" title="Download">⬇</button></a>}
+            {rendered && <button className="sm" title="Download" onClick={() => downloadClip(clip.id, clip.title, toast)}>⬇</button>}
             <button className="sm" onClick={onRender} disabled={busy} title="Export">{busy ? "…" : "⤓"}</button>
             <button className="sm danger" onClick={onDelete} title="Delete">🗑</button>
           </div>
@@ -285,6 +336,14 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
   const boxRef = useRef<HTMLDivElement>(null);
   const toast = useToast();
 
+  // Remembered export folder (Chromium) — picked once, reused for every download.
+  const [exportDirName, setExportDirName] = useState<string | null>(null);
+  useEffect(() => { getExportDirName().then(setExportDirName); }, []);
+  const chooseFolder = async () => {
+    const h = await pickExportDir();
+    if (h) { setExportDirName(h.name); toast(`Export folder set to "${h.name}"`, "ok"); }
+  };
+
   // STABLE timeline window — computed once for this clip, never during drag.
   const win = useMemo(() => {
     const len = Math.max(2, clip.end - clip.start);
@@ -330,9 +389,15 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
           <div className="stage-actions">
             <button onClick={() => save()} disabled={busy}>Save</button>
             <button className="primary" onClick={exportClip} disabled={busy}>{busy ? (clip.stage || "Rendering…") : rendered ? "Re-export" : "Export"}</button>
-            {rendered && <a href={api.downloadUrl(clip.id)}><button>⬇</button></a>}
+            {rendered && <button title="Download" onClick={() => downloadClip(clip.id, clip.title, toast)}>⬇ Download</button>}
           </div>
           {busy && <div className="muted" style={{ fontSize: 12.5 }}>⏳ {clip.stage || "Working"}… (first export downloads the full video)</div>}
+          {exportDirSupported() && (
+            <div className="muted" style={{ fontSize: 12.5 }}>
+              Save folder: {exportDirName ? <b>{exportDirName}</b> : <i>ask first time</i>}{" "}
+              <button onClick={chooseFolder} style={{ background: "none", border: "none", color: "var(--primary, #6D5EFC)", cursor: "pointer", padding: 0, font: "inherit", textDecoration: "underline" }}>change</button>
+            </div>
+          )}
           {clip.error && <div className="err">{clip.error}</div>}
         </div>
 

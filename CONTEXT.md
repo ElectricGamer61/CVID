@@ -125,6 +125,14 @@ Edit/Download/Re-export/Delete) → click a card → **ClipEditor**.
   axis** (frozen `[clipStart-margin, clipEnd+margin]` window — does NOT rescale during drag).
 - **CaptionOverlay.tsx / captionStyles.ts** — shared caption logic (must match captions.py).
 - **Toast.tsx** — toast notifications.
+- **Download** (`downloadClip()` in App.tsx + `exportDir.ts`) — editor + moment-card ⬇ buttons.
+  On Chromium (Chrome/Edge) the clip streams **straight into a remembered export folder**: the
+  user picks a folder once (`showDirectoryPicker`), its `FileSystemDirectoryHandle` is persisted
+  in **IndexedDB** (`exportDir.ts`), and every later download writes there with **no dialog**
+  (permission may re-prompt once after a reload — must be inside the click gesture). The editor
+  shows "Save folder: <name> · change". Firefox/Safari fall back to a normal browser download.
+  (Earlier "export not working" was a `<button>` nested in `<a>` — invalid HTML; now a real
+  `onClick`. Backend `/api/clips/{cid}/download` already serves `Content-Disposition: attachment`.)
 
 ---
 
