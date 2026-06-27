@@ -1150,7 +1150,14 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
   const [playing, setPlaying] = useState(false);
   const [recording, setRecording] = useState(false);
   const [boxH, setBoxH] = useState(560);
-  const [zoom, setZoom] = useState(1);
+  // Start zoomed in when the clip is a small slice of a long source, so it isn't
+  // a thin sliver in the full-source timeline (otherwise show the whole thing).
+  const [zoom, setZoom] = useState(() => {
+    const len = clip.end - clip.start, dur = duration || 0;
+    if (dur <= 0 || len <= 0 || len >= 0.4 * dur) return 1;
+    const cap = Math.min(20, Math.max(4, Math.ceil(dur / 30)));
+    return Math.min(cap, Math.max(1, Math.round((dur / len) * 0.5)));
+  });
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved">("idle");
   const [autoBusy, setAutoBusy] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -1189,12 +1196,11 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
     if (!manualWords && words.length) set({ words: wordsInRange(words, doc.start, doc.end) });
   }, [doc.start, doc.end]);
 
-  // STABLE timeline window — frozen per clip.
-  const win = useMemo(() => {
-    const len = Math.max(2, clip.end - clip.start);
-    const margin = Math.max(15, len);
-    return { s: Math.max(0, clip.start - margin), e: Math.min(duration || clip.end + margin, clip.end + margin) };
-  }, [clip.id, duration]);
+  // STABLE timeline window = the WHOLE source video, so trimming can reach ANY
+  // part of it (not just a margin around the current clip). Navigated by zoom +
+  // horizontal scroll. Depends only on duration, so it never jumps mid-trim.
+  const win = useMemo(() => ({ s: 0, e: Math.max(duration || 0, clip.end, 2) }), [clip.id, duration]);
+  const maxZoom = Math.min(20, Math.max(4, Math.ceil((duration || 0) / 30)));
 
   // Autosave (debounced) whenever the doc changes.
   const firstRun = useRef(true);
@@ -1355,7 +1361,7 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
         </div>
 
         <div className="ed2-panel">
-          {tool === "trim" && <TrimPanel doc={doc} set={set} />}
+          {tool === "trim" && <TrimPanel doc={doc} set={set} max={win.e} />}
           {tool === "cut" && <CutPanel doc={doc} set={set} time={time} onSeek={seek} />}
           {tool === "voice" && (hasScenes
             ? <SceneVoicePanel cid={clip.id} markers={markers} sceneIdx={Math.min(sceneIdx, markers.length - 1)} onSelectScene={selectScene}
@@ -1395,7 +1401,7 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
         <div className="tl-zoom">
           <button className="icon-btn" onClick={() => setZoom((z) => Math.max(1, +(z - 0.5).toFixed(1)))} title="Zoom out">－</button>
           <span className="muted" style={{ fontSize: 12 }}>{zoom}×</span>
-          <button className="icon-btn" onClick={() => setZoom((z) => Math.min(4, +(z + 0.5).toFixed(1)))} title="Zoom in">＋</button>
+          <button className="icon-btn" onClick={() => setZoom((z) => Math.min(maxZoom, +(z + 0.5).toFixed(1)))} title="Zoom in">＋</button>
         </div>
         <FilmstripTimeline pid={pid} winStart={win.s} winEnd={win.e} start={doc.start} end={doc.end} time={time} zoom={zoom} cuts={doc.cuts} markers={markers}
           onStart={(t) => set({ start: t })} onEnd={(t) => set({ end: t })} onScrub={seek} />
@@ -1444,7 +1450,7 @@ function useHistory<T>(initial: T) {
   return { doc: state.present, set, undo, redo, canUndo: state.past.length > 0, canRedo: state.future.length > 0 };
 }
 
-function TrimPanel({ doc, set }: { doc: EditDoc; set: (p: Partial<EditDoc>) => void }) {
+function TrimPanel({ doc, set, max }: { doc: EditDoc; set: (p: Partial<EditDoc>) => void; max: number }) {
   return (
     <div className="panel-body">
       <h3 className="panel-title">Trim</h3>
@@ -1452,7 +1458,7 @@ function TrimPanel({ doc, set }: { doc: EditDoc; set: (p: Partial<EditDoc>) => v
       <label className="field">Start (seconds)
         <input type="number" step={0.1} value={doc.start.toFixed(2)} onChange={(e) => set({ start: Math.min(Math.max(0, parseFloat(e.target.value) || 0), doc.end - 0.5) })} /></label>
       <label className="field">End (seconds)
-        <input type="number" step={0.1} value={doc.end.toFixed(2)} onChange={(e) => set({ end: Math.max(parseFloat(e.target.value) || 0, doc.start + 0.5) })} /></label>
+        <input type="number" step={0.1} value={doc.end.toFixed(2)} onChange={(e) => set({ end: Math.min(Math.max(parseFloat(e.target.value) || 0, doc.start + 0.5), max) })} /></label>
       <div className="muted" style={{ fontSize: 12.5 }}>Length: <b>{fmt(doc.end - doc.start)}</b></div>
     </div>
   );
@@ -1703,9 +1709,19 @@ function FilmstripTimeline({ pid, winStart, winEnd, start, end, time, zoom, cuts
   onStart: (t: number) => void; onEnd: (t: number) => void; onScrub: (t: number) => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
   const span = Math.max(0.1, winEnd - winStart);
   const pct = (t: number) => Math.max(0, Math.min(100, ((t - winStart) / span) * 100));
   const toTime = (clientX: number) => { const r = ref.current!.getBoundingClientRect(); const x = Math.min(Math.max(0, clientX - r.left), r.width); return winStart + (x / r.width) * span; };
+  // Keep the selected range centered on open and after each zoom step (the window
+  // is now the whole source, so a short clip would otherwise sit off-screen). Keyed
+  // on zoom only, so it never fights an active handle drag.
+  useEffect(() => {
+    const sc = scrollRef.current; if (!sc) return;
+    const trackW = sc.clientWidth * zoom;
+    const center = ((start + end) / 2 - winStart) / span;
+    sc.scrollLeft = Math.max(0, center * trackW - sc.clientWidth / 2);
+  }, [zoom]);
   const drag = (which: "start" | "end" | "scrub") => (e: React.PointerEvent) => {
     e.preventDefault(); e.stopPropagation();
     const move = (ev: PointerEvent) => {
@@ -1721,7 +1737,7 @@ function FilmstripTimeline({ pid, winStart, winEnd, start, end, time, zoom, cuts
   const frames = useMemo(() => Array.from({ length: n }, (_, i) => winStart + ((i + 0.5) / n) * span), [winStart, span, n]);
   return (
     <div className="fs-wrap">
-      <div className="fs-scroll">
+      <div className="fs-scroll" ref={scrollRef}>
         <div className="fs-track" ref={ref} onPointerDown={drag("scrub")} style={{ width: `${zoom * 100}%` }}>
           <div className="fs-frames">{frames.map((t, i) => (
             <img key={i} src={api.frameUrl(pid, t)} alt="" draggable={false} onError={(e) => ((e.target as HTMLImageElement).style.opacity = "0")} />
