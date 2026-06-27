@@ -10,6 +10,7 @@ export interface Project {
   transcribe_backend?: string;
   aspect: string;
   caption_preset: string;
+  mode?: string; // "moments" | "caption"
   status: string;
   stage: string;
   progress: number;
@@ -37,6 +38,9 @@ export interface Clip {
   error?: string;
   style_json?: string;
   words_json?: string;
+  cuts_json?: string;
+  markers_json?: string;
+  voiceover_path?: string | null;
 }
 
 export interface ResolutionOption {
@@ -126,6 +130,10 @@ export interface ExportItem {
   id: number;
   title: string;
   subtitle: string;
+  group: string;       // top folder — brand (reels) or project (clips)
+  subgroup: string;    // "Reels" | "Clips"
+  hook: string;
+  filename: string;    // hook-based download filename
   score: number | null;
   download: string;
   thumb: string | null;
@@ -150,6 +158,7 @@ export const api = {
     transcribe_backend: string;
     aspect: string;
     caption_preset: string;
+    mode: string;
   }): Promise<{ id: number }> =>
     fetch("/api/projects", {
       method: "POST",
@@ -162,7 +171,7 @@ export const api = {
     ),
   patchClip: (
     cid: number,
-    body: Partial<Clip> & { style?: CaptionStyle; words?: Word[] }
+    body: Partial<Clip> & { style?: CaptionStyle; words?: Word[]; cuts?: number[][] }
   ): Promise<Clip> =>
     fetch(`/api/clips/${cid}`, {
       method: "PATCH",
@@ -211,6 +220,18 @@ export const api = {
   useClip: (tid: number, cid: number): Promise<Ticket> =>
     fetch(`/api/tickets/${tid}/use-clip/${cid}`, { method: "POST" }).then((r) => r.json()),
   ticketDownloadUrl: (tid: number) => `/api/tickets/${tid}/download`,
+  ticketThumbUrl: (tid: number) => `/api/tickets/${tid}/thumb`,
+  buildEdit: (tid: number): Promise<{ pid: number; cid: number }> =>
+    fetch(`/api/tickets/${tid}/build-edit`, { method: "POST" }).then(async (r) => { if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.status); return r.json(); }),
+
+  // Clip voiceover (recorded/uploaded in the editor)
+  uploadClipVoiceover: (cid: number, file: Blob): Promise<{ voiceover_path: string }> => {
+    const fd = new FormData(); fd.append("file", file, "voiceover.webm");
+    return fetch(`/api/clips/${cid}/voiceover`, { method: "POST", body: fd }).then((r) => r.json());
+  },
+  deleteClipVoiceover: (cid: number): Promise<{ ok: boolean }> =>
+    fetch(`/api/clips/${cid}/voiceover`, { method: "DELETE" }).then((r) => r.json()),
+  clipVoiceoverUrl: (cid: number) => `/api/clips/${cid}/voiceover-file`,
 
   scriptFactory: (tid: number, brief = ""): Promise<TicketWithBeats> =>
     fetch(`/api/tickets/${tid}/script-factory`, { method: "POST", headers: J, body: JSON.stringify({ brief }) }).then((r) => r.json()),

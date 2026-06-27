@@ -4,6 +4,8 @@ import { CaptionOverlay } from "./CaptionOverlay";
 import { CaptionStyle, FALLBACK_PRESETS, Word, wordsInRange } from "./captionStyles";
 import { Sidebar } from "./Sidebar";
 import { useToast } from "./Toast";
+import { useRecorder } from "./useRecorder";
+import { VideoModal } from "./VideoModal";
 import { exportDirSupported, getExportDir, pickExportDir } from "./exportDir";
 
 type Route =
@@ -13,7 +15,7 @@ type Route =
   | { name: "insights" }
   | { name: "library" }
   | { name: "project"; pid: number }
-  | { name: "editor"; pid: number; cid: number };
+  | { name: "editor"; pid: number; cid: number; from?: "board" | "project" };
 
 export default function App() {
   const [presets, setPresets] = useState<Presets | null>(null);
@@ -27,7 +29,7 @@ export default function App() {
   const goInsights = () => setRoute({ name: "insights" });
   const goLibrary = () => setRoute({ name: "library" });
 
-  const NAMED: Record<string, string> = { board: "My Videos", intake: "Ideas", insights: "Results", library: "Downloads" };
+  const NAMED: Record<string, string> = { board: "Create videos", intake: "Outliers", insights: "Results", library: "Downloads" };
   const crumbLabel = NAMED[route.name] ?? null;
   const sbView = (["board", "intake", "insights", "library"].includes(route.name) ? route.name : "home") as any;
 
@@ -46,7 +48,7 @@ export default function App() {
           <div className="spacer" />
         </header>
 
-        {route.name === "board" && <Board presets={presets} />}
+        {route.name === "board" && <Board presets={presets} onOpenEditor={(pid, cid) => setRoute({ name: "editor", pid, cid, from: "board" })} />}
         {route.name === "intake" && <Intake onSpun={goBoard} />}
         {route.name === "insights" && <Insights />}
         {route.name === "library" && <Library />}
@@ -57,7 +59,7 @@ export default function App() {
         )}
         {route.name === "editor" && (
           <EditorPage pid={route.pid} cid={route.cid} presets={presets} onName={setProjName}
-            onBack={() => setRoute({ name: "project", pid: route.pid })} />
+            onBack={() => setRoute(route.from === "board" ? { name: "board" } : { name: "project", pid: route.pid })} />
         )}
       </main>
     </div>
@@ -65,31 +67,44 @@ export default function App() {
 }
 
 /* ------------------------------- Board --------------------------------- */
-const STAGE_LABELS: Record<string, string> = {
-  outlier: "1. Idea", scripted: "2. Script ready", staged: "3. Filming", sourced: "4. Clips added",
-  assembled: "5. Video made", ready: "6. Ready to post", scheduled: "7. Scheduled", posted: "8. Posted",
+// The 8 DB stages collapse into 4 dead-simple Board columns (matches the how-banner).
+// Stage stays the DB source of truth; this is display-only grouping.
+type Phase = { key: string; label: string; stages: string[] };
+const PHASES: Phase[] = [
+  { key: "idea",   label: "1. Idea",    stages: ["outlier"] },
+  { key: "make",   label: "2. Make it", stages: ["scripted", "staged", "sourced"] },
+  { key: "ready",  label: "3. Ready",   stages: ["assembled", "ready"] },
+  { key: "posted", label: "4. Posted",  stages: ["scheduled", "posted"] },
+];
+const phaseOf = (stage: string) => Math.max(0, PHASES.findIndex((p) => p.stages.includes(stage)));
+const phaseLabel = (stage: string) => PHASES[phaseOf(stage)].label;
+const PHASE_HINT: Record<string, string> = {
+  idea: "New videos start here", make: "Write & film your scenes",
+  ready: "Made — ready to post", posted: "Posted videos land here",
 };
-const FALLBACK_STAGES = ["outlier", "scripted", "staged", "sourced", "assembled", "ready", "scheduled", "posted"];
 // Plain-language labels for the capture mode (how the video gets made).
 const MODE_LABELS: Record<string, string> = {
   "native-short": "Film it myself", "longform-clip": "From a long video", "repurpose": "Reuse old footage",
 };
+const MODE_ICONS: Record<string, string> = {
+  "native-short": "🎬", "longform-clip": "✂", "repurpose": "♻",
+};
 const modeLabel = (m: string) => MODE_LABELS[m] ?? m;
+const modeIcon = (m: string) => MODE_ICONS[m] ?? "🎬";
 
-function Board({ presets }: { presets: Presets | null }) {
+function Board({ presets, onOpenEditor }: { presets: Presets | null; onOpenEditor: (pid: number, cid: number) => void }) {
   const [tickets, setTickets] = useState<Ticket[] | null>(null);
   const [openId, setOpenId] = useState<number | null>(null);
   const [showNew, setShowNew] = useState(false);
   const toast = useToast();
-  const stages = presets?.stages ?? FALLBACK_STAGES;
 
   const refresh = () => api.listTickets().then(setTickets);
   useEffect(() => { refresh(); const t = setInterval(refresh, 4000); return () => clearInterval(t); }, []);
 
   const move = async (t: Ticket, dir: 1 | -1) => {
-    const j = stages.indexOf(t.stage) + dir;
-    if (j < 0 || j >= stages.length) return;
-    await api.patchTicket(t.id, { stage: stages[j] }); refresh();
+    const j = phaseOf(t.stage) + dir;
+    if (j < 0 || j >= PHASES.length) return;
+    await api.patchTicket(t.id, { stage: PHASES[j].stages[0] }); refresh();
   };
   const del = async (t: Ticket) => {
     if (!confirm(`Delete this ticket${t.angle ? ` (${t.angle})` : ""}?`)) return;
@@ -100,7 +115,7 @@ function Board({ presets }: { presets: Presets | null }) {
   return (
     <div className="board-page">
       <div className="page-head">
-        <h2>My Videos</h2>
+        <h2>Create videos</h2>
         <button className="primary" onClick={() => setShowNew(true)}>+ New video</button>
       </div>
       <div className="how-banner">
@@ -112,13 +127,14 @@ function Board({ presets }: { presets: Presets | null }) {
       </div>
       {tickets == null ? <div className="muted">Loading…</div> : (
         <div className="board">
-          {stages.map((st) => {
-            const col = tickets.filter((t) => t.stage === st);
+          {PHASES.map((ph) => {
+            const col = tickets.filter((t) => ph.stages.includes(t.stage));
             return (
-              <div className="board-col" key={st}>
-                <div className="board-col-head"><span>{STAGE_LABELS[st] ?? st}</span><span className="board-count">{col.length}</span></div>
+              <div className={"board-col cv-lane cv-" + ph.key} key={ph.key}>
+                <div className="board-col-head"><span className="cv-lane-dot" /><span>{ph.label}</span><span className="board-count">{col.length}</span></div>
                 <div className="board-col-body">
-                  {col.map((t) => <TicketCard key={t.id} t={t} stages={stages} onOpen={() => setOpenId(t.id)} onMove={move} onDelete={del} />)}
+                  {col.map((t) => <TicketCard key={t.id} t={t} onOpen={() => setOpenId(t.id)} onMove={move} onDelete={del} />)}
+                  {col.length === 0 && <div className="cv-lane-empty">{PHASE_HINT[ph.key]}</div>}
                 </div>
               </div>
             );
@@ -126,28 +142,37 @@ function Board({ presets }: { presets: Presets | null }) {
         </div>
       )}
       {showNew && <NewTicketModal presets={presets} onClose={() => setShowNew(false)} onCreated={() => { setShowNew(false); refresh(); }} />}
-      {openId != null && <TicketDetail tid={openId} stages={stages} presets={presets} onClose={() => setOpenId(null)} onChanged={refresh} />}
+      {openId != null && <TicketDetail tid={openId} presets={presets} onClose={() => setOpenId(null)} onChanged={refresh} onOpenEditor={onOpenEditor} />}
     </div>
   );
 }
 
-function TicketCard({ t, stages, onOpen, onMove, onDelete }: {
-  t: Ticket; stages: string[]; onOpen: () => void; onMove: (t: Ticket, d: 1 | -1) => void; onDelete: (t: Ticket) => void;
+function TicketCard({ t, onOpen, onMove, onDelete }: {
+  t: Ticket; onOpen: () => void; onMove: (t: Ticket, d: 1 | -1) => void; onDelete: (t: Ticket) => void;
 }) {
-  const i = stages.indexOf(t.stage);
+  const i = phaseOf(t.stage);
+  const made = !!t.clip_url;
   return (
     <div className="tkt-card" onClick={onOpen}>
-      <div className="tkt-top">
+      <div className="tkt-thumb">
+        {made ? (
+          <img src={api.ticketThumbUrl(t.id)} alt="" loading="lazy"
+            onError={(e) => ((e.target as HTMLImageElement).style.display = "none")} />
+        ) : (
+          <div className="tkt-thumb-ph"><span>{modeIcon(t.capture_mode)}</span></div>
+        )}
         <span className="tkt-mode">{modeLabel(t.capture_mode)}</span>
-        <span className="spacer" />
-        <button className="icon-btn danger" title="Delete this video" onClick={(e) => { e.stopPropagation(); onDelete(t); }}>🗑</button>
+        {made && <span className="tkt-made">✓ made</span>}
+        <button className="icon-btn danger tkt-del" title="Delete this video" onClick={(e) => { e.stopPropagation(); onDelete(t); }}>🗑</button>
       </div>
-      <div className="tkt-angle">{t.angle || <span className="muted">Untitled video</span>}</div>
-      {t.hook_text && <div className="tkt-hook">“{t.hook_text}”</div>}
-      <div className="tkt-foot" onClick={(e) => e.stopPropagation()}>
-        <button className="icon-btn" disabled={i <= 0} title="Move back a step" onClick={() => onMove(t, -1)}>◀</button>
-        <span className="muted tkt-open">Open ⤢</span>
-        <button className="icon-btn" disabled={i >= stages.length - 1} title="Move forward a step" onClick={() => onMove(t, 1)}>▶</button>
+      <div className="tkt-card-body">
+        {t.hook_text ? <div className="tkt-hook-main">“{t.hook_text}”</div> : null}
+        <div className="tkt-angle">{t.angle || <span className="muted">Untitled video</span>}</div>
+        <div className="tkt-foot" onClick={(e) => e.stopPropagation()}>
+          <button className="icon-btn" disabled={i <= 0} title="Move back a step" onClick={() => onMove(t, -1)}>◀</button>
+          <span className="muted tkt-open">Open ⤢</span>
+          <button className="icon-btn" disabled={i >= PHASES.length - 1} title="Move forward a step" onClick={() => onMove(t, 1)}>▶</button>
+        </div>
       </div>
     </div>
   );
@@ -159,20 +184,31 @@ function NewTicketModal({ presets, onClose, onCreated }: { presets: Presets | nu
   const [format, setFormat] = useState("reel");
   const [capture, setCapture] = useState("native-short");
   const [script, setScript] = useState("");
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState<"" | "create" | "ai">("");
   const toast = useToast();
   const formats = presets?.formats ?? ["reel", "carousel"];
   const modes = presets?.capture_modes ?? ["longform-clip", "native-short", "repurpose"];
 
   const create = async () => {
-    setBusy(true);
+    setBusy("create");
     try {
       const body = { brand, angle, format, capture_mode: capture, script: script.trim() || undefined };
       const res = script.trim() ? await api.createTicketFromScript(body) : await api.createTicket(body);
       const n = res.beats?.length ?? 0;
       toast(n ? `Ticket created — ${n} beats from script` : "Ticket created", "ok");
       onCreated();
-    } catch (e: any) { toast(`Failed: ${e?.message || e}`, "err"); } finally { setBusy(false); }
+    } catch (e: any) { toast(`Failed: ${e?.message || e}`, "err"); } finally { setBusy(""); }
+  };
+
+  // ✨ One-step AI path: create the ticket, then fill its scenes via Script Factory.
+  const generateWithAI = async () => {
+    setBusy("ai");
+    try {
+      const res = await api.createTicket({ brand, angle, format, capture_mode: capture });
+      const sf = await api.scriptFactory(res.ticket.id);
+      toast(`Created + AI script — ${sf.beats.length} scenes`, "ok");
+      onCreated();
+    } catch (e: any) { toast(`AI generate failed: ${e?.message || e}`, "err"); } finally { setBusy(""); }
   };
 
   return (
@@ -193,16 +229,18 @@ function NewTicketModal({ presets, onClose, onCreated }: { presets: Presets | nu
         <label className="field">Paste your script here <span className="muted">(optional — or leave blank and write it later)</span>
           <textarea rows={8} value={script} placeholder={"HOOK: the line that stops people scrolling\n\nBEAT\nSpoken: what you say out loud\nOn-screen: BIG TEXT\nShot: what to film\n\nBEAT\nSpoken: the next thing you say"} onChange={(e) => setScript(e.target.value)} />
         </label>
+        <div className="muted" style={{ fontSize: 12.5 }}>Enter the topic above, then let AI write the script — or write it yourself below.</div>
         <div className="modal-actions">
-          <button onClick={onClose} disabled={busy}>Cancel</button>
-          <button className="primary" onClick={create} disabled={busy}>{busy ? "Creating…" : "Create video"}</button>
+          <button onClick={onClose} disabled={!!busy}>Cancel</button>
+          <button onClick={generateWithAI} disabled={!!busy || !angle.trim()} title={!angle.trim() ? "Enter a topic first" : "Create + write the script with AI"}>{busy === "ai" ? "Generating…" : "✨ Generate with AI"}</button>
+          <button className="primary" onClick={create} disabled={!!busy}>{busy === "create" ? "Creating…" : "Create video"}</button>
         </div>
       </div>
     </div>
   );
 }
 
-function TicketDetail({ tid, stages, presets, onClose, onChanged }: { tid: number; stages: string[]; presets: Presets | null; onClose: () => void; onChanged: () => void }) {
+function TicketDetail({ tid, presets, onClose, onChanged, onOpenEditor }: { tid: number; presets: Presets | null; onClose: () => void; onChanged: () => void; onOpenEditor: (pid: number, cid: number) => void }) {
   const [data, setData] = useState<{ ticket: Ticket; beats: Beat[] } | null>(null);
   const toast = useToast();
   const load = () => api.getTicket(tid).then(setData);
@@ -211,9 +249,9 @@ function TicketDetail({ tid, stages, presets, onClose, onChanged }: { tid: numbe
   const patchT = async (body: Partial<Ticket>) => { await api.patchTicket(tid, body); load(); onChanged(); };
   const move = async (dir: 1 | -1) => {
     if (!data) return;
-    const j = stages.indexOf(data.ticket.stage) + dir;
-    if (j < 0 || j >= stages.length) return;
-    patchT({ stage: stages[j] });
+    const j = phaseOf(data.ticket.stage) + dir;
+    if (j < 0 || j >= PHASES.length) return;
+    patchT({ stage: PHASES[j].stages[0] });
   };
   const addBeat = async () => { await api.addBeat(tid); load(); onChanged(); };
   const reorder = async (b: Beat, dir: 1 | -1) => {
@@ -223,6 +261,14 @@ function TicketDetail({ tid, stages, presets, onClose, onChanged }: { tid: numbe
     if (j < 0 || j >= ids.length) return;
     [ids[i], ids[j]] = [ids[j], ids[i]];
     await api.reorderBeats(tid, ids); load(); onChanged();
+  };
+
+  const [building, setBuilding] = useState(false);
+  const openEditor = async () => {
+    setBuilding(true);
+    try { const r = await api.buildEdit(tid); onOpenEditor(r.pid, r.cid); }
+    catch (e: any) { toast(`Couldn't open editor: ${e?.message || e}`, "err"); }
+    finally { setBuilding(false); }
   };
 
   const [hooks, setHooks] = useState<string[] | null>(null);
@@ -277,9 +323,9 @@ function TicketDetail({ tid, stages, presets, onClose, onChanged }: { tid: numbe
                 <select value={ticket.capture_mode} onChange={(e) => patchT({ capture_mode: e.target.value })}>{modes.map((m) => <option key={m} value={m}>{modeLabel(m)}</option>)}</select>
               </div>
               <div className="drawer-stage">
-                <button className="icon-btn" onClick={() => move(-1)} disabled={stages.indexOf(ticket.stage) <= 0} title="Back a step">◀</button>
-                <span className="stage-pill">{STAGE_LABELS[ticket.stage] ?? ticket.stage}</span>
-                <button className="icon-btn" onClick={() => move(1)} disabled={stages.indexOf(ticket.stage) >= stages.length - 1} title="Forward a step">▶</button>
+                <button className="icon-btn" onClick={() => move(-1)} disabled={phaseOf(ticket.stage) <= 0} title="Back a step">◀</button>
+                <span className="stage-pill">{phaseLabel(ticket.stage)}</span>
+                <button className="icon-btn" onClick={() => move(1)} disabled={phaseOf(ticket.stage) >= PHASES.length - 1} title="Forward a step">▶</button>
               </div>
               <label className="field">First line (the hook)
                 <input key={ticket.hook_text} defaultValue={ticket.hook_text} placeholder="the line that stops people scrolling"
@@ -321,8 +367,12 @@ function TicketDetail({ tid, stages, presets, onClose, onChanged }: { tid: numbe
 
               {ticket.capture_mode === "native-short" && beats.length > 0 && (
                 <div className="assemble-box">
-                  <div className="muted" style={{ fontSize: 12.5, marginBottom: 8 }}>Added a video + voice to each scene? Make the final video:</div>
-                  <button className="primary big-btn" onClick={assembleReel} disabled={asm?.state === "running"}>
+                  <div className="muted" style={{ fontSize: 12.5, marginBottom: 8 }}>Open your scenes as one video — preview it, record your voice, add captions and cut:</div>
+                  <button className="primary big-btn" onClick={openEditor} disabled={building}>
+                    {building ? "Opening editor…" : "✏️ Open in editor"}
+                  </button>
+                  <div className="muted" style={{ fontSize: 12, margin: "10px 0 8px" }}>…or make the final video right away:</div>
+                  <button className="big-btn" onClick={assembleReel} disabled={asm?.state === "running"}>
                     {asm?.state === "running" ? `⏳ ${asm.stage}…` : ticket.clip_url ? "↻ Make it again" : "🎬 Make my video"}
                   </button>
                   {asm?.state === "error" && <div className="err">{asm.error}</div>}
@@ -480,12 +530,26 @@ function Intake({ onSpun }: { onSpun: () => void }) {
 /* ------------------------------ Library -------------------------------- */
 function Library() {
   const [items, setItems] = useState<ExportItem[] | null>(null);
+  const [preview, setPreview] = useState<ExportItem | null>(null);
   const toast = useToast();
   useEffect(() => {
     const load = () => api.listExports().then(setItems).catch(() => setItems([]));
     load(); const t = setInterval(load, 5000); return () => clearInterval(t);
   }, []);
   if (items == null) return <div className="page"><div className="proj-grid">{[0, 1, 2, 3].map((i) => <div key={i} className="skeleton" style={{ height: 230 }} />)}</div></div>;
+
+  // Build folders: group (brand / project) → subgroup (Reels / Clips) → items.
+  const folders = new Map<string, Map<string, ExportItem[]>>();
+  for (const it of items) {
+    const g = it.group || "Other";
+    if (!folders.has(g)) folders.set(g, new Map());
+    const sub = folders.get(g)!;
+    const sg = it.subgroup || "Videos";
+    if (!sub.has(sg)) sub.set(sg, []);
+    sub.get(sg)!.push(it);
+  }
+  const dl = (it: ExportItem) => downloadFile(it.download, it.filename || safeFileName(it.title), toast);
+
   return (
     <div className="page">
       <div className="page-head"><h2>Downloads</h2><span className="muted">{items.length} finished video{items.length === 1 ? "" : "s"}</span></div>
@@ -496,23 +560,53 @@ function Library() {
           <div>Make a video and it shows up here, ready to download.</div>
         </div>
       ) : (
-        <div className="proj-grid">
-          {items.map((it) => (
-            <div className="exp-card" key={`${it.kind}-${it.id}`}>
-              <div className="exp-thumb">
-                {it.thumb ? <img src={it.thumb} alt="" loading="lazy" onError={(e) => ((e.target as HTMLImageElement).style.visibility = "hidden")} /> : <div className="exp-noimg">🎬</div>}
-                <span className={"exp-kind " + it.kind}>{it.kind}</span>
-                {it.score != null && <span className="exp-score">{it.score}</span>}
-              </div>
-              <div className="exp-body">
-                <div className="exp-title">{it.title}</div>
-                <div className="muted exp-sub">{it.subtitle}</div>
-                <button className="primary exp-dl" onClick={() => downloadFile(it.download, safeFileName(it.title), toast)}>⬇ Download</button>
-              </div>
-            </div>
-          ))}
-        </div>
+        [...folders.entries()].map(([group, subs]) => (
+          <DownloadFolder key={group} group={group} subs={subs} onPreview={setPreview} onDownload={dl} />
+        ))
       )}
+      {preview && (
+        <VideoModal src={preview.download} title={preview.title}
+          onClose={() => setPreview(null)} onDownload={() => dl(preview)} />
+      )}
+    </div>
+  );
+}
+
+function DownloadFolder({ group, subs, onPreview, onDownload }: {
+  group: string; subs: Map<string, ExportItem[]>; onPreview: (it: ExportItem) => void; onDownload: (it: ExportItem) => void;
+}) {
+  const [open, setOpen] = useState(true);
+  const total = [...subs.values()].reduce((n, arr) => n + arr.length, 0);
+  return (
+    <div className="dl-folder">
+      <button className="dl-folder-head" onClick={() => setOpen((o) => !o)}>
+        <span className="dl-caret">{open ? "▾" : "▸"}</span>
+        <span className="dl-folder-ic">📁</span>
+        <span className="dl-folder-name">{group}</span>
+        <span className="board-count">{total}</span>
+      </button>
+      {open && [...subs.entries()].map(([sg, arr]) => (
+        <div className="dl-sub" key={sg}>
+          <div className="dl-sub-head">{sg} <span className="muted">· {arr.length}</span></div>
+          <div className="exp-grid">
+            {arr.map((it) => (
+              <div className="exp-card" key={`${it.kind}-${it.id}`}>
+                <div className="exp-thumb" onClick={() => onPreview(it)} title="Click to preview">
+                  {it.thumb ? <img src={it.thumb} alt="" loading="lazy" onError={(e) => ((e.target as HTMLImageElement).style.visibility = "hidden")} /> : <div className="exp-noimg">🎬</div>}
+                  <div className="exp-play">▶</div>
+                  <span className={"exp-kind " + it.kind}>{it.kind}</span>
+                  {it.score != null && <span className="exp-score">{it.score}</span>}
+                </div>
+                <div className="exp-body">
+                  <div className="exp-title">{it.title}</div>
+                  <div className="muted exp-sub">{it.subtitle}</div>
+                  <button className="primary exp-dl" onClick={() => onDownload(it)}>⬇ Download</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
     </div>
   );
 }
@@ -657,6 +751,7 @@ function ProjectCard({ p, onOpen, onDelete }: { p: Project; onOpen: (id: number)
 
 function NewProject({ presets, onCreated }: { presets: Presets | null; onCreated: () => void }) {
   const [mode, setMode] = useState<"url" | "file">("url");
+  const [genMode, setGenMode] = useState<"moments" | "caption">("moments");
   const [name, setName] = useState(""); const [url, setUrl] = useState(""); const [file, setFile] = useState<File | null>(null);
   const [brain, setBrain] = useState("ollama"); const [aspect, setAspect] = useState("9:16"); const [preset, setPreset] = useState("capcut");
   const [transcribe, setTranscribe] = useState("local");
@@ -668,14 +763,16 @@ function NewProject({ presets, onCreated }: { presets: Presets | null; onCreated
     try {
       if (mode === "url") {
         if (!url.trim()) { toast("Paste a YouTube URL", "err"); return; }
-        await api.createFromUrl({ name, source_url: url, brain, transcribe_backend: transcribe, aspect, caption_preset: preset });
+        await api.createFromUrl({ name, source_url: url, brain, transcribe_backend: transcribe, aspect, caption_preset: preset, mode: genMode });
       } else {
         if (!file) { toast("Choose a video file", "err"); return; }
         const fd = new FormData();
-        fd.append("name", name); fd.append("brain", brain); fd.append("transcribe_backend", transcribe); fd.append("aspect", aspect); fd.append("caption_preset", preset); fd.append("file", file);
+        fd.append("name", name); fd.append("brain", brain); fd.append("transcribe_backend", transcribe); fd.append("aspect", aspect); fd.append("caption_preset", preset); fd.append("mode", genMode); fd.append("file", file);
         await api.createFromUpload(fd);
       }
-      setName(""); setUrl(""); setFile(null); toast("Project started — finding clips…", "ok"); onCreated();
+      setName(""); setUrl(""); setFile(null);
+      toast(genMode === "caption" ? "Captioning your clip…" : "Project started — finding clips…", "ok");
+      onCreated();
     } finally { setBusy(false); }
   };
 
@@ -696,19 +793,30 @@ function NewProject({ presets, onCreated }: { presets: Presets | null; onCreated
           <label className="field grow">Video file<input type="file" accept="video/*" onChange={(e) => setFile(e.target.files?.[0] ?? null)} /></label>
         )}
       </div>
+      <div className="row" style={{ marginTop: 14 }}>
+        <label className="field grow">What do you want?
+          <div className="seg" style={{ marginTop: 4 }}>
+            <button className={genMode === "moments" ? "on" : ""} onClick={() => setGenMode("moments")}>Find viral moments</button>
+            <button className={genMode === "caption" ? "on" : ""} onClick={() => setGenMode("caption")}>Just caption my clip</button>
+          </div>
+        </label>
+      </div>
       <div className="row" style={{ marginTop: 14, alignItems: "flex-end" }}>
-        <label className="field">Brain<select value={brain} onChange={(e) => setBrain(e.target.value)}>{(presets?.brains ?? ["ollama"]).map((b) => <option key={b}>{b}</option>)}</select></label>
+        {genMode === "moments" && <label className="field">Brain<select value={brain} onChange={(e) => setBrain(e.target.value)}>{(presets?.brains ?? ["ollama"]).map((b) => <option key={b}>{b}</option>)}</select></label>}
         <label className="field">Transcription<select value={transcribe} onChange={(e) => setTranscribe(e.target.value)}>{(presets?.transcribe ?? ["local"]).map((t) => <option key={t} value={t}>{t === "local" ? "Local (free)" : "ElevenLabs"}</option>)}</select></label>
         <label className="field">Aspect<select value={aspect} onChange={(e) => setAspect(e.target.value)}>{(presets?.aspects ?? ["9:16"]).map((a) => <option key={a}>{a}</option>)}</select></label>
         <label className="field">Caption style<select value={preset} onChange={(e) => setPreset(e.target.value)}>{(presets?.captions ?? ["capcut"]).map((c) => <option key={c}>{c}</option>)}</select></label>
         <div style={{ flex: 1 }} />
-        <button className="primary" disabled={busy} onClick={submit}>{busy ? "Starting…" : "✨ Generate clips"}</button>
+        <button className="primary" disabled={busy} onClick={submit}>{busy ? "Starting…" : genMode === "caption" ? "✨ Caption my clip" : "✨ Generate clips"}</button>
       </div>
     </div>
   );
 }
 
 /* ---------------------------- Moments grid ----------------------------- */
+// Projects whose editor we've already auto-opened (caption mode) — prevents a
+// back-navigation loop.
+const autoOpenedPids = new Set<number>();
 function MomentsGrid({ pid, onName, onEdit, onBack }: {
   pid: number; onName: (s: string) => void; onEdit: (cid: number) => void; onBack: () => void;
 }) {
@@ -717,6 +825,15 @@ function MomentsGrid({ pid, onName, onEdit, onBack }: {
   const toast = useToast();
   const refresh = () => api.getProject(pid).then((d) => { setProject(d.project); setClips(d.clips); onName(d.project.name); });
   useEffect(() => { refresh(); const t = setInterval(refresh, 3000); return () => clearInterval(t); }, [pid]);
+
+  // Caption mode = one full-length clip → drop the user straight into the editor, but
+  // only ONCE per project (a module-level guard) so backing out doesn't re-loop.
+  useEffect(() => {
+    if (!autoOpenedPids.has(pid) && project?.mode === "caption" && project.status === "ready" && clips.length >= 1) {
+      autoOpenedPids.add(pid);
+      onEdit(clips[0].id);
+    }
+  }, [project, clips]);
 
   const sorted = [...clips].sort((a, b) => b.score - a.score);
   const act = async (fn: () => Promise<any>, msg: string) => { await fn(); toast(msg, "ok"); refresh(); };
@@ -862,11 +979,16 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
     style: jsonOr(clip.style_json, baseStyle),
     words: jsonOr(clip.words_json, wordsInRange(words, clip.start, clip.end)),
     center: clip.crop_center, resolution: clip.resolution ?? "1080p", title: clip.title,
+    cuts: jsonOr(clip.cuts_json, [] as [number, number][]),
   };
   const { doc, set, undo, redo, canUndo, canRedo } = useHistory<EditDoc>(initDoc);
 
   const [tool, setTool] = useState<string>("subs");
   const [subsTab, setSubsTab] = useState<"style" | "edit">("style");
+  // Resync captions from the transcript when the clip range moves to a new section.
+  // Saved words are respected on open; once the user hand-edits words this session,
+  // we stop auto-resyncing so their edits aren't clobbered by a later trim.
+  const [manualWords, setManualWords] = useState<boolean>(false);
   const [time, setTime] = useState(clip.start);
   const [playing, setPlaying] = useState(false);
   const [boxH, setBoxH] = useState(560);
@@ -874,13 +996,28 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved">("idle");
   const [autoBusy, setAutoBusy] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
+  const audioRef = useRef<HTMLAudioElement>(null);
   const boxRef = useRef<HTMLDivElement>(null);
   const toast = useToast();
 
-  // seed caption words if the transcript arrives after mount
+  // Scene boundaries (when this clip was stitched from a reel's scenes).
+  const markers: { start: number; end: number; label: string }[] = jsonOr(clip.markers_json, []);
+  // Recorded voiceover for this clip (layered in preview, muxed on export).
+  const [voUrl, setVoUrl] = useState<string | null>(clip.voiceover_path ? api.clipVoiceoverUrl(clip.id) + "?t=" + Date.now() : null);
+
+  // Seed captions when the transcript arrives after mount and nothing is loaded yet.
   useEffect(() => {
-    if (!clip.words_json && doc.words.length === 0 && words.length) set({ words: wordsInRange(words, clip.start, clip.end) });
+    if (!manualWords && doc.words.length === 0 && words.length) set({ words: wordsInRange(words, clip.start, clip.end) });
   }, [words]);
+
+  // Resync captions to the transcript whenever the clip range MOVES (a trim) — so
+  // captions follow you to a different section. Skips the initial mount (saved words
+  // are respected on open) and stops once the user hand-edits words this session.
+  const mountedRef = useRef(false);
+  useEffect(() => {
+    if (!mountedRef.current) { mountedRef.current = true; return; }
+    if (!manualWords && words.length) set({ words: wordsInRange(words, doc.start, doc.end) });
+  }, [doc.start, doc.end]);
 
   // STABLE timeline window — frozen per clip.
   const win = useMemo(() => {
@@ -895,7 +1032,7 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
     if (firstRun.current) { firstRun.current = false; return; }
     setSaveState("saving");
     const id = setTimeout(async () => {
-      await api.patchClip(clip.id, { start: doc.start, end: doc.end, caption_preset: doc.preset, resolution: doc.resolution, crop_center: doc.center, style: doc.style, words: doc.words, title: doc.title });
+      await api.patchClip(clip.id, { start: doc.start, end: doc.end, caption_preset: doc.preset, resolution: doc.resolution, crop_center: doc.center, style: doc.style, words: doc.words, title: doc.title, cuts: doc.cuts });
       setSaveState("saved"); onChange();
     }, 800);
     return () => clearTimeout(id);
@@ -904,10 +1041,22 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
   useEffect(() => { if (boxRef.current) setBoxH(boxRef.current.clientHeight); });
   useEffect(() => {
     let raf = 0;
-    const tick = () => { const v = videoRef.current; if (v) { if (v.currentTime >= doc.end) v.currentTime = doc.start; setTime(v.currentTime); } raf = requestAnimationFrame(tick); };
+    const tick = () => {
+      const v = videoRef.current;
+      if (v) {
+        if (v.currentTime >= doc.end) v.currentTime = doc.start;
+        // Skip over removed middle sections so preview matches the cut export.
+        for (const [a, b] of doc.cuts) { if (v.currentTime >= a && v.currentTime < b) { v.currentTime = b; break; } }
+        // Keep the recorded voiceover aligned to the clip's local time.
+        const au = audioRef.current;
+        if (au && voUrl) { const want = v.currentTime - doc.start; if (Math.abs(au.currentTime - want) > 0.25) au.currentTime = Math.max(0, want); }
+        setTime(v.currentTime);
+      }
+      raf = requestAnimationFrame(tick);
+    };
     if (playing) raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [playing, doc.start, doc.end]);
+  }, [playing, doc.start, doc.end, doc.cuts, voUrl]);
 
   // keyboard undo/redo
   useEffect(() => {
@@ -918,7 +1067,17 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
   }, [undo, redo]);
 
   const onLoaded = () => { if (videoRef.current) videoRef.current.currentTime = doc.start; };
-  const togglePlay = () => { const v = videoRef.current; if (!v) return; if (playing) { v.pause(); setPlaying(false); } else { if (v.currentTime < doc.start || v.currentTime > doc.end) v.currentTime = doc.start; v.play(); setPlaying(true); } };
+  const togglePlay = () => {
+    const v = videoRef.current; if (!v) return;
+    const au = audioRef.current;
+    if (playing) { v.pause(); au?.pause(); setPlaying(false); }
+    else {
+      if (v.currentTime < doc.start || v.currentTime > doc.end) v.currentTime = doc.start;
+      v.muted = !!voUrl;                       // VO replaces the source audio in preview
+      if (au && voUrl) { au.currentTime = Math.max(0, v.currentTime - doc.start); au.play().catch(() => {}); }
+      v.play(); setPlaying(true);
+    }
+  };
   const seek = (t: number) => { if (videoRef.current) videoRef.current.currentTime = t; setTime(t); };
   const choosePreset = (name: string) => set({ preset: name, style: presetMap[name] ?? FALLBACK_PRESETS.capcut });
   const doAutoCenter = async () => { setAutoBusy(true); try { const r = await api.autoCenter(clip.id); set({ center: r.center }); toast("Centered on the speaker", "ok"); } catch { toast("Auto-center failed", "err"); } finally { setAutoBusy(false); } };
@@ -960,6 +1119,7 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
         <div className="ed2-stage">
           <div className={"phone" + (tool === "reframe" ? " reframing" : "")} ref={boxRef} onPointerDown={onPreviewDown}>
             <video ref={videoRef} src={api.sourceUrl(pid)} onLoadedMetadata={onLoaded} style={{ objectPosition: `${doc.center * 100}% 50%` }} playsInline />
+            {voUrl && <audio ref={audioRef} src={voUrl} preload="auto" />}
             <CaptionOverlay words={doc.words} time={time} style={doc.style} containerHeight={boxH} />
             {tool === "reframe" && <div className="reframe-guide" style={{ left: `${doc.center * 100}%` }} />}
           </div>
@@ -974,6 +1134,8 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
 
         <div className="ed2-panel">
           {tool === "trim" && <TrimPanel doc={doc} set={set} />}
+          {tool === "cut" && <CutPanel doc={doc} set={set} time={time} onSeek={seek} />}
+          {tool === "voice" && <VoicePanel cid={clip.id} voUrl={voUrl} onChanged={(u) => { setVoUrl(u); onChange(); }} toast={toast} />}
           {tool === "reframe" && <ReframePanel center={doc.center} set={set} autoCenter={doAutoCenter} autoBusy={autoBusy} />}
           {tool === "subs" && (
             <div className="panel-body">
@@ -994,7 +1156,7 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
                   </label>
                 </>
               ) : (
-                <SubtitleWordEditor words={doc.words} time={time} onSeek={seek} onChange={(w) => set({ words: w })} />
+                <SubtitleWordEditor words={doc.words} time={time} onSeek={seek} onChange={(w) => { setManualWords(true); set({ words: w }); }} />
               )}
             </div>
           )}
@@ -1008,7 +1170,7 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
           <span className="muted" style={{ fontSize: 12 }}>{zoom}×</span>
           <button className="icon-btn" onClick={() => setZoom((z) => Math.min(4, +(z + 0.5).toFixed(1)))} title="Zoom in">＋</button>
         </div>
-        <FilmstripTimeline pid={pid} winStart={win.s} winEnd={win.e} start={doc.start} end={doc.end} time={time} zoom={zoom}
+        <FilmstripTimeline pid={pid} winStart={win.s} winEnd={win.e} start={doc.start} end={doc.end} time={time} zoom={zoom} cuts={doc.cuts} markers={markers}
           onStart={(t) => set({ start: t })} onEnd={(t) => set({ end: t })} onScrub={seek} />
       </div>
     </div>
@@ -1016,12 +1178,14 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
 }
 
 /* ---------------- wayin-style clip editor helpers ---------------- */
-type EditDoc = { start: number; end: number; preset: string; style: CaptionStyle; words: Word[]; center: number; resolution: string; title: string };
+type EditDoc = { start: number; end: number; preset: string; style: CaptionStyle; words: Word[]; center: number; resolution: string; title: string; cuts: [number, number][] };
 
 const TOOLS: { id: string; label: string; icon: string; soon?: boolean }[] = [
   { id: "trim", label: "Trim", icon: "✂" },
+  { id: "cut", label: "Cut", icon: "⌦" },
   { id: "reframe", label: "Reframe", icon: "⛶" },
   { id: "subs", label: "Subtitles", icon: "CC" },
+  { id: "voice", label: "Voice", icon: "🎙" },
   { id: "text", label: "Text", icon: "T", soon: true },
   { id: "broll", label: "B-roll", icon: "▦", soon: true },
   { id: "music", label: "Music", icon: "♪", soon: true },
@@ -1063,6 +1227,95 @@ function TrimPanel({ doc, set }: { doc: EditDoc; set: (p: Partial<EditDoc>) => v
       <label className="field">End (seconds)
         <input type="number" step={0.1} value={doc.end.toFixed(2)} onChange={(e) => set({ end: Math.max(parseFloat(e.target.value) || 0, doc.start + 0.5) })} /></label>
       <div className="muted" style={{ fontSize: 12.5 }}>Length: <b>{fmt(doc.end - doc.start)}</b></div>
+    </div>
+  );
+}
+
+function CutPanel({ doc, set, time, onSeek }: { doc: EditDoc; set: (p: Partial<EditDoc>) => void; time: number; onSeek: (t: number) => void }) {
+  const [mark, setMark] = useState<number | null>(null);
+  const addCut = (a: number, b: number) => {
+    const lo = Math.max(doc.start, Math.min(a, b));
+    const hi = Math.min(doc.end, Math.max(a, b));
+    if (hi - lo < 0.1) return;
+    set({ cuts: [...doc.cuts, [lo, hi] as [number, number]].sort((x, y) => x[0] - y[0]) });
+  };
+  const removed = doc.cuts.reduce((s, [a, b]) => s + (b - a), 0);
+  return (
+    <div className="panel-body">
+      <h3 className="panel-title">Cut out the middle</h3>
+      <div className="muted" style={{ fontSize: 12.5 }}>Delete a part from the middle of the clip. Move the playhead to where the bad part starts, press “Set cut start”, move to where it ends, then press “Cut to here”.</div>
+      <div className="row" style={{ gap: 8, marginTop: 10 }}>
+        <button onClick={() => setMark(time)}>Set cut start{mark != null ? ` (${fmt(mark)})` : ""}</button>
+        <button className="primary" disabled={mark == null} onClick={() => { if (mark != null) { addCut(mark, time); setMark(null); } }}>Cut to here</button>
+      </div>
+      {mark != null && <div className="muted" style={{ fontSize: 12 }}>Cut starts at {fmt(mark)} — move the playhead forward, then press “Cut to here”.</div>}
+      <div className="muted" style={{ fontSize: 12.5, marginTop: 12 }}>Removed: <b>{fmt(removed)}</b> · Final length: <b>{fmt(Math.max(0, (doc.end - doc.start) - removed))}</b></div>
+      <div className="word-list" style={{ marginTop: 8 }}>
+        {doc.cuts.length === 0 && <div className="muted">No cuts yet.</div>}
+        {doc.cuts.map(([a, b], i) => (
+          <div key={i} className="word-row">
+            <button className="word-ts" onClick={() => onSeek(a)}>{fmt(a)} – {fmt(b)}</button>
+            <button className="sm danger" title="Undo this cut" onClick={() => set({ cuts: doc.cuts.filter((_, j) => j !== i) })}>🗑</button>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function VoicePanel({ cid, voUrl, onChanged, toast }: { cid: number; voUrl: string | null; onChanged: (u: string | null) => void; toast: Notify }) {
+  const { recording, error, start, stop } = useRecorder();
+  const [pending, setPending] = useState<{ blob: Blob; url: string } | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const onStop = async () => {
+    const blob = await stop();
+    if (blob) setPending({ blob, url: URL.createObjectURL(blob) });
+  };
+  const save = async () => {
+    if (!pending) return; setBusy(true);
+    try {
+      await api.uploadClipVoiceover(cid, pending.blob);
+      URL.revokeObjectURL(pending.url); setPending(null);
+      onChanged(api.clipVoiceoverUrl(cid) + "?t=" + Date.now());
+      toast("Voice saved — it'll be the audio of your video", "ok");
+    } catch (e: any) { toast(`Save failed: ${e?.message || e}`, "err"); } finally { setBusy(false); }
+  };
+  const discard = () => { if (pending) URL.revokeObjectURL(pending.url); setPending(null); };
+  const remove = async () => {
+    setBusy(true);
+    try { await api.deleteClipVoiceover(cid); onChanged(null); toast("Voice removed", "ok"); }
+    catch (e: any) { toast(`Failed: ${e?.message || e}`, "err"); } finally { setBusy(false); }
+  };
+
+  return (
+    <div className="panel-body">
+      <h3 className="panel-title">Voiceover</h3>
+      <div className="muted" style={{ fontSize: 12.5 }}>Press ▶ on the video, read your lines, and record your voice over it. Your voice becomes the audio of the final video.</div>
+      <div className="vo-controls">
+        {!recording
+          ? <button className="primary big-btn" onClick={start} disabled={busy || !!pending}>● Record voice</button>
+          : <button className="big-btn danger" onClick={onStop}>■ Stop</button>}
+      </div>
+      {recording && <div className="muted vo-live">● Recording… read your script, then press Stop.</div>}
+      {error && <div className="err">{error}</div>}
+      {pending && (
+        <div className="vo-pending">
+          <div className="muted" style={{ fontSize: 12.5, marginBottom: 6 }}>Listen to your take:</div>
+          <audio src={pending.url} controls style={{ width: "100%" }} />
+          <div className="modal-actions">
+            <button onClick={discard} disabled={busy}>Discard</button>
+            <button className="primary" onClick={save} disabled={busy}>{busy ? "Saving…" : "Save voice"}</button>
+          </div>
+        </div>
+      )}
+      {!pending && voUrl && (
+        <div className="vo-current">
+          <div className="muted" style={{ fontSize: 12.5, margin: "12px 0 6px" }}>Current voice:</div>
+          <audio src={voUrl} controls style={{ width: "100%" }} />
+          <button className="sm danger" style={{ marginTop: 8 }} onClick={remove} disabled={busy}>Remove voice</button>
+        </div>
+      )}
     </div>
   );
 }
@@ -1118,8 +1371,9 @@ function SubtitleWordEditor({ words, time, onSeek, onChange }: { words: Word[]; 
   );
 }
 
-function FilmstripTimeline({ pid, winStart, winEnd, start, end, time, zoom, onStart, onEnd, onScrub }: {
-  pid: number; winStart: number; winEnd: number; start: number; end: number; time: number; zoom: number;
+function FilmstripTimeline({ pid, winStart, winEnd, start, end, time, zoom, cuts, markers, onStart, onEnd, onScrub }: {
+  pid: number; winStart: number; winEnd: number; start: number; end: number; time: number; zoom: number; cuts: [number, number][];
+  markers?: { start: number; end: number; label: string }[];
   onStart: (t: number) => void; onEnd: (t: number) => void; onScrub: (t: number) => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
@@ -1149,6 +1403,12 @@ function FilmstripTimeline({ pid, winStart, winEnd, start, end, time, zoom, onSt
           <div className="fs-dim" style={{ left: 0, width: `${pct(start)}%` }} />
           <div className="fs-dim" style={{ left: `${pct(end)}%`, right: 0 }} />
           <div className="fs-range" style={{ left: `${pct(start)}%`, width: `${pct(end) - pct(start)}%` }} />
+          {cuts.map(([a, b], i) => (
+            <div key={i} className="fs-cut" style={{ left: `${pct(a)}%`, width: `${Math.max(0, pct(b) - pct(a))}%` }} title="Cut out" />
+          ))}
+          {(markers ?? []).map((m, i) => (
+            i > 0 ? <div key={"mk" + i} className="fs-marker" style={{ left: `${pct(m.start)}%` }} title={`Scene ${i + 1}: ${m.label}`} /> : null
+          ))}
           <div className="fs-handle" style={{ left: `${pct(start)}%` }} onPointerDown={drag("start")} />
           <div className="fs-handle" style={{ left: `${pct(end)}%` }} onPointerDown={drag("end")} />
           <div className="fs-playhead" style={{ left: `${pct(time)}%` }} />

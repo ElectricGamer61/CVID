@@ -25,9 +25,95 @@ def _fonts_dir() -> str | None:
     return _escape_subtitles_path(fonts) if fonts.is_dir() else None
 
 
+def kept_segments(start: float, end: float,
+                  cuts: list) -> list[tuple[float, float]]:
+    """The parts of [start,end] that survive after removing `cuts` (the middle
+    pieces the user deleted). Cuts are clamped, sorted and merged first."""
+    ranges = []
+    for c in cuts or []:
+        a, b = float(c[0]), float(c[1])
+        a = max(start, min(a, end))
+        b = max(start, min(b, end))
+        if b > a:
+            ranges.append((a, b))
+    ranges.sort()
+    merged: list[tuple[float, float]] = []
+    for a, b in ranges:
+        if merged and a <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], b))
+        else:
+            merged.append((a, b))
+    segs: list[tuple[float, float]] = []
+    cur = start
+    for a, b in merged:
+        if a > cur:
+            segs.append((cur, a))
+        cur = max(cur, b)
+    if end > cur:
+        segs.append((cur, end))
+    return segs
+
+
+def remap_words_for_cuts(words: list[dict],
+                         segments: list[tuple[float, float]]) -> tuple[list[dict], float]:
+    """Re-time transcript words onto the post-cut (compressed) timeline. Words inside
+    removed gaps drop out; the rest shift left by the removed duration before them.
+    Returns (local_words, total_duration) — times are already clip-local (start=0)."""
+    out: list[dict] = []
+    base = 0.0
+    for a, b in segments:
+        for w in words:
+            s = max(w["start"], a)
+            e = min(w["end"], b)
+            if e > s:
+                out.append({"start": base + (s - a), "end": base + (e - a),
+                            "word": w["word"]})
+        base += (b - a)
+    out.sort(key=lambda x: x["start"])
+    return out, base
+
+
+def render_clip_segments(source: Path, out_path: Path,
+                         segments: list[tuple[float, float]], aspect: str,
+                         ass_path: Path, center: float = 0.5,
+                         out_w: int = settings.OUT_W, out_h: int = settings.OUT_H,
+                         voiceover: Path | None = None) -> Path:
+    """Render kept segments concatenated into one vertical short (middle parts cut
+    out), then crop to aspect + burn captions. ASS must already be retimed to the
+    compressed timeline (see remap_words_for_cuts)."""
+    src_w, src_h = probe_size(source)
+    crop = crop_filter(src_w, src_h, aspect, center, out_w, out_h)
+    subs = f"subtitles='{_escape_subtitles_path(ass_path)}'"
+    fd = _fonts_dir()
+    if fd:
+        subs += f":fontsdir='{fd}'"
+
+    parts = []
+    for i, (a, b) in enumerate(segments):
+        parts.append(f"[0:v]trim={a:.3f}:{b:.3f},setpts=PTS-STARTPTS[v{i}];")
+        parts.append(f"[0:a]atrim={a:.3f}:{b:.3f},asetpts=PTS-STARTPTS[a{i}];")
+    concat_in = "".join(f"[v{i}][a{i}]" for i in range(len(segments)))
+    parts.append(f"{concat_in}concat=n={len(segments)}:v=1:a=1[vc][ac];")
+    parts.append(f"[vc]{crop},{subs}[vout]")
+    filter_complex = "".join(parts)
+
+    cmd = ["ffmpeg", "-y", "-i", str(source)]
+    if voiceover:
+        cmd += ["-i", str(voiceover)]
+    cmd += ["-filter_complex", filter_complex, "-map", "[vout]"]
+    cmd += (["-map", "1:a:0", "-shortest"] if voiceover else ["-map", "[ac]"])
+    cmd += ["-c:v", "libx264", "-preset", "medium", "-crf", "20",
+            "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart", str(out_path)]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise RuntimeError(f"ffmpeg failed:\n{proc.stderr[-2000:]}")
+    return out_path
+
+
 def render_clip(source: Path, out_path: Path, start: float, end: float,
                 aspect: str, ass_path: Path, center: float = 0.5,
-                out_w: int = settings.OUT_W, out_h: int = settings.OUT_H) -> Path:
+                out_w: int = settings.OUT_W, out_h: int = settings.OUT_H,
+                voiceover: Path | None = None) -> Path:
     src_w, src_h = probe_size(source)
     vf = crop_filter(src_w, src_h, aspect, center, out_w, out_h)
     subs = f"subtitles='{_escape_subtitles_path(ass_path)}'"
@@ -36,15 +122,14 @@ def render_clip(source: Path, out_path: Path, start: float, end: float,
         subs += f":fontsdir='{fd}'"
     vf = f"{vf},{subs}"
 
-    cmd = [
-        "ffmpeg", "-y",
-        "-ss", f"{start:.3f}", "-to", f"{end:.3f}", "-i", str(source),
-        "-vf", vf,
-        "-c:v", "libx264", "-preset", "medium", "-crf", "20",
-        "-c:a", "aac", "-b:a", "160k",
-        "-movflags", "+faststart",
-        str(out_path),
-    ]
+    cmd = ["ffmpeg", "-y", "-ss", f"{start:.3f}", "-to", f"{end:.3f}", "-i", str(source)]
+    if voiceover:
+        cmd += ["-i", str(voiceover)]
+    cmd += ["-vf", vf]
+    if voiceover:
+        cmd += ["-map", "0:v:0", "-map", "1:a:0", "-shortest"]
+    cmd += ["-c:v", "libx264", "-preset", "medium", "-crf", "20",
+            "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart", str(out_path)]
     proc = subprocess.run(cmd, capture_output=True, text=True)
     if proc.returncode != 0:
         raise RuntimeError(f"ffmpeg failed:\n{proc.stderr[-2000:]}")

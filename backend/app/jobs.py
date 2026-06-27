@@ -36,8 +36,9 @@ def _analyze(project_id: int, upload_path: str | None):
     try:
         with get_session() as s:
             proj = s.get(Project, project_id)
-            source_type, source_url, chosen_brain, tx_backend = (
-                proj.source_type, proj.source_url, proj.brain, proj.transcribe_backend
+            source_type, source_url, chosen_brain, tx_backend, mode = (
+                proj.source_type, proj.source_url, proj.brain,
+                proj.transcribe_backend, proj.mode
             )
 
         # 1. Ingest — efficient: audio only for analysis; full video never pulled up front
@@ -63,22 +64,34 @@ def _analyze(project_id: int, upload_path: str | None):
             json.dumps(result, ensure_ascii=False), encoding="utf-8"
         )
 
-        # 3. Brain
-        _set(project_id, status="analyzing", stage=f"Finding moments ({chosen_brain})",
-             progress=75)
-        moments = brain.find_moments(result["words"], chosen_brain)
-
-        # 4. Persist clips
-        with get_session() as s:
-            proj = s.get(Project, project_id)
-            for i, m in enumerate(moments):
+        # 3. Brain — skipped in "caption" mode (one full-length clip instead)
+        if mode == "caption":
+            with get_session() as s:
+                proj = s.get(Project, project_id)
                 s.add(Clip(
-                    project_id=project_id, idx=i,
-                    start=m["start"], end=m["end"], title=m["title"],
-                    score=m["score"], hook=m.get("hook", ""), reason=m["reason"],
+                    project_id=project_id, idx=0,
+                    start=0.0, end=proj.duration, title=proj.name,
+                    score=0.0, reason="Whole clip (caption mode)",
                     aspect=proj.aspect, caption_preset=proj.caption_preset,
                 ))
-            s.commit()
+                s.commit()
+            moments = [None]  # for the final status count
+        else:
+            _set(project_id, status="analyzing",
+                 stage=f"Finding moments ({chosen_brain})", progress=75)
+            moments = brain.find_moments(result["words"], chosen_brain)
+
+            # 4. Persist clips
+            with get_session() as s:
+                proj = s.get(Project, project_id)
+                for i, m in enumerate(moments):
+                    s.add(Clip(
+                        project_id=project_id, idx=i,
+                        start=m["start"], end=m["end"], title=m["title"],
+                        score=m["score"], hook=m.get("hook", ""), reason=m["reason"],
+                        aspect=proj.aspect, caption_preset=proj.caption_preset,
+                    ))
+                s.commit()
 
         # 5. For URL projects, fetch a small 360p proxy for the editor preview.
         # Retry once — YouTube occasionally throttles transiently.
@@ -92,8 +105,8 @@ def _analyze(project_id: int, upload_path: str | None):
                     print(f"[proxy] attempt {attempt + 1} failed: {pe}")
                     time.sleep(3)
 
-        _set(project_id, status="ready", stage=f"Found {len(moments)} clips",
-             progress=100)
+        ready_stage = "Ready to caption" if mode == "caption" else f"Found {len(moments)} clips"
+        _set(project_id, status="ready", stage=ready_stage, progress=100)
     except Exception as e:  # noqa: BLE001
         traceback.print_exc()
         _set(project_id, status="error", stage="Failed",

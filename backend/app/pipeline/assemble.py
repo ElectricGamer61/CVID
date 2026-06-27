@@ -91,6 +91,78 @@ def _render_beat(beat: dict, out_path: Path, work: Path) -> None:
         raise RuntimeError(f"beat render failed:\n{proc.stderr[-1500:]}")
 
 
+def _render_plain_seg(out_path: Path, dur: float, clip: str | None) -> None:
+    """One stitched-preview segment: the beat clip cropped to 9:16 (looped to `dur`)
+    with a silent audio track — no captions, no VO. Captions/voice are added live in
+    the editor. A beat with no clip gets a dark filler."""
+    has_clip = bool(clip and Path(clip).exists())
+    cmd = ["ffmpeg", "-y"]
+    cmd += (["-stream_loop", "-1", "-i", str(clip)] if has_clip
+            else ["-f", "lavfi", "-i", f"color=c=0x111318:s={W}x{H}:r=30"])
+    cmd += ["-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo", "-t", f"{dur:.3f}"]
+    if has_clip:
+        sw, sh = probe_size(Path(clip))
+        cmd += ["-vf", crop_filter(sw, sh, "9:16", 0.5, W, H)]
+    cmd += ["-map", "0:v:0", "-map", "1:a:0",
+            "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", "30",
+            "-preset", "veryfast", "-crf", "20",
+            "-c:a", "aac", "-ar", "48000", "-ac", "2", str(out_path)]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise RuntimeError(f"segment build failed:\n{proc.stderr[-1500:]}")
+
+
+def build_edit_video(ticket_id: int, project_dir: Path) -> dict:
+    """Stitch a ticket's scene clips (in order) into ONE 9:16 video at
+    `project_dir/source.mp4` so the reel can be edited in the normal clip editor.
+    No VO/captions are baked in. Returns {duration, scenes[], words[]} where scenes
+    are timeline markers and words are the beats' caption text even-split per scene
+    (absolute times) so captions show without a transcription pass."""
+    from app.db import Beat, get_session
+    from sqlmodel import select
+
+    with get_session() as s:
+        beats = [b.model_dump() for b in s.exec(
+            select(Beat).where(Beat.ticket_id == ticket_id).order_by(Beat.order_index)).all()]
+    if not beats:
+        raise RuntimeError("ticket has no scenes to build")
+
+    project_dir.mkdir(parents=True, exist_ok=True)
+    segdir = project_dir / "segs"
+    shutil.rmtree(segdir, ignore_errors=True)
+    segdir.mkdir(parents=True, exist_ok=True)
+
+    seg_files: list[Path] = []
+    scenes: list[dict] = []
+    words: list[dict] = []
+    t0 = 0.0
+    for i, b in enumerate(beats):
+        clip = b.get("clip_path")
+        has_clip = bool(clip and Path(clip).exists())
+        dur = max(0.8, float((probe_duration(Path(clip)) if has_clip else 0.0) or 3.0))
+        seg = segdir / f"seg_{i:03d}.mp4"
+        _render_plain_seg(seg, dur, clip)
+        seg_files.append(seg)
+        label = (b.get("spoken_line") or b.get("caption") or f"Scene {i + 1}").strip()[:40]
+        scenes.append({"start": round(t0, 2), "end": round(t0 + dur, 2), "label": label})
+        for w in _even_split(b.get("caption") or "", dur):
+            words.append({"start": round(t0 + w["start"], 2),
+                          "end": round(t0 + w["end"], 2), "word": w["word"]})
+        t0 += dur
+
+    listf = segdir / "list.txt"
+    listf.write_text("".join(f"file '{s.as_posix()}'\n" for s in seg_files), encoding="utf-8")
+    source = project_dir / "source.mp4"
+    cmd = ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(listf),
+           "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", "30",
+           "-preset", "veryfast", "-crf", "20",
+           "-c:a", "aac", "-ar", "48000", "-ac", "2", "-movflags", "+faststart", str(source)]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise RuntimeError(f"reel build concat failed:\n{proc.stderr[-1500:]}")
+    return {"duration": round(t0, 2), "scenes": scenes, "words": words}
+
+
 def assemble_ticket(ticket_id: int, progress=None) -> Path:
     """Stitch a ticket's beats (in order_index) into data/tickets/{id}/reel.mp4.
     Raises on the proof guard or any ffmpeg failure."""

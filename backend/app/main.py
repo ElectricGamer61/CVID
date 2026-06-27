@@ -48,6 +48,7 @@ class CreateProject(BaseModel):
     transcribe_backend: str = settings.DEFAULT_TRANSCRIBE
     aspect: str = "9:16"
     caption_preset: str = "capcut"
+    mode: str = "moments"             # moments | caption
 
 
 class ClipPatch(BaseModel):
@@ -60,6 +61,7 @@ class ClipPatch(BaseModel):
     crop_center: Optional[float] = None
     style: Optional[dict] = None  # caption style overrides (stored as style_json)
     words: Optional[list] = None  # edited caption words (stored as words_json)
+    cuts: Optional[list] = None   # removed middle ranges [[a,b],...] (stored as cuts_json)
 
 
 class CreateTicket(BaseModel):
@@ -144,7 +146,7 @@ def create_project(body: CreateProject):
         proj = Project(name=body.name, source_type="url", source_url=body.source_url,
                         brain=body.brain, transcribe_backend=body.transcribe_backend,
                         aspect=body.aspect, caption_preset=body.caption_preset,
-                        status="created")
+                        mode=body.mode, status="created")
         s.add(proj)
         s.commit()
         s.refresh(proj)
@@ -158,6 +160,7 @@ async def create_project_upload(
     name: str = Form(...), brain: str = Form(settings.DEFAULT_BRAIN),
     transcribe_backend: str = Form(settings.DEFAULT_TRANSCRIBE),
     aspect: str = Form("9:16"), caption_preset: str = Form("capcut"),
+    mode: str = Form("moments"),
     file: UploadFile = File(...),
 ):
     tmp = Path(tempfile.gettempdir()) / f"cvideo_upload_{file.filename}"
@@ -166,7 +169,7 @@ async def create_project_upload(
     with get_session() as s:
         proj = Project(name=name, source_type="file", brain=brain,
                         transcribe_backend=transcribe_backend, aspect=aspect,
-                        caption_preset=caption_preset, status="created")
+                        caption_preset=caption_preset, mode=mode, status="created")
         s.add(proj)
         s.commit()
         s.refresh(proj)
@@ -385,25 +388,40 @@ def patch_beat(bid: int, body: BeatPatch):
         return b.model_dump()
 
 
+def _safe_name(s: str, fallback: str) -> str:
+    import re
+    cleaned = re.sub(r'[\\/:*?"<>|]+', " ", (s or "")).strip()
+    return f"{cleaned or fallback}.mp4"
+
+
 @app.get("/api/exports")
 def list_exports():
     """Every rendered output across the app — project clips + assembled ticket reels.
-    Powers the Library/Exports screen."""
+    Powers the Downloads screen. Items carry folder metadata: `group` (brand for reels,
+    project for clips) → `subgroup` ("Reels"/"Clips") → cards; reels are named by hook."""
     from sqlmodel import select
     out = []
     with get_session() as s:
         for c in s.exec(select(Clip).where(Clip.status == "rendered")).all():
             proj = s.get(Project, c.project_id)
-            out.append({"kind": "clip", "id": c.id,
-                        "title": c.title or f"Clip {c.idx + 1}",
-                        "subtitle": proj.name if proj else "",
+            pname = proj.name if proj else "Clips"
+            title = c.title or f"Clip {c.idx + 1}"
+            out.append({"kind": "clip", "id": c.id, "title": title,
+                        "subtitle": pname,
+                        "group": pname, "subgroup": "Clips",
+                        "hook": c.hook or "", "filename": _safe_name(title, f"clip_{c.id}"),
                         "score": round(c.score), "download": f"/api/clips/{c.id}/download",
                         "thumb": f"/api/clips/{c.id}/thumb"})
         for t in s.exec(select(Ticket).where(Ticket.clip_url.is_not(None))).all():
-            out.append({"kind": "reel", "id": t.id,
-                        "title": t.angle or f"Reel {t.id}",
-                        "subtitle": f"{t.brand} · native", "score": None,
-                        "download": f"/api/tickets/{t.id}/download", "thumb": None})
+            hook = (t.hook_text or t.angle or "").strip()
+            title = hook or t.angle or f"Reel {t.id}"
+            out.append({"kind": "reel", "id": t.id, "title": title,
+                        "subtitle": f"{t.brand} · reel",
+                        "group": t.brand or "Reels", "subgroup": "Reels",
+                        "hook": hook, "filename": _safe_name(title, f"reel_{t.id}"),
+                        "score": None,
+                        "download": f"/api/tickets/{t.id}/download",
+                        "thumb": f"/api/tickets/{t.id}/thumb"})
     return out
 
 
@@ -669,6 +687,71 @@ def download_ticket(tid: int):
                             filename=f"{t.angle or 'reel'}.mp4")
 
 
+@app.get("/api/tickets/{tid}/thumb")
+def ticket_thumb(tid: int):
+    """A poster frame for an assembled reel (already 9:16) — for Downloads/board cards."""
+    with get_session() as s:
+        t = s.get(Ticket, tid)
+        if not t or not t.clip_url or not Path(t.clip_url).exists():
+            raise HTTPException(404, "no assembled reel for this ticket")
+        src = Path(t.clip_url)
+    thumb = src.with_suffix(".jpg")
+    if not thumb.exists():
+        import subprocess
+        dur = ingest.probe_duration(src) or 1.0
+        subprocess.run(["ffmpeg", "-y", "-ss", f"{dur / 3:.2f}", "-i", str(src),
+                        "-vf", "scale=360:-2", "-frames:v", "1", "-q:v", "4", str(thumb)],
+                       capture_output=True)
+    if not thumb.exists():
+        raise HTTPException(404, "thumbnail unavailable")
+    return FileResponse(str(thumb), media_type="image/jpeg")
+
+
+@app.post("/api/tickets/{tid}/build-edit")
+def build_edit(tid: int):
+    """Stitch a native reel's scenes into ONE video and open it in the clip editor.
+    Creates (or reuses) a caption-mode Project + single Clip carrying scene markers
+    and caption words, so the existing editor (preview/captions/trim/cut/voice) applies."""
+    from sqlmodel import select
+    with get_session() as s:
+        t = s.get(Ticket, tid)
+        if not t:
+            raise HTTPException(404, "ticket not found")
+        if not s.exec(select(Beat).where(Beat.ticket_id == tid)).first():
+            raise HTTPException(400, "this video has no scenes yet")
+        title = t.angle or f"Reel {tid}"
+        existing_pid = t.project_id
+    with get_session() as s:
+        proj = s.get(Project, existing_pid) if existing_pid else None
+        if not proj:
+            proj = Project(name=title, source_type="file", mode="caption",
+                           aspect="9:16", caption_preset="capcut")
+        proj.status, proj.stage, proj.progress = "analyzing", "Building video", 30
+        s.add(proj); s.commit(); s.refresh(proj); pid = proj.id
+    try:
+        result = assemble.build_edit_video(tid, settings.project_dir(pid))
+    except Exception as e:  # noqa: BLE001
+        traceback.print_exc()
+        with get_session() as s:
+            p = s.get(Project, pid)
+            p.status, p.error = "error", f"{e}"; s.add(p); s.commit()
+        raise HTTPException(500, f"build failed: {e}")
+    (settings.project_dir(pid) / "words.json").write_text(
+        json.dumps({"words": result["words"]}, ensure_ascii=False), encoding="utf-8")
+    with get_session() as s:
+        clip = s.exec(select(Clip).where(Clip.project_id == pid)).first() or Clip(project_id=pid, idx=0)
+        clip.start, clip.end, clip.title = 0.0, result["duration"], title
+        clip.aspect, clip.caption_preset = "9:16", "capcut"
+        clip.markers_json = json.dumps(result["scenes"])
+        clip.status, clip.words_json, clip.cuts_json = "suggested", None, None
+        s.add(clip); s.commit(); s.refresh(clip); cid = clip.id
+        proj = s.get(Project, pid)
+        proj.status, proj.stage, proj.progress, proj.duration = "ready", "Ready", 100, result["duration"]
+        s.add(proj)
+        t = s.get(Ticket, tid); t.project_id = pid; s.add(t); s.commit()
+    return {"pid": pid, "cid": cid}
+
+
 # --------------------------------------------------------------------------- #
 # Clip routes
 # --------------------------------------------------------------------------- #
@@ -683,10 +766,13 @@ def patch_clip(cid: int, body: ClipPatch):
             raise HTTPException(400, f"unknown resolution {data['resolution']!r}")
         style = data.pop("style", None)
         words = data.pop("words", None)
+        cuts = data.pop("cuts", None)
         if style is not None:
             clip.style_json = json.dumps(style)
         if words is not None:
             clip.words_json = json.dumps(words)
+        if cuts is not None:
+            clip.cuts_json = json.dumps(cuts)
         for k, v in data.items():
             setattr(clip, k, v)
         clip.status = "suggested"  # edits invalidate any previous render
@@ -721,6 +807,8 @@ def _render_clip_job(cid: int):
         resolution = clip.resolution or settings.DEFAULT_RESOLUTION
         style = json.loads(clip.style_json) if clip.style_json else None
         words = json.loads(clip.words_json) if clip.words_json else None
+        cuts = json.loads(clip.cuts_json) if clip.cuts_json else []
+        voiceover = clip.voiceover_path if (clip.voiceover_path and Path(clip.voiceover_path).exists()) else None
         proj = s.get(Project, pid)
         source_type, source_url = proj.source_type, proj.source_url
     try:
@@ -740,10 +828,21 @@ def _render_clip_job(cid: int):
         _set_clip(cid, stage="Rendering")
         if abs(center - 0.5) < 1e-6:
             center = reframe.detect_center(source, start, end)
-        caps.write_ass(words, start, end, preset, ass, overrides=style)
         out_w, out_h = settings.output_dims(aspect, resolution)
-        render.render_clip(source, out, start, end, aspect, ass, center,
-                           out_w=out_w, out_h=out_h)
+        vo_path = Path(voiceover) if voiceover else None
+        segments = render.kept_segments(start, end, cuts)
+        if cuts and len(segments) != 1:
+            # Middle parts removed → concat kept segments + retime captions.
+            # ASS keeps the 1080×1920 PlayRes baseline; libass scales it to the frame.
+            local_words, total = render.remap_words_for_cuts(words, segments)
+            caps.write_ass(local_words, 0.0, total, preset, ass, overrides=style)
+            render.render_clip_segments(source, out, segments, aspect, ass, center,
+                                        out_w=out_w, out_h=out_h, voiceover=vo_path)
+        else:
+            # No cuts → unchanged single-range fast path.
+            caps.write_ass(words, start, end, preset, ass, overrides=style)
+            render.render_clip(source, out, start, end, aspect, ass, center,
+                               out_w=out_w, out_h=out_h, voiceover=vo_path)
 
         with get_session() as s:
             clip = s.get(Clip, cid)
@@ -765,6 +864,56 @@ def render_clip_route(cid: int):
             raise HTTPException(404, "clip not found")
     _render_pool.submit(_render_clip_job, cid)
     return {"status": "rendering"}
+
+
+@app.post("/api/clips/{cid}/voiceover")
+async def upload_clip_voiceover(cid: int, file: UploadFile = File(...)):
+    """Save a recorded/uploaded voiceover for a clip (normalized to wav). Render then
+    muxes it as the clip's audio instead of the source audio."""
+    with get_session() as s:
+        clip = s.get(Clip, cid)
+        if not clip:
+            raise HTTPException(404, "clip not found")
+        pid = clip.project_id
+    mdir = settings.project_dir(pid)
+    mdir.mkdir(parents=True, exist_ok=True)
+    raw = mdir / f"clip_{cid}_vo_raw"
+    with raw.open("wb") as f:
+        shutil.copyfileobj(file.file, f)
+    wav = mdir / f"clip_{cid}_voiceover.wav"
+    try:
+        ingest.extract_audio(raw, wav)      # webm/whatever → 16k mono wav
+    finally:
+        raw.unlink(missing_ok=True)
+    with get_session() as s:
+        clip = s.get(Clip, cid)
+        clip.voiceover_path = str(wav)
+        clip.status = "suggested"           # invalidate any previous render
+        s.add(clip); s.commit()
+    return {"voiceover_path": str(wav)}
+
+
+@app.get("/api/clips/{cid}/voiceover-file")
+def clip_voiceover_file(cid: int):
+    with get_session() as s:
+        clip = s.get(Clip, cid)
+        if not clip or not clip.voiceover_path or not Path(clip.voiceover_path).exists():
+            raise HTTPException(404, "no voiceover for this clip")
+        return FileResponse(clip.voiceover_path, media_type="audio/wav")
+
+
+@app.delete("/api/clips/{cid}/voiceover")
+def delete_clip_voiceover(cid: int):
+    with get_session() as s:
+        clip = s.get(Clip, cid)
+        if not clip:
+            raise HTTPException(404, "clip not found")
+        if clip.voiceover_path:
+            Path(clip.voiceover_path).unlink(missing_ok=True)
+        clip.voiceover_path = None
+        clip.status = "suggested"
+        s.add(clip); s.commit()
+    return {"ok": True}
 
 
 @app.delete("/api/clips/{cid}")

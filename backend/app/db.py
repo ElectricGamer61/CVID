@@ -19,6 +19,7 @@ class Project(SQLModel, table=True):
     transcribe_backend: str = settings.DEFAULT_TRANSCRIBE  # local | elevenlabs
     aspect: str = "9:16"
     caption_preset: str = "capcut"
+    mode: str = "moments"             # moments (find viral clips) | caption (one full clip)
     status: str = "created"           # created|ingesting|transcribing|analyzing|ready|error
     stage: str = ""                   # human-readable current step
     progress: int = 0                 # 0-100
@@ -51,6 +52,15 @@ class Clip(SQLModel, table=True):
     # JSON list of edited caption words [{start,end,word}] for THIS clip.
     # None -> use the project transcript words.
     words_json: Optional[str] = None
+    # JSON list of removed sub-ranges [[a,b],...] (absolute source secs within
+    # [start,end]) — the parts cut out of the middle. None/[] -> no cuts.
+    cuts_json: Optional[str] = None
+    # JSON list of scene boundaries [{start,end,label}] when this clip was built
+    # by stitching a reel's scenes — drawn as markers on the editor timeline.
+    markers_json: Optional[str] = None
+    # Recorded/replaced voiceover for this clip (set in the editor). When present,
+    # render muxes it as the audio track instead of the source audio.
+    voiceover_path: Optional[str] = None
 
 
 # --------------------------------------------------------------------------- #
@@ -141,10 +151,12 @@ def _migrate() -> None:
     existing table."""
     from sqlalchemy import text
     wanted = {
-        "clip": {"style_json": "TEXT", "words_json": "TEXT", "stage": "TEXT DEFAULT ''",
-                 "hook": "TEXT DEFAULT ''",
+        "clip": {"style_json": "TEXT", "words_json": "TEXT", "cuts_json": "TEXT",
+                 "markers_json": "TEXT", "voiceover_path": "TEXT",
+                 "stage": "TEXT DEFAULT ''", "hook": "TEXT DEFAULT ''",
                  "resolution": f"TEXT DEFAULT '{settings.DEFAULT_RESOLUTION}'"},
-        "project": {"transcribe_backend": "TEXT DEFAULT 'local'"},
+        "project": {"transcribe_backend": "TEXT DEFAULT 'local'",
+                    "mode": "TEXT DEFAULT 'moments'"},
     }
     with _engine.connect() as conn:
         for table, cols in wanted.items():
