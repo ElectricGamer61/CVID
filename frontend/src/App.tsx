@@ -1,10 +1,10 @@
 import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
 import { api, Beat, Clip, ExportItem, InsightsData, Outlier, Presets, Project, Ticket } from "./api";
 import { CaptionOverlay } from "./CaptionOverlay";
-import { CaptionStyle, FALLBACK_PRESETS, groupLines, Word, wordsInRange } from "./captionStyles";
+import { CaptionStyle, FALLBACK_PRESETS, Word, wordsInRange } from "./captionStyles";
 import { Sidebar } from "./Sidebar";
 import { useToast } from "./Toast";
-import { exportDirSupported, getExportDir, getExportDirName, pickExportDir } from "./exportDir";
+import { exportDirSupported, getExportDir, pickExportDir } from "./exportDir";
 
 type Route =
   | { name: "home" }
@@ -855,185 +855,277 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
   pid: number; clip: Clip; words: Word[]; duration: number; presets: Presets | null; onChange: () => void; onBack: () => void;
 }) {
   const presetMap = presets?.caption_styles ?? FALLBACK_PRESETS;
-  const [start, setStart] = useState(clip.start);
-  const [end, setEnd] = useState(clip.end);
-  const [preset, setPreset] = useState(clip.caption_preset);
-  const [style, setStyle] = useState<CaptionStyle>(() => {
-    if (clip.style_json) { try { return JSON.parse(clip.style_json); } catch { /* */ } }
-    return presetMap[clip.caption_preset] ?? FALLBACK_PRESETS.capcut;
-  });
-  // caption words being edited (absolute times). seed from per-clip edits or transcript.
-  const [editWords, setEditWords] = useState<Word[]>(() => {
-    if (clip.words_json) { try { return JSON.parse(clip.words_json); } catch { /* */ } }
-    return wordsInRange(words, clip.start, clip.end);
-  });
-  useEffect(() => {
-    if (!clip.words_json && editWords.length === 0 && words.length) setEditWords(wordsInRange(words, clip.start, clip.end));
-  }, [words]);
+  const jsonOr = <T,>(s: string | undefined, fb: T): T => { if (s) { try { return JSON.parse(s); } catch { /* */ } } return fb; };
+  const baseStyle = presetMap[clip.caption_preset] ?? FALLBACK_PRESETS.capcut;
+  const initDoc: EditDoc = {
+    start: clip.start, end: clip.end, preset: clip.caption_preset,
+    style: jsonOr(clip.style_json, baseStyle),
+    words: jsonOr(clip.words_json, wordsInRange(words, clip.start, clip.end)),
+    center: clip.crop_center, resolution: clip.resolution ?? "1080p", title: clip.title,
+  };
+  const { doc, set, undo, redo, canUndo, canRedo } = useHistory<EditDoc>(initDoc);
 
-  const [tab, setTab] = useState<"captions" | "text" | "clip">("captions");
+  const [tool, setTool] = useState<string>("subs");
+  const [subsTab, setSubsTab] = useState<"style" | "edit">("style");
   const [time, setTime] = useState(clip.start);
   const [playing, setPlaying] = useState(false);
-  const [boxH, setBoxH] = useState(530);
-  const [center, setCenter] = useState(clip.crop_center);
-  const [resolution, setResolution] = useState(clip.resolution ?? "1080p");
+  const [boxH, setBoxH] = useState(560);
+  const [zoom, setZoom] = useState(1);
+  const [saveState, setSaveState] = useState<"idle" | "saving" | "saved">("idle");
+  const [autoBusy, setAutoBusy] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   const boxRef = useRef<HTMLDivElement>(null);
   const toast = useToast();
 
-  // Remembered export folder (Chromium) — picked once, reused for every download.
-  const [exportDirName, setExportDirName] = useState<string | null>(null);
-  useEffect(() => { getExportDirName().then(setExportDirName); }, []);
-  const chooseFolder = async () => {
-    const h = await pickExportDir();
-    if (h) { setExportDirName(h.name); toast(`Export folder set to "${h.name}"`, "ok"); }
-  };
+  // seed caption words if the transcript arrives after mount
+  useEffect(() => {
+    if (!clip.words_json && doc.words.length === 0 && words.length) set({ words: wordsInRange(words, clip.start, clip.end) });
+  }, [words]);
 
-  // STABLE timeline window — computed once for this clip, never during drag.
+  // STABLE timeline window — frozen per clip.
   const win = useMemo(() => {
     const len = Math.max(2, clip.end - clip.start);
     const margin = Math.max(15, len);
     return { s: Math.max(0, clip.start - margin), e: Math.min(duration || clip.end + margin, clip.end + margin) };
   }, [clip.id, duration]);
 
-  const choosePreset = (name: string) => { setPreset(name); setStyle(presetMap[name] ?? FALLBACK_PRESETS.capcut); };
+  // Autosave (debounced) whenever the doc changes.
+  const firstRun = useRef(true);
+  useEffect(() => {
+    if (firstRun.current) { firstRun.current = false; return; }
+    setSaveState("saving");
+    const id = setTimeout(async () => {
+      await api.patchClip(clip.id, { start: doc.start, end: doc.end, caption_preset: doc.preset, resolution: doc.resolution, crop_center: doc.center, style: doc.style, words: doc.words, title: doc.title });
+      setSaveState("saved"); onChange();
+    }, 800);
+    return () => clearTimeout(id);
+  }, [doc]);
 
   useEffect(() => { if (boxRef.current) setBoxH(boxRef.current.clientHeight); });
   useEffect(() => {
     let raf = 0;
-    const tick = () => { const v = videoRef.current; if (v) { if (v.currentTime >= end) v.currentTime = start; setTime(v.currentTime); } raf = requestAnimationFrame(tick); };
+    const tick = () => { const v = videoRef.current; if (v) { if (v.currentTime >= doc.end) v.currentTime = doc.start; setTime(v.currentTime); } raf = requestAnimationFrame(tick); };
     if (playing) raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [playing, start, end]);
+  }, [playing, doc.start, doc.end]);
 
-  const onLoaded = () => { if (videoRef.current) videoRef.current.currentTime = start; };
-  const togglePlay = () => { const v = videoRef.current; if (!v) return; if (playing) { v.pause(); setPlaying(false); } else { if (v.currentTime < start || v.currentTime > end) v.currentTime = start; v.play(); setPlaying(true); } };
+  // keyboard undo/redo
+  useEffect(() => {
+    const h = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") { e.preventDefault(); if (e.shiftKey) redo(); else undo(); }
+    };
+    window.addEventListener("keydown", h); return () => window.removeEventListener("keydown", h);
+  }, [undo, redo]);
+
+  const onLoaded = () => { if (videoRef.current) videoRef.current.currentTime = doc.start; };
+  const togglePlay = () => { const v = videoRef.current; if (!v) return; if (playing) { v.pause(); setPlaying(false); } else { if (v.currentTime < doc.start || v.currentTime > doc.end) v.currentTime = doc.start; v.play(); setPlaying(true); } };
+  const seek = (t: number) => { if (videoRef.current) videoRef.current.currentTime = t; setTime(t); };
+  const choosePreset = (name: string) => set({ preset: name, style: presetMap[name] ?? FALLBACK_PRESETS.capcut });
+  const doAutoCenter = async () => { setAutoBusy(true); try { const r = await api.autoCenter(clip.id); set({ center: r.center }); toast("Centered on the speaker", "ok"); } catch { toast("Auto-center failed", "err"); } finally { setAutoBusy(false); } };
+  const onPreviewDown = (e: React.PointerEvent) => {
+    if (tool !== "reframe") return;
+    const move = (ev: PointerEvent) => { const r = boxRef.current!.getBoundingClientRect(); set({ center: Math.max(0, Math.min(1, (ev.clientX - r.left) / r.width)) }); };
+    move(e.nativeEvent); const up = () => { window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up); };
+    window.addEventListener("pointermove", move); window.addEventListener("pointerup", up);
+  };
 
   const rendered = clip.status === "rendered";
   const busy = clip.status === "rendering";
-
-  const save = async (silent = false) => {
-    await api.patchClip(clip.id, { start, end, caption_preset: preset, resolution, crop_center: center, style, words: editWords });
-    if (!silent) toast("Saved", "ok"); onChange();
-  };
-  const exportClip = async () => { await save(true); await api.renderClip(clip.id); toast("Exporting clip…", "info"); onChange(); };
+  const exportClip = async () => { await api.renderClip(clip.id); toast("Exporting clip…", "info"); onChange(); };
 
   return (
-    <div className="page">
-      <button className="back" onClick={onBack}>← All moments</button>
-      <div className="editor">
-        <div className="stage">
-          <div className="phone" ref={boxRef}>
-            <video ref={videoRef} src={api.sourceUrl(pid)} onLoadedMetadata={onLoaded} style={{ objectPosition: `${center * 100}% 50%` }} playsInline />
-            <CaptionOverlay words={editWords} time={time} style={style} containerHeight={boxH} />
+    <div className="ed2">
+      <div className="ed2-top">
+        <button className="back" onClick={onBack}>← Back</button>
+        <input className="ed2-title" value={doc.title} onChange={(e) => set({ title: e.target.value })} placeholder="Untitled clip" />
+        <div className="ed2-top-right">
+          <button className="icon-btn" disabled={!canUndo} onClick={undo} title="Undo (Ctrl+Z)">↶</button>
+          <button className="icon-btn" disabled={!canRedo} onClick={redo} title="Redo (Ctrl+Shift+Z)">↷</button>
+          <span className="save-ind">{saveState === "saving" ? "Saving…" : saveState === "saved" ? "✓ Saved" : ""}</span>
+          <button className="primary" onClick={exportClip} disabled={busy}>{busy ? (clip.stage || "Rendering…") : rendered ? "Re-export" : "Export"}</button>
+          {rendered && <button className="icon-btn" title="Download" onClick={() => downloadClip(clip.id, doc.title, toast)}>⬇</button>}
+        </div>
+      </div>
+
+      <div className="ed2-body">
+        <div className="ed2-rail">
+          {TOOLS.map((t) => (
+            <button key={t.id} className={"rail-btn" + (tool === t.id ? " on" : "")} onClick={() => setTool(t.id)} title={t.label}>
+              <span className="rail-ic">{t.icon}</span><span className="rail-lb">{t.label}</span>
+              {t.soon && <span className="soon-dot" title="Coming soon" />}
+            </button>
+          ))}
+        </div>
+
+        <div className="ed2-stage">
+          <div className={"phone" + (tool === "reframe" ? " reframing" : "")} ref={boxRef} onPointerDown={onPreviewDown}>
+            <video ref={videoRef} src={api.sourceUrl(pid)} onLoadedMetadata={onLoaded} style={{ objectPosition: `${doc.center * 100}% 50%` }} playsInline />
+            <CaptionOverlay words={doc.words} time={time} style={doc.style} containerHeight={boxH} />
+            {tool === "reframe" && <div className="reframe-guide" style={{ left: `${doc.center * 100}%` }} />}
           </div>
           <div className="play-row">
-            <button className="primary" onClick={togglePlay} style={{ borderRadius: 99, width: 44, height: 44, justifyContent: "center", padding: 0 }}>{playing ? "❚❚" : "▶"}</button>
-            <span className="timecode">{fmt(time - start)} / {fmt(end - start)}</span>
-          </div>
-          <div className="stage-actions">
-            <button onClick={() => save()} disabled={busy}>Save</button>
-            <button className="primary" onClick={exportClip} disabled={busy}>{busy ? (clip.stage || "Rendering…") : rendered ? "Re-export" : "Export"}</button>
-            {rendered && <button title="Download" onClick={() => downloadClip(clip.id, clip.title, toast)}>⬇ Download</button>}
+            <button className="primary round" onClick={togglePlay}>{playing ? "❚❚" : "▶"}</button>
+            <span className="timecode">{fmt(time - doc.start)} / {fmt(doc.end - doc.start)}</span>
+            <span className="ar-badge">9:16</span>
           </div>
           {busy && <div className="muted" style={{ fontSize: 12.5 }}>⏳ {clip.stage || "Working"}… (first export downloads the full video)</div>}
-          {exportDirSupported() && (
-            <div className="muted" style={{ fontSize: 12.5 }}>
-              Save folder: {exportDirName ? <b>{exportDirName}</b> : <i>ask first time</i>}{" "}
-              <button onClick={chooseFolder} style={{ background: "none", border: "none", color: "var(--primary, #6D5EFC)", cursor: "pointer", padding: 0, font: "inherit", textDecoration: "underline" }}>change</button>
-            </div>
-          )}
           {clip.error && <div className="err">{clip.error}</div>}
         </div>
 
-        <div className="panel">
-          <div className="tabs">
-            <button className={tab === "captions" ? "on" : ""} onClick={() => setTab("captions")}>Style</button>
-            <button className={tab === "text" ? "on" : ""} onClick={() => setTab("text")}>Text</button>
-            <button className={tab === "clip" ? "on" : ""} onClick={() => setTab("clip")}>Clip</button>
-          </div>
-          {tab === "captions" && (
+        <div className="ed2-panel">
+          {tool === "trim" && <TrimPanel doc={doc} set={set} />}
+          {tool === "reframe" && <ReframePanel center={doc.center} set={set} autoCenter={doAutoCenter} autoBusy={autoBusy} />}
+          {tool === "subs" && (
             <div className="panel-body">
-              <div className="preset-chips">{(presets?.captions ?? Object.keys(FALLBACK_PRESETS)).map((c) => (
-                <button key={c} className={"chip" + (preset === c ? " on" : "")} onClick={() => choosePreset(c)}>{c}</button>))}</div>
-              <StyleEditor style={style} onChange={setStyle} />
-            </div>
-          )}
-          {tab === "text" && (
-            <div className="panel-body">
-              <div className="muted" style={{ fontSize: 12.5 }}>Fix any wrong words — the preview and export update to match.</div>
-              <CaptionTextEditor words={editWords} maxWords={style.max_words} onChange={setEditWords} />
-            </div>
-          )}
-          {tab === "clip" && (
-            <div className="panel-body">
-              <h3 className="panel-title">{clip.title}</h3>
-              <p className="reason">{clip.reason}</p>
-              <div className="slider">
-                <label><span>Crop position</span><span>{center < 0.4 ? "left" : center > 0.6 ? "right" : "center"}</span></label>
-                <input type="range" min={0} max={1} step={0.02} value={center} onChange={(e) => setCenter(parseFloat(e.target.value))} />
+              <div className="seg-toggle wide">
+                <button className={subsTab === "style" ? "on" : ""} onClick={() => setSubsTab("style")}>Style</button>
+                <button className={subsTab === "edit" ? "on" : ""} onClick={() => setSubsTab("edit")}>Edit words</button>
               </div>
-              <label className="field">Export resolution
-                <select value={resolution} onChange={(e) => setResolution(e.target.value)}>
-                  {(presets?.resolutions ?? [{ id: "1080p", label: "1080p", hint: "1080×1920" }]).map((r) => (
-                    <option key={r.id} value={r.id}>{r.label} · {r.hint}</option>))}
-                </select>
-              </label>
-              <div className="muted" style={{ fontSize: 12.5 }}>Higher = crisper upload &amp; bigger file. 4K upscales from the source.</div>
-              <div className="muted" style={{ fontSize: 12.5 }}>Score {Math.round(clip.score)} · {fmt(end - start)} long</div>
+              {subsTab === "style" ? (
+                <>
+                  <div className="preset-chips">{(presets?.captions ?? Object.keys(FALLBACK_PRESETS)).map((c) => (
+                    <button key={c} className={"chip" + (doc.preset === c ? " on" : "")} onClick={() => choosePreset(c)}>{c}</button>))}</div>
+                  <StyleEditor style={doc.style} onChange={(s) => set({ style: s })} />
+                  <label className="field">Export resolution
+                    <select value={doc.resolution} onChange={(e) => set({ resolution: e.target.value })}>
+                      {(presets?.resolutions ?? [{ id: "1080p", label: "1080p", hint: "1080×1920" }]).map((r) => (
+                        <option key={r.id} value={r.id}>{r.label} · {r.hint}</option>))}
+                    </select>
+                  </label>
+                </>
+              ) : (
+                <SubtitleWordEditor words={doc.words} time={time} onSeek={seek} onChange={(w) => set({ words: w })} />
+              )}
             </div>
           )}
+          {COMING_SOON.includes(tool) && <ComingSoon label={TOOLS.find((t) => t.id === tool)?.label || ""} />}
         </div>
+      </div>
 
-        <div className="panel timeline-card">
-          <div className="panel-body">
-            <Timeline winStart={win.s} winEnd={win.e} start={start} end={end} time={time}
-              onStart={setStart} onEnd={setEnd}
-              onScrub={(t) => { if (videoRef.current) videoRef.current.currentTime = t; setTime(t); }}
-              onCommit={() => save(true)} />
-          </div>
+      <div className="ed2-timeline">
+        <div className="tl-zoom">
+          <button className="icon-btn" onClick={() => setZoom((z) => Math.max(1, +(z - 0.5).toFixed(1)))} title="Zoom out">－</button>
+          <span className="muted" style={{ fontSize: 12 }}>{zoom}×</span>
+          <button className="icon-btn" onClick={() => setZoom((z) => Math.min(4, +(z + 0.5).toFixed(1)))} title="Zoom in">＋</button>
         </div>
+        <FilmstripTimeline pid={pid} winStart={win.s} winEnd={win.e} start={doc.start} end={doc.end} time={time} zoom={zoom}
+          onStart={(t) => set({ start: t })} onEnd={(t) => set({ end: t })} onScrub={seek} />
       </div>
     </div>
   );
 }
 
-/* Caption text editor: editable line inputs; words keep timing (even-split per line). */
-function CaptionTextEditor({ words, maxWords, onChange }: { words: Word[]; maxWords: number; onChange: (w: Word[]) => void }) {
-  const lines = useMemo(() => groupLines(words, maxWords), [words, maxWords]);
-  const editLine = (lineIdx: number, text: string) => {
-    const newLines = lines.map((ln, i) => {
-      if (i !== lineIdx) return ln;
-      const toks = text.split(/\s+/).filter(Boolean);
-      const s = ln[0].start, e = ln[ln.length - 1].end;
-      const step = (e - s) / Math.max(1, toks.length);
-      return toks.map((w, j) => ({ start: +(s + j * step).toFixed(3), end: +(s + (j + 1) * step).toFixed(3), word: w }));
+/* ---------------- wayin-style clip editor helpers ---------------- */
+type EditDoc = { start: number; end: number; preset: string; style: CaptionStyle; words: Word[]; center: number; resolution: string; title: string };
+
+const TOOLS: { id: string; label: string; icon: string; soon?: boolean }[] = [
+  { id: "trim", label: "Trim", icon: "✂" },
+  { id: "reframe", label: "Reframe", icon: "⛶" },
+  { id: "subs", label: "Subtitles", icon: "CC" },
+  { id: "text", label: "Text", icon: "T", soon: true },
+  { id: "broll", label: "B-roll", icon: "▦", soon: true },
+  { id: "music", label: "Music", icon: "♪", soon: true },
+  { id: "transitions", label: "Transitions", icon: "⇄", soon: true },
+  { id: "aihook", label: "AI Hook", icon: "✨", soon: true },
+];
+const COMING_SOON = TOOLS.filter((t) => t.soon).map((t) => t.id);
+
+/* Undo/redo with a debounced commit so rapid edits (drags/sliders) coalesce into one step. */
+function useHistory<T>(initial: T) {
+  const [state, setState] = useState<{ past: T[]; present: T; future: T[] }>({ past: [], present: initial, future: [] });
+  const timer = useRef<number | undefined>(undefined);
+  const pendingBase = useRef<T | null>(null);
+  const set = (patch: Partial<T>) => {
+    setState((s) => {
+      if (pendingBase.current === null) pendingBase.current = s.present;
+      return { ...s, present: { ...s.present, ...patch } };
     });
-    onChange(newLines.flat());
+    clearTimeout(timer.current);
+    timer.current = window.setTimeout(() => {
+      setState((s) => {
+        const base = pendingBase.current; pendingBase.current = null;
+        return base === null ? s : { past: [...s.past, base], present: s.present, future: [] };
+      });
+    }, 600);
   };
+  const undo = () => setState((s) => (s.past.length ? { past: s.past.slice(0, -1), present: s.past[s.past.length - 1], future: [s.present, ...s.future] } : s));
+  const redo = () => setState((s) => (s.future.length ? { past: [...s.past, s.present], present: s.future[0], future: s.future.slice(1) } : s));
+  return { doc: state.present, set, undo, redo, canUndo: state.past.length > 0, canRedo: state.future.length > 0 };
+}
+
+function TrimPanel({ doc, set }: { doc: EditDoc; set: (p: Partial<EditDoc>) => void }) {
   return (
-    <div className="cap-lines">
-      {lines.map((ln, i) => (
-        <input key={i} className="cap-line" defaultValue={ln.map((w) => w.word.trim()).join(" ")}
-          onBlur={(e) => editLine(i, e.target.value)} />
-      ))}
-      {lines.length === 0 && <div className="muted">No captions in this clip range.</div>}
+    <div className="panel-body">
+      <h3 className="panel-title">Trim</h3>
+      <div className="muted" style={{ fontSize: 12.5 }}>Drag the purple handles on the timeline below — or fine-tune here.</div>
+      <label className="field">Start (seconds)
+        <input type="number" step={0.1} value={doc.start.toFixed(2)} onChange={(e) => set({ start: Math.min(Math.max(0, parseFloat(e.target.value) || 0), doc.end - 0.5) })} /></label>
+      <label className="field">End (seconds)
+        <input type="number" step={0.1} value={doc.end.toFixed(2)} onChange={(e) => set({ end: Math.max(parseFloat(e.target.value) || 0, doc.start + 0.5) })} /></label>
+      <div className="muted" style={{ fontSize: 12.5 }}>Length: <b>{fmt(doc.end - doc.start)}</b></div>
     </div>
   );
 }
 
-function Timeline({ winStart, winEnd, start, end, time, onStart, onEnd, onScrub, onCommit }: {
-  winStart: number; winEnd: number; start: number; end: number; time: number;
-  onStart: (t: number) => void; onEnd: (t: number) => void; onScrub: (t: number) => void; onCommit: () => void;
+function ReframePanel({ center, set, autoCenter, autoBusy }: { center: number; set: (p: Partial<EditDoc>) => void; autoCenter: () => void; autoBusy: boolean }) {
+  return (
+    <div className="panel-body">
+      <h3 className="panel-title">Reframe</h3>
+      <div className="muted" style={{ fontSize: 12.5 }}>Choose what stays in the tall 9:16 frame. Drag on the preview, pick a side, or auto-center on the speaker.</div>
+      <div className="seg-toggle wide">
+        <button className={center < 0.34 ? "on" : ""} onClick={() => set({ center: 0.16 })}>Left</button>
+        <button className={center >= 0.34 && center <= 0.66 ? "on" : ""} onClick={() => set({ center: 0.5 })}>Center</button>
+        <button className={center > 0.66 ? "on" : ""} onClick={() => set({ center: 0.84 })}>Right</button>
+      </div>
+      <div className="slider"><label><span>Fine position</span><span>{Math.round(center * 100)}%</span></label>
+        <input type="range" min={0} max={1} step={0.01} value={center} onChange={(e) => set({ center: parseFloat(e.target.value) })} /></div>
+      <button className="primary" onClick={autoCenter} disabled={autoBusy}>{autoBusy ? "Finding the speaker…" : "✨ Auto-center on speaker"}</button>
+    </div>
+  );
+}
+
+function ComingSoon({ label }: { label: string }) {
+  return (
+    <div className="panel-body coming">
+      <div className="coming-ic">🚧</div>
+      <h3 className="panel-title">{label}</h3>
+      <p className="muted" style={{ fontSize: 13 }}>Coming soon. The core editor — Trim, Reframe and Subtitles — is ready to use now.</p>
+    </div>
+  );
+}
+
+/* Per-word subtitle editor: click a time to jump there, edit a word, empty a box to delete it. */
+function SubtitleWordEditor({ words, time, onSeek, onChange }: { words: Word[]; time: number; onSeek: (t: number) => void; onChange: (w: Word[]) => void }) {
+  const editWord = (i: number, val: string) => {
+    const t = val.trim(); const next = [...words];
+    if (t === "") next.splice(i, 1); else next[i] = { ...next[i], word: t };
+    onChange(next);
+  };
+  return (
+    <div className="word-list">
+      <div className="muted" style={{ fontSize: 12.5, marginBottom: 6 }}>Click a time to jump there · edit a word to fix it · empty a box to delete it.</div>
+      {words.length === 0 && <div className="muted">No captions in this clip range.</div>}
+      {words.map((w, i) => {
+        const active = time >= w.start && time < w.end;
+        return (
+          <div key={i} className={"word-row" + (active ? " active" : "")}>
+            <button className="word-ts" onClick={() => onSeek(w.start)}>{fmt(w.start)}</button>
+            <input className="word-in" key={w.word + "_" + i} defaultValue={w.word.trim()} onBlur={(e) => editWord(i, e.target.value)} />
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function FilmstripTimeline({ pid, winStart, winEnd, start, end, time, zoom, onStart, onEnd, onScrub }: {
+  pid: number; winStart: number; winEnd: number; start: number; end: number; time: number; zoom: number;
+  onStart: (t: number) => void; onEnd: (t: number) => void; onScrub: (t: number) => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const span = Math.max(0.1, winEnd - winStart);
   const pct = (t: number) => Math.max(0, Math.min(100, ((t - winStart) / span) * 100));
-  const toTime = (clientX: number) => {
-    const r = ref.current!.getBoundingClientRect();
-    const x = Math.min(Math.max(0, clientX - r.left), r.width);
-    return winStart + (x / r.width) * span;
-  };
+  const toTime = (clientX: number) => { const r = ref.current!.getBoundingClientRect(); const x = Math.min(Math.max(0, clientX - r.left), r.width); return winStart + (x / r.width) * span; };
   const drag = (which: "start" | "end" | "scrub") => (e: React.PointerEvent) => {
     e.preventDefault(); e.stopPropagation();
     const move = (ev: PointerEvent) => {
@@ -1042,16 +1134,25 @@ function Timeline({ winStart, winEnd, start, end, time, onStart, onEnd, onScrub,
       else if (which === "end") onEnd(Math.min(winEnd, Math.max(t, start + 0.5)));
       else onScrub(Math.max(start, Math.min(end, t)));
     };
-    const up = () => { window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up); if (which !== "scrub") onCommit(); };
+    const up = () => { window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up); };
     window.addEventListener("pointermove", move); window.addEventListener("pointerup", up);
   };
+  const n = Math.max(8, Math.round(10 * zoom));
+  const frames = useMemo(() => Array.from({ length: n }, (_, i) => winStart + ((i + 0.5) / n) * span), [winStart, span, n]);
   return (
-    <div className="timeline-wrap">
-      <div className="timeline" ref={ref} onPointerDown={drag("scrub")}>
-        <div className="tl-range" style={{ left: `${pct(start)}%`, width: `${pct(end) - pct(start)}%` }} />
-        <div className="tl-handle" style={{ left: `${pct(start)}%` }} onPointerDown={drag("start")} />
-        <div className="tl-handle" style={{ left: `${pct(end)}%` }} onPointerDown={drag("end")} />
-        <div className="tl-playhead" style={{ left: `${pct(time)}%` }} />
+    <div className="fs-wrap">
+      <div className="fs-scroll">
+        <div className="fs-track" ref={ref} onPointerDown={drag("scrub")} style={{ width: `${zoom * 100}%` }}>
+          <div className="fs-frames">{frames.map((t, i) => (
+            <img key={i} src={api.frameUrl(pid, t)} alt="" draggable={false} onError={(e) => ((e.target as HTMLImageElement).style.opacity = "0")} />
+          ))}</div>
+          <div className="fs-dim" style={{ left: 0, width: `${pct(start)}%` }} />
+          <div className="fs-dim" style={{ left: `${pct(end)}%`, right: 0 }} />
+          <div className="fs-range" style={{ left: `${pct(start)}%`, width: `${pct(end) - pct(start)}%` }} />
+          <div className="fs-handle" style={{ left: `${pct(start)}%` }} onPointerDown={drag("start")} />
+          <div className="fs-handle" style={{ left: `${pct(end)}%` }} onPointerDown={drag("end")} />
+          <div className="fs-playhead" style={{ left: `${pct(time)}%` }} />
+        </div>
       </div>
       <div className="timeline-labels">
         <span className="tag">start {fmt(start)}</span><span className="tag">{fmt(end - start)} clip</span><span className="tag">end {fmt(end)}</span>

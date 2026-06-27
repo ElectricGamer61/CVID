@@ -238,4 +238,7 @@ export const api = {
   downloadUrl: (cid: number) => `/api/clips/${cid}/download`,
   clipThumbUrl: (cid: number) => `/api/clips/${cid}/thumb`,
   projectThumbUrl: (pid: number) => `/api/projects/${pid}/thumb`,
+  frameUrl: (pid: number, t: number) => `/api/projects/${pid}/frame?t=${t.toFixed(2)}`,
+  autoCenter: (cid: number): Promise<{ center: number }> =>
+    fetch(`/api/clips/${cid}/auto-center`, { method: "POST" }).then((r) => r.json()),
 };

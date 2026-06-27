@@ -856,6 +856,45 @@ def project_thumb(pid: int):
     return FileResponse(str(thumb), media_type="image/jpeg")
 
 
+def _make_frame(src: Path, out: Path, t: float, w: int = 160) -> None:
+    """Small full-frame (source aspect) JPG at time t — for the editor filmstrip."""
+    import subprocess
+    subprocess.run(["ffmpeg", "-y", "-ss", f"{max(0, t):.2f}", "-i", str(src),
+                    "-vf", f"scale={w}:-2", "-frames:v", "1", "-q:v", "5", str(out)],
+                   capture_output=True)
+
+
+@app.get("/api/projects/{pid}/frame")
+def project_frame(pid: int, t: float = 0.0):
+    """One small cached filmstrip frame at time t (seconds), for the editor timeline."""
+    src = _preview_source(pid)
+    if not src:
+        raise HTTPException(404, "no source yet")
+    fdir = settings.project_dir(pid) / "frames"
+    fdir.mkdir(exist_ok=True)
+    out = fdir / f"f_{int(max(0, t) * 1000)}.jpg"
+    if not out.exists():
+        _make_frame(src, out, t)
+    if not out.exists():
+        raise HTTPException(404, "frame unavailable")
+    return FileResponse(str(out), media_type="image/jpeg")
+
+
+@app.post("/api/clips/{cid}/auto-center")
+def clip_auto_center(cid: int):
+    """Detect a face-based 9:16 crop center for the clip range (runs on the proxy)."""
+    with get_session() as s:
+        clip = s.get(Clip, cid)
+        if not clip:
+            raise HTTPException(404, "clip not found")
+        pid, start, end = clip.project_id, clip.start, clip.end
+    src = _preview_source(pid)
+    if not src:
+        raise HTTPException(404, "no source yet")
+    center = reframe.detect_center(src, start, end)
+    return {"center": round(float(center), 4)}
+
+
 @app.get("/api/projects/{pid}/source")
 def project_source(pid: int):
     """Stream the preview video (range-enabled): the 360p proxy for URL projects,

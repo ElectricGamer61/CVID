@@ -126,6 +126,8 @@ writing progress onto the Project row.
 - `GET /api/projects` · `GET /api/projects/{pid}` (project + clips) · `DELETE /api/projects/{pid}`.
 - `GET /api/projects/{pid}/source` — preview video (proxy for url, source for upload).
 - `GET /api/projects/{pid}/thumb` · `GET /api/clips/{cid}/thumb` — lazy cached JPGs.
+- `GET /api/projects/{pid}/frame?t=SS` — small cached filmstrip frame (editor timeline).
+- `POST /api/clips/{cid}/auto-center` — face-based 9:16 crop center for the clip range (editor Reframe).
 - `PATCH /api/clips/{cid}` — start/end/title/caption_preset/aspect/crop_center/**style**/**words**.
 - `POST /api/clips/{cid}/render` · `GET /api/clips/{cid}/download` · `/preview` · `DELETE /api/clips/{cid}`.
 - `GET /api/presets` — captions, caption_styles, aspects, brains, transcribe, resolutions,
@@ -175,12 +177,18 @@ Edit/Download/Re-export/Delete) → click a card → **ClipEditor**.
   Clicking a card opens a **TicketDetail** drawer: stage advance, the beat list with a per-beat
   **Proof** checkbox (toggle is_proof_beat) and a ⚠ warning when a proof beat has no clip, plus
   re-import. (Full ticket/beat editing + capture/assemble = later phases.)
-- **ClipEditor** — 9:16 preview (`<video>` CSS-cropped via `objectPosition` = crop_center)
-  with live **CaptionOverlay** (DOM, word-by-word, no re-render). Tabs: **Style** (presets +
-  swatches/sliders/position/uppercase), **Text** (edit caption words — even-split timing),
-  **Clip** (title/reason/crop slider + **Export resolution** dropdown 1080p/1440p/4K, from
-  `/api/presets` `resolutions`). Bottom **Timeline**: drag-trim handles on a **stable
-  axis** (frozen `[clipStart-margin, clipEnd+margin]` window — does NOT rescale during drag).
+- **ClipEditor** — **wayinvideo-style workspace** (`.ed2`): top bar (editable title · undo/redo ·
+  autosave "Saved" · Export/Download) · left **tool rail** (Trim · Reframe · Subtitles built;
+  Text/B-roll/Music/Transitions/AI Hook = "coming soon") · big 9:16 preview (`<video>` CSS-crop via
+  `objectPosition` + live **CaptionOverlay**) · contextual right panel · **filmstrip timeline**.
+  - **Trim** numeric start/end (handles live on the filmstrip). **Reframe** = Left/Center/Right +
+    fine slider + **Auto-center** (`/api/clips/{cid}/auto-center` → `reframe.detect_center`) + **drag
+    on the preview**. **Subtitles** = Style (presets + `StyleEditor` + resolution) and **Edit words**
+    (`SubtitleWordEditor` — per-word list w/ timestamps, click-to-seek, inline edit, empty-to-delete,
+    active word highlights during playback).
+  - **`useHistory`** = undo/redo with debounced commit (Ctrl+Z / Ctrl+Shift+Z). **Autosave** =
+    debounced `patchClip` on any change (no manual Save). **FilmstripTimeline** draws frames from
+    `/api/projects/{pid}/frame?t=` across a frozen window, with zoom + drag-trim + scrub.
 - **CaptionOverlay.tsx / captionStyles.ts** — shared caption logic (must match captions.py).
 - **Toast.tsx** — toast notifications.
 - **Download** (`downloadClip()` in App.tsx + `exportDir.ts`) — editor + moment-card ⬇ buttons.
