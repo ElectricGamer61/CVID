@@ -1105,6 +1105,13 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
     const v = videoRef.current; if (v) { v.pause(); v.playbackRate = 1; }
     loopRangeRef.current = null; setPlaying(false); setRecording(false);
   };
+  // Loop the video over a range at normal speed (for previewing a scene with its voice).
+  const playRange = (range: { s: number; e: number }) => {
+    const v = videoRef.current; if (!v) return;
+    loopRangeRef.current = range; v.currentTime = range.s; v.muted = true; v.playbackRate = 1;
+    v.play().catch(() => {}); setPlaying(true);
+  };
+  const stopRange = () => { const v = videoRef.current; if (v) v.pause(); loopRangeRef.current = null; setPlaying(false); };
   const selectScene = (i: number) => { const j = Math.max(0, Math.min(i, markers.length - 1)); setSceneIdx(j); if (markers[j]) seek(markers[j].start); };
   const choosePreset = (name: string) => set({ preset: name, style: presetMap[name] ?? FALLBACK_PRESETS.capcut });
   const doAutoCenter = async () => { setAutoBusy(true); try { const r = await api.autoCenter(clip.id); set({ center: r.center }); toast("Centered on the speaker", "ok"); } catch { toast("Auto-center failed", "err"); } finally { setAutoBusy(false); } };
@@ -1166,7 +1173,8 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
           {tool === "voice" && (hasScenes
             ? <SceneVoicePanel cid={clip.id} markers={markers} sceneIdx={Math.min(sceneIdx, markers.length - 1)} onSelectScene={selectScene}
                 sceneVos={sceneVos} setSceneVos={setSceneVos} readRate={readRate} setReadRate={setReadRate}
-                activeScene={activeScene!} onRecordStart={startRecordPlayback} onRecordStop={stopRecordPlayback} onChanged={onChange} toast={toast} />
+                activeScene={activeScene!} onRecordStart={startRecordPlayback} onRecordStop={stopRecordPlayback}
+                onPreviewStart={playRange} onPreviewStop={stopRange} onChanged={onChange} toast={toast} />
             : <VoicePanel cid={clip.id} voUrl={voUrl} onChanged={(u) => { setVoUrl(u); onChange(); }} toast={toast} onRecordStart={startRecordPlayback} onRecordStop={stopRecordPlayback} />)}
           {tool === "reframe" && <ReframePanel center={doc.center} set={set} autoCenter={doAutoCenter} autoBusy={autoBusy} />}
           {tool === "subs" && (
@@ -1379,29 +1387,44 @@ function VoicePanel({ cid, voUrl, onChanged, toast, onRecordStart, onRecordStop 
   );
 }
 
-function SceneVoicePanel({ cid, markers, sceneIdx, onSelectScene, sceneVos, setSceneVos, readRate, setReadRate, activeScene, onRecordStart, onRecordStop, onChanged, toast }: {
+function SceneVoicePanel({ cid, markers, sceneIdx, onSelectScene, sceneVos, setSceneVos, readRate, setReadRate, activeScene, onRecordStart, onRecordStop, onPreviewStart, onPreviewStop, onChanged, toast }: {
   cid: number; markers: { start: number; end: number; label: string }[]; sceneIdx: number; onSelectScene: (i: number) => void;
   sceneVos: (string | null)[]; setSceneVos: (v: (string | null)[]) => void; readRate: number; setReadRate: (r: number) => void;
   activeScene: { start: number; end: number; label: string }; onRecordStart: (r?: { s: number; e: number }) => void; onRecordStop: () => void;
+  onPreviewStart: (r: { s: number; e: number }) => void; onPreviewStop: () => void;
   onChanged: () => void; toast: Notify;
 }) {
   const { recording, error, start, stop } = useRecorder();
   const [pending, setPending] = useState<{ blob: Blob; url: string } | null>(null);
   const [busy, setBusy] = useState(false);
+  const [previewing, setPreviewing] = useState(false);
+  const [bust, setBust] = useState(() => Date.now());
+  const audioRef = useRef<HTMLAudioElement>(null);
   const hasVoice = !!sceneVos[sceneIdx];
   const doneCount = sceneVos.filter(Boolean).length;
+  const sceneVoUrl = hasVoice ? `${api.sceneVoiceoverUrl(cid, sceneIdx)}?v=${bust}` : null;
 
-  const onRecord = async () => { onRecordStart({ s: activeScene.start, e: activeScene.end }); const ok = await start(); if (!ok) onRecordStop(); };
+  const stopPreview = () => { audioRef.current?.pause(); onPreviewStop(); setPreviewing(false); };
+  // Play this scene's video looping with its recorded voice over it.
+  const playWithVoice = () => {
+    onPreviewStart({ s: activeScene.start, e: activeScene.end });
+    const a = audioRef.current; if (a) { a.currentTime = 0; a.play().catch(() => {}); }
+    setPreviewing(true);
+  };
+  // Stop any preview when the scene changes.
+  useEffect(() => { stopPreview(); }, [sceneIdx]);  // eslint-disable-line react-hooks/exhaustive-deps
+
+  const onRecord = async () => { if (previewing) stopPreview(); onRecordStart({ s: activeScene.start, e: activeScene.end }); const ok = await start(); if (!ok) onRecordStop(); };
   const onStop = async () => { const blob = await stop(); onRecordStop(); if (blob) setPending({ blob, url: URL.createObjectURL(blob) }); };
   const save = async () => {
     if (!pending) return; setBusy(true);
-    try { const r = await api.uploadSceneVoiceover(cid, sceneIdx, pending.blob); URL.revokeObjectURL(pending.url); setPending(null); setSceneVos(r.scene_vos); onChanged(); toast(`Scene ${sceneIdx + 1} voice saved`, "ok"); }
+    try { const r = await api.uploadSceneVoiceover(cid, sceneIdx, pending.blob); URL.revokeObjectURL(pending.url); setPending(null); setSceneVos(r.scene_vos); setBust(Date.now()); onChanged(); toast(`Scene ${sceneIdx + 1} voice saved`, "ok"); }
     catch (e: any) { toast(`Save failed: ${e?.message || e}`, "err"); } finally { setBusy(false); }
   };
   const discard = () => { if (pending) URL.revokeObjectURL(pending.url); setPending(null); };
   const remove = async () => {
     setBusy(true);
-    try { await api.deleteSceneVoiceover(cid, sceneIdx); const copy = [...sceneVos]; copy[sceneIdx] = null; setSceneVos(copy); onChanged(); toast("Voice removed", "ok"); }
+    try { if (previewing) stopPreview(); await api.deleteSceneVoiceover(cid, sceneIdx); const copy = [...sceneVos]; copy[sceneIdx] = null; setSceneVos(copy); setBust(Date.now()); onChanged(); toast("Voice removed", "ok"); }
     catch (e: any) { toast(`Failed: ${e?.message || e}`, "err"); } finally { setBusy(false); }
   };
 
@@ -1435,7 +1458,11 @@ function SceneVoicePanel({ cid, markers, sceneIdx, onSelectScene, sceneVos, setS
       {!pending && hasVoice && (
         <div className="vo-current">
           <div className="muted" style={{ fontSize: 12.5, margin: "10px 0 6px" }}>Scene {sceneIdx + 1} voice:</div>
-          <audio key={sceneVos[sceneIdx]} src={api.sceneVoiceoverUrl(cid, sceneIdx) + "?t=" + Date.now()} controls style={{ width: "100%" }} />
+          <button className="primary big-btn" onClick={previewing ? stopPreview : playWithVoice} disabled={recording}>
+            {previewing ? "■ Stop" : "▶ Hear it on the clip"}
+          </button>
+          <audio key={sceneIdx + "-" + bust} ref={audioRef} src={sceneVoUrl ?? undefined} controls style={{ width: "100%", marginTop: 8 }}
+            onEnded={() => { onPreviewStop(); setPreviewing(false); }} />
           <button className="sm danger" style={{ marginTop: 8 }} onClick={remove} disabled={busy}>Remove this scene's voice</button>
         </div>
       )}
