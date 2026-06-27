@@ -22,11 +22,17 @@ $env:Path = [System.Environment]::GetEnvironmentVariable('Path','Machine') + ';'
   `cd backend; .\.venv\Scripts\python.exe -m uvicorn app.main:app --port 8000`
 - **Frontend** (Vite, port 5173, proxies `/api` → 8000):
   `cd frontend; npm run dev`
-- One-click: `scripts\start.ps1` (launches both, opens http://localhost:5173).
+- One-click: **double-click `start.cmd`** (repo root) — runs `scripts\start.ps1`, which launches
+  both servers and opens http://localhost:5173. (`start.ps1` is ASCII-only; the earlier em-dash/`…`
+  chars made Windows PowerShell 5.1 throw a parse error so nothing started.)
 - The backend reads `backend/.env` (gitignored) for API keys.
 
 Restart the backend after changing `.env` or backend code (no `--reload` in the launch
 scripts; it loads keys/code at startup).
+
+**Repo is under git** (branch `main`); `.gitignore` covers `data/`, `backend/.venv/`,
+`frontend/node_modules/`, `.env`, `*.log`, `*.tsbuildinfo`. Build with Claude Code in this stack
+(FastAPI + SQLite + React) — see `SPEC.md`'s stack-override header; **NOT Lovable/Supabase**.
 
 ---
 
@@ -162,21 +168,31 @@ Light "Soft-UI" theme (Plus Jakarta Sans). **Layout mirrors wayin**: left **Side
 project opens a **MomentsGrid** (clip cards: thumbnail, viral score /100, hook line, actions
 Edit/Download/Re-export/Delete) → click a card → **ClipEditor**.
 
+**Plain-language UI (dead-simple):** the sidebar reads **Home · Ideas · My Videos · Results ·
+Downloads** (these map to the internal routes intake/board/insights/library). In the UI a ticket
+is a "video", a beat is a "scene", an outlier is an "idea", stages show as "1. Idea … 8. Posted",
+and capture modes read "Film it myself / From a long video / Reuse old footage". The DB still
+stores the original values — only labels changed. Video cards/exports use **9:16 vertical
+thumbnails in rows** (the `.page` shrink-to-content bug that forced one column was fixed with
+`width:100%`).
+
 - **App.tsx** — routes (home | **board** | **intake** | **insights** | **library** | project |
-  editor), shell, Home/NewProject/ProjectCard, MomentsGrid/MomentCard, ClipEditor, Timeline,
-  StyleEditor, CaptionTextEditor, **Board**, **Intake**, **Insights**, **Library/Exports**.
+  editor), shell, Home/NewProject/ProjectCard, MomentsGrid/MomentCard, **Board**, **Intake**,
+  **Insights**, **Library**(Exports), and the **ClipEditor** workspace + its helpers
+  (`ToolRail`/`useHistory`/`TrimPanel`/`ReframePanel`/`SubtitleWordEditor`/`FilmstripTimeline`,
+  reusing `StyleEditor`). *(The old line-based `CaptionTextEditor` + thin `Timeline` were replaced
+  by the per-word editor + filmstrip.)*
 - **Pipeline screens (Sidebar):** **Intake** (paste outliers → swipe file → spin tickets),
   **Board** (kanban), **Insights** (Signal Reader: KPIs, perf-logging, angle ranking by
   saves+follows), **Exports** (all rendered clips + reels, download). **TicketDetail** drawer is a
   full editor: edit ticket + per-beat fields, add/reorder/delete beats, **proof toggle**, AI
   buttons (Script Factory / Hook Forge), per-beat **clip + voiceover upload**, and **Assemble reel**
   (native) → progress → player + download. Reusable `downloadFile()` saves to the remembered folder.
-- **Board** (Sidebar → "Board") — pipeline kanban: a column per `stage`, ticket cards (lane
-  A/B/R badge from capture_mode, format, angle, hook, ◀▶ hand stage-advance, delete), Lane A/B
-  hint at the Sourced column. **+ New ticket** modal pastes a Claude script → auto-split beats.
-  Clicking a card opens a **TicketDetail** drawer: stage advance, the beat list with a per-beat
-  **Proof** checkbox (toggle is_proof_beat) and a ⚠ warning when a proof beat has no clip, plus
-  re-import. (Full ticket/beat editing + capture/assemble = later phases.)
+- **My Videos** (Board) — kanban, a column per stage (labelled "1. Idea … 8. Posted"); cards show
+  the capture mode, angle, hook, ◀▶ hand stage-advance, delete, plus a **how-it-works** banner
+  (Save an idea → Write & film → Make the video → See results). **+ New video** modal pastes a
+  script → auto-split scenes (or start blank). Clicking a card opens the **TicketDetail** editor
+  (above). *(Lane A/B/R badges were dropped in the plain-language pass.)*
 - **ClipEditor** — **wayinvideo-style workspace** (`.ed2`): top bar (editable title · undo/redo ·
   autosave "Saved" · Export/Download) · left **tool rail** (Trim · Reframe · Subtitles built;
   Text/B-roll/Music/Transitions/AI Hook = "coming soon") · big 9:16 preview (`<video>` CSS-crop via
@@ -230,6 +246,13 @@ Edit/Download/Re-export/Delete) → click a card → **ClipEditor**.
 - ElevenLabs needs `ELEVENLABS_API_KEY` in `backend/.env`; local is the free default.
 - Existing clips created before a schema change won't have new fields (e.g. hooks) until the
   project is re-analyzed.
+- **Clip editor advanced tools deferred** (rail shows "coming soon"): Text overlays, B-roll,
+  Music/audio volume, Transitions, AI Hook. Core = Trim · Reframe · Subtitles.
+- **Native assemble caption timing is even-split** across the VO duration (the words are known
+  from the script). Forced alignment to the actual speech is a future refinement.
+- **Pipeline P6 (schedule/post) is NOT built** — spec'd in `.claude/commands/goal.md` as an
+  Upload-Post **dry-run adapter** that needs `UPLOAD_POST_API_KEY`; run it later via `/goal`.
+  P1–P5 (Ideas/Board/AI/Assemble/Insights) are done and committed.
 
 ---
 
