@@ -50,10 +50,10 @@ export function Sidebar({ view, onHome, onBoard, onIntake, onInsights, onLibrary
       </button>
       <nav className="nav">
         {item("home", "Home", view === "home", onHome)}
-        {item("intake", "Intake", view === "intake", onIntake)}
-        {item("board", "Board", view === "board", onBoard)}
-        {item("insights", "Insights", view === "insights", onInsights)}
-        {item("library", "Exports", view === "library", onLibrary)}
+        {item("intake", "Ideas", view === "intake", onIntake)}
+        {item("board", "My Videos", view === "board", onBoard)}
+        {item("insights", "Results", view === "insights", onInsights)}
+        {item("library", "Downloads", view === "library", onLibrary)}
       </nav>
       <div className="nav-bottom">{item("settings", "Settings", false)}</div>
     </aside>

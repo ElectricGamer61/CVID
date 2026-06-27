@@ -27,7 +27,7 @@ export default function App() {
   const goInsights = () => setRoute({ name: "insights" });
   const goLibrary = () => setRoute({ name: "library" });
 
-  const NAMED: Record<string, string> = { board: "Pipeline board", intake: "Intake", insights: "Insights", library: "Exports" };
+  const NAMED: Record<string, string> = { board: "My Videos", intake: "Ideas", insights: "Results", library: "Downloads" };
   const crumbLabel = NAMED[route.name] ?? null;
   const sbView = (["board", "intake", "insights", "library"].includes(route.name) ? route.name : "home") as any;
 
@@ -66,11 +66,15 @@ export default function App() {
 
 /* ------------------------------- Board --------------------------------- */
 const STAGE_LABELS: Record<string, string> = {
-  outlier: "Outlier", scripted: "Scripted", staged: "Staged", sourced: "Sourced",
-  assembled: "Assembled", ready: "Ready", scheduled: "Scheduled", posted: "Posted",
+  outlier: "1. Idea", scripted: "2. Script ready", staged: "3. Filming", sourced: "4. Clips added",
+  assembled: "5. Video made", ready: "6. Ready to post", scheduled: "7. Scheduled", posted: "8. Posted",
 };
 const FALLBACK_STAGES = ["outlier", "scripted", "staged", "sourced", "assembled", "ready", "scheduled", "posted"];
-const laneOf = (m: string) => (m === "longform-clip" ? "A" : m === "native-short" ? "B" : "R");
+// Plain-language labels for the capture mode (how the video gets made).
+const MODE_LABELS: Record<string, string> = {
+  "native-short": "Film it myself", "longform-clip": "From a long video", "repurpose": "Reuse old footage",
+};
+const modeLabel = (m: string) => MODE_LABELS[m] ?? m;
 
 function Board({ presets }: { presets: Presets | null }) {
   const [tickets, setTickets] = useState<Ticket[] | null>(null);
@@ -96,8 +100,15 @@ function Board({ presets }: { presets: Presets | null }) {
   return (
     <div className="board-page">
       <div className="page-head">
-        <h2>Pipeline board</h2>
-        <button className="primary" onClick={() => setShowNew(true)}>+ New ticket</button>
+        <h2>My Videos</h2>
+        <button className="primary" onClick={() => setShowNew(true)}>+ New video</button>
+      </div>
+      <div className="how-banner">
+        <span className="how-step"><b>1</b> Save an idea</span><span className="how-arrow">→</span>
+        <span className="how-step"><b>2</b> Write &amp; film it</span><span className="how-arrow">→</span>
+        <span className="how-step"><b>3</b> Make the video</span><span className="how-arrow">→</span>
+        <span className="how-step"><b>4</b> Post &amp; see results</span>
+        <span className="how-tip">Each video is a card below. Use ◀ ▶ to move it forward as you finish each step.</span>
       </div>
       {tickets == null ? <div className="muted">Loading…</div> : (
         <div className="board">
@@ -106,7 +117,6 @@ function Board({ presets }: { presets: Presets | null }) {
             return (
               <div className="board-col" key={st}>
                 <div className="board-col-head"><span>{STAGE_LABELS[st] ?? st}</span><span className="board-count">{col.length}</span></div>
-                {st === "sourced" && <div className="lane-hint">Lane A · long-form  |  Lane B · native</div>}
                 <div className="board-col-body">
                   {col.map((t) => <TicketCard key={t.id} t={t} stages={stages} onOpen={() => setOpenId(t.id)} onMove={move} onDelete={del} />)}
                 </div>
@@ -128,24 +138,23 @@ function TicketCard({ t, stages, onOpen, onMove, onDelete }: {
   return (
     <div className="tkt-card" onClick={onOpen}>
       <div className="tkt-top">
-        <span className={"lane lane-" + laneOf(t.capture_mode)} title={t.capture_mode}>{laneOf(t.capture_mode)}</span>
-        <span className="tkt-fmt">{t.format}</span>
+        <span className="tkt-mode">{modeLabel(t.capture_mode)}</span>
         <span className="spacer" />
-        <button className="icon-btn danger" title="Delete" onClick={(e) => { e.stopPropagation(); onDelete(t); }}>🗑</button>
+        <button className="icon-btn danger" title="Delete this video" onClick={(e) => { e.stopPropagation(); onDelete(t); }}>🗑</button>
       </div>
-      <div className="tkt-angle">{t.angle || <span className="muted">(no angle)</span>}</div>
+      <div className="tkt-angle">{t.angle || <span className="muted">Untitled video</span>}</div>
       {t.hook_text && <div className="tkt-hook">“{t.hook_text}”</div>}
       <div className="tkt-foot" onClick={(e) => e.stopPropagation()}>
-        <button className="icon-btn" disabled={i <= 0} title="Back a stage" onClick={() => onMove(t, -1)}>◀</button>
-        <span className="muted tkt-brand">{t.brand}</span>
-        <button className="icon-btn" disabled={i >= stages.length - 1} title="Advance a stage" onClick={() => onMove(t, 1)}>▶</button>
+        <button className="icon-btn" disabled={i <= 0} title="Move back a step" onClick={() => onMove(t, -1)}>◀</button>
+        <span className="muted tkt-open">Open ⤢</span>
+        <button className="icon-btn" disabled={i >= stages.length - 1} title="Move forward a step" onClick={() => onMove(t, 1)}>▶</button>
       </div>
     </div>
   );
 }
 
 function NewTicketModal({ presets, onClose, onCreated }: { presets: Presets | null; onClose: () => void; onCreated: () => void }) {
-  const [brand, setBrand] = useState("NoCrapDiet");
+  const brand = "NoCrapDiet";
   const [angle, setAngle] = useState("");
   const [format, setFormat] = useState("reel");
   const [capture, setCapture] = useState("native-short");
@@ -169,21 +178,24 @@ function NewTicketModal({ presets, onClose, onCreated }: { presets: Presets | nu
   return (
     <div className="modal-back" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <h3>New ticket</h3>
+        <h3>New video</h3>
+        <label className="field">What's it about?
+          <input value={angle} placeholder="e.g. hidden sugar in sauces" onChange={(e) => setAngle(e.target.value)} />
+        </label>
         <div className="form-row">
-          <label className="field">Brand<input value={brand} onChange={(e) => setBrand(e.target.value)} /></label>
-          <label className="field">Angle<input value={angle} placeholder="e.g. label-reading" onChange={(e) => setAngle(e.target.value)} /></label>
+          <label className="field">How will you make it?
+            <select value={capture} onChange={(e) => setCapture(e.target.value)}>{modes.map((m) => <option key={m} value={m}>{modeLabel(m)}</option>)}</select>
+          </label>
+          <label className="field">Video type
+            <select value={format} onChange={(e) => setFormat(e.target.value)}>{formats.map((f) => <option key={f} value={f}>{f === "reel" ? "Reel (tall video)" : f === "carousel" ? "Carousel (photos)" : f}</option>)}</select>
+          </label>
         </div>
-        <div className="form-row">
-          <label className="field">Format<select value={format} onChange={(e) => setFormat(e.target.value)}>{formats.map((f) => <option key={f}>{f}</option>)}</select></label>
-          <label className="field">Capture mode<select value={capture} onChange={(e) => setCapture(e.target.value)}>{modes.map((m) => <option key={m}>{m}</option>)}</select></label>
-        </div>
-        <label className="field">Paste script — auto-splits into beats
-          <textarea rows={9} value={script} placeholder={"HOOK: the scroll-stopping line\n\nBEAT\nSpoken: what you say\nOn-screen: BIG TEXT\nShot: label close-up\nProof: yes"} onChange={(e) => setScript(e.target.value)} />
+        <label className="field">Paste your script here <span className="muted">(optional — or leave blank and write it later)</span>
+          <textarea rows={8} value={script} placeholder={"HOOK: the line that stops people scrolling\n\nBEAT\nSpoken: what you say out loud\nOn-screen: BIG TEXT\nShot: what to film\n\nBEAT\nSpoken: the next thing you say"} onChange={(e) => setScript(e.target.value)} />
         </label>
         <div className="modal-actions">
           <button onClick={onClose} disabled={busy}>Cancel</button>
-          <button className="primary" onClick={create} disabled={busy}>{busy ? "Creating…" : "Create ticket"}</button>
+          <button className="primary" onClick={create} disabled={busy}>{busy ? "Creating…" : "Create video"}</button>
         </div>
       </div>
     </div>
@@ -245,7 +257,6 @@ function TicketDetail({ tid, stages, presets, onClose, onChanged }: { tid: numbe
     } catch (e: any) { toast(`Assemble failed: ${e?.message || e}`, "err"); }
   };
 
-  const formats = presets?.formats ?? ["reel", "carousel"];
   const modes = presets?.capture_modes ?? ["longform-clip", "native-short", "repurpose"];
 
   return (
@@ -257,39 +268,38 @@ function TicketDetail({ tid, stages, presets, onClose, onChanged }: { tid: numbe
           return (
             <>
               <div className="drawer-head">
-                <input className="drawer-angle-input" defaultValue={ticket.angle} placeholder="angle…"
+                <input className="drawer-angle-input" defaultValue={ticket.angle} placeholder="What's it about?"
                   onBlur={(e) => e.target.value !== ticket.angle && patchT({ angle: e.target.value })} />
                 <button className="icon-btn" onClick={onClose} title="Close">✕</button>
               </div>
               <div className="drawer-meta-row">
-                <span className={"lane lane-" + laneOf(ticket.capture_mode)}>{laneOf(ticket.capture_mode)}</span>
-                <select value={ticket.capture_mode} onChange={(e) => patchT({ capture_mode: e.target.value })}>{modes.map((m) => <option key={m}>{m}</option>)}</select>
-                <select value={ticket.format} onChange={(e) => patchT({ format: e.target.value })}>{formats.map((f) => <option key={f}>{f}</option>)}</select>
+                <span className="muted" style={{ fontSize: 12.5 }}>How you'll make it:</span>
+                <select value={ticket.capture_mode} onChange={(e) => patchT({ capture_mode: e.target.value })}>{modes.map((m) => <option key={m} value={m}>{modeLabel(m)}</option>)}</select>
               </div>
               <div className="drawer-stage">
-                <button className="icon-btn" onClick={() => move(-1)} disabled={stages.indexOf(ticket.stage) <= 0}>◀</button>
+                <button className="icon-btn" onClick={() => move(-1)} disabled={stages.indexOf(ticket.stage) <= 0} title="Back a step">◀</button>
                 <span className="stage-pill">{STAGE_LABELS[ticket.stage] ?? ticket.stage}</span>
-                <button className="icon-btn" onClick={() => move(1)} disabled={stages.indexOf(ticket.stage) >= stages.length - 1}>▶</button>
+                <button className="icon-btn" onClick={() => move(1)} disabled={stages.indexOf(ticket.stage) >= stages.length - 1} title="Forward a step">▶</button>
               </div>
-              <label className="field">Hook
-                <input key={ticket.hook_text} defaultValue={ticket.hook_text} placeholder="first-frame hook…"
+              <label className="field">First line (the hook)
+                <input key={ticket.hook_text} defaultValue={ticket.hook_text} placeholder="the line that stops people scrolling"
                   onBlur={(e) => e.target.value !== ticket.hook_text && patchT({ hook_text: e.target.value })} />
               </label>
 
               <div className="ai-row">
-                <button onClick={runScript} disabled={!!aiBusy}>{aiBusy === "script" ? "Writing…" : "✨ Run Script Factory"}</button>
-                <button onClick={runHooks} disabled={!!aiBusy}>{aiBusy === "hook" ? "Forging…" : "✨ Run Hook Forge"}</button>
+                <button onClick={runScript} disabled={!!aiBusy}>{aiBusy === "script" ? "Writing…" : "✨ Write my script"}</button>
+                <button onClick={runHooks} disabled={!!aiBusy}>{aiBusy === "hook" ? "Thinking…" : "✨ Suggest first lines"}</button>
               </div>
               {hooks && (
                 <div className="hook-options">
-                  <div className="muted" style={{ fontSize: 12.5, marginBottom: 4 }}>Pick a hook:</div>
+                  <div className="muted" style={{ fontSize: 12.5, marginBottom: 4 }}>Tap one to use it:</div>
                   {hooks.map((h, i) => <button key={i} className="hook-chip" onClick={() => pickHook(h)}>{h}</button>)}
                 </div>
               )}
 
               <div className="drawer-sec-head">
-                <h4>Beats ({beats.length})</h4>
-                {proofGaps > 0 && <span className="warn-chip">⚠ {proofGaps} proof beat{proofGaps > 1 ? "s" : ""} missing a clip</span>}
+                <h4>Scenes ({beats.length})</h4>
+                {proofGaps > 0 && <span className="warn-chip">⚠ {proofGaps} scene{proofGaps > 1 ? "s" : ""} need a video showing proof</span>}
               </div>
 
               {beats.length === 0 ? (
@@ -303,7 +313,7 @@ function TicketDetail({ tid, stages, presets, onClose, onChanged }: { tid: numbe
                     ))}
                   </div>
                   <div className="beat-add-row">
-                    <button onClick={addBeat}>+ Add beat</button>
+                    <button onClick={addBeat}>+ Add scene</button>
                     <ReimportBox tid={tid} onDone={() => { load(); onChanged(); }} />
                   </div>
                 </>
@@ -311,14 +321,16 @@ function TicketDetail({ tid, stages, presets, onClose, onChanged }: { tid: numbe
 
               {ticket.capture_mode === "native-short" && beats.length > 0 && (
                 <div className="assemble-box">
-                  <button className="primary" onClick={assembleReel} disabled={asm?.state === "running"}>
-                    {asm?.state === "running" ? `⏳ ${asm.stage}…` : ticket.clip_url ? "↻ Re-assemble reel" : "🎬 Assemble reel"}
+                  <div className="muted" style={{ fontSize: 12.5, marginBottom: 8 }}>Added a video + voice to each scene? Make the final video:</div>
+                  <button className="primary big-btn" onClick={assembleReel} disabled={asm?.state === "running"}>
+                    {asm?.state === "running" ? `⏳ ${asm.stage}…` : ticket.clip_url ? "↻ Make it again" : "🎬 Make my video"}
                   </button>
                   {asm?.state === "error" && <div className="err">{asm.error}</div>}
                   {ticket.clip_url && asm?.state !== "running" && (
                     <div className="reel-out">
+                      <div className="muted" style={{ fontSize: 12.5 }}>Done! Here's your video:</div>
                       <video src={api.ticketDownloadUrl(tid)} controls playsInline className="reel-video" />
-                      <button onClick={() => downloadFile(api.ticketDownloadUrl(tid), safeFileName(ticket.angle || "reel"), toast)}>⬇ Download reel</button>
+                      <button className="primary" onClick={() => downloadFile(api.ticketDownloadUrl(tid), safeFileName(ticket.angle || "reel"), toast)}>⬇ Save video</button>
                     </div>
                   )}
                 </div>
@@ -358,21 +370,21 @@ function BeatRow({ b, first, last, onChanged, onReorder, toast }: {
     <div className={"beat beat-edit" + (b.is_proof_beat && !b.clip_path ? " beat-warn" : "")}>
       <div className="beat-idx">{b.order_index + 1}</div>
       <div className="beat-body">
-        <textarea className="beat-in spoken" rows={2} defaultValue={b.spoken_line} placeholder="Spoken line (teleprompter)…" onBlur={(e) => save("spoken_line", e.target.value)} />
-        <input className="beat-in" defaultValue={b.on_screen_text} placeholder="On-screen text…" onBlur={(e) => save("on_screen_text", e.target.value)} />
-        <input className="beat-in" defaultValue={b.caption} placeholder="Caption (karaoke)…" onBlur={(e) => save("caption", e.target.value)} />
-        <input className="beat-in" defaultValue={b.shot_cue} placeholder="Shot cue (what to film)…" onBlur={(e) => save("shot_cue", e.target.value)} />
+        <textarea className="beat-in spoken" rows={2} defaultValue={b.spoken_line} placeholder="What you say out loud…" onBlur={(e) => save("spoken_line", e.target.value)} />
+        <input className="beat-in" defaultValue={b.on_screen_text} placeholder="Big text on screen…" onBlur={(e) => save("on_screen_text", e.target.value)} />
+        <input className="beat-in" defaultValue={b.caption} placeholder="Captions (words along the bottom)…" onBlur={(e) => save("caption", e.target.value)} />
+        <input className="beat-in" defaultValue={b.shot_cue} placeholder="What to film…" onBlur={(e) => save("shot_cue", e.target.value)} />
         <div className="beat-media">
           <button className={"slot" + (b.clip_path ? " filled" : "")} onClick={() => clipInput.current?.click()} disabled={up === "clip"}>
-            {up === "clip" ? "…" : b.clip_path ? "✓ Clip" : "＋ Clip"}
+            {up === "clip" ? "…" : b.clip_path ? "✓ Video added" : "＋ Add video"}
           </button>
           <button className={"slot" + (b.voiceover_path ? " filled" : "")} onClick={() => voInput.current?.click()} disabled={up === "vo"}>
-            {up === "vo" ? "…" : b.voiceover_path ? "✓ Voiceover" : "＋ Voiceover"}
+            {up === "vo" ? "…" : b.voiceover_path ? "✓ Voice added" : "＋ Add voice"}
           </button>
           <input ref={clipInput} type="file" accept="video/*" hidden onChange={(e) => upClip(e.target.files?.[0])} />
           <input ref={voInput} type="file" accept="audio/*" hidden onChange={(e) => upVo(e.target.files?.[0])} />
         </div>
-        {b.is_proof_beat && !b.clip_path && <div className="beat-warn-txt">⚠ proof beat — needs a clip showing the product/label</div>}
+        {b.is_proof_beat && !b.clip_path && <div className="beat-warn-txt">⚠ This scene says a real number — add a video that shows the product/label</div>}
       </div>
       <div className="beat-ctl">
         <button className="icon-btn" disabled={first} title="Move up" onClick={() => onReorder(b, -1)}>▲</button>
@@ -391,19 +403,19 @@ function ReimportBox({ tid, onDone, empty }: { tid: number; onDone: () => void; 
   const [script, setScript] = useState("");
   const [busy, setBusy] = useState(false);
   const toast = useToast();
-  if (!open) return <button className="link-btn" onClick={() => setOpen(true)}>Re-import script…</button>;
+  if (!open) return <button className="link-btn" onClick={() => setOpen(true)}>Paste a script</button>;
   const run = async () => {
     setBusy(true);
-    try { const r = await api.importScript(tid, script); toast(`Imported ${r.beats.length} beats`, "ok"); setScript(""); setOpen(!!empty); onDone(); }
+    try { const r = await api.importScript(tid, script); toast(`Made ${r.beats.length} scenes`, "ok"); setScript(""); setOpen(!!empty); onDone(); }
     catch (e: any) { toast(`Failed: ${e?.message || e}`, "err"); } finally { setBusy(false); }
   };
   return (
     <div className="reimport">
-      <div className="muted" style={{ fontSize: 12.5 }}>{empty ? "Paste a script to generate beats:" : "Re-import replaces all beats:"}</div>
-      <textarea rows={6} value={script} placeholder={"HOOK: ...\n\nBEAT\nSpoken: ..."} onChange={(e) => setScript(e.target.value)} />
+      <div className="muted" style={{ fontSize: 12.5 }}>{empty ? "Paste your script — it turns into scenes:" : "This replaces all the scenes below:"}</div>
+      <textarea rows={6} value={script} placeholder={"HOOK: the line that stops people scrolling\n\nBEAT\nSpoken: what you say out loud\nShot: what to film"} onChange={(e) => setScript(e.target.value)} />
       <div className="modal-actions">
         {!empty && <button onClick={() => setOpen(false)} disabled={busy}>Cancel</button>}
-        <button className="primary" onClick={run} disabled={busy || !script.trim()}>{busy ? "Importing…" : "Import beats"}</button>
+        <button className="primary" onClick={run} disabled={busy || !script.trim()}>{busy ? "Working…" : "Use this script"}</button>
       </div>
     </div>
   );
@@ -429,32 +441,32 @@ function Intake({ onSpun }: { onSpun: () => void }) {
 
   return (
     <div className="page">
-      <div className="page-head"><h2>Intake</h2><span className="muted">paste outliers → swipe file → spin tickets</span></div>
+      <div className="page-head"><h2>Ideas</h2><span className="muted">Save videos that inspire you — turn any one into a new video</span></div>
       <div className="intake-form">
+        <label className="field">What's the idea?<input value={f.angle} placeholder="e.g. hidden sugar in sauces" onChange={(e) => setF({ ...f, angle: e.target.value })} /></label>
         <div className="form-row">
-          <label className="field">Angle<input value={f.angle} placeholder="e.g. label-reading" onChange={(e) => setF({ ...f, angle: e.target.value })} /></label>
-          <label className="field">Source URL<input value={f.url} placeholder="https://…" onChange={(e) => setF({ ...f, url: e.target.value })} /></label>
+          <label className="field">Their first line <span className="muted">(optional)</span><input value={f.hook} placeholder="the line that grabbed you" onChange={(e) => setF({ ...f, hook: e.target.value })} /></label>
+          <label className="field">Link <span className="muted">(optional)</span><input value={f.url} placeholder="https://…" onChange={(e) => setF({ ...f, url: e.target.value })} /></label>
         </div>
-        <label className="field">Hook<input value={f.hook} placeholder="the scroll-stopping line" onChange={(e) => setF({ ...f, hook: e.target.value })} /></label>
-        <label className="field">Why it popped<textarea rows={2} value={f.why_popped} onChange={(e) => setF({ ...f, why_popped: e.target.value })} /></label>
-        <div className="modal-actions"><button className="primary" onClick={add} disabled={busy}>{busy ? "Adding…" : "+ Add outlier"}</button></div>
+        <label className="field">Why it worked <span className="muted">(optional)</span><textarea rows={2} value={f.why_popped} onChange={(e) => setF({ ...f, why_popped: e.target.value })} /></label>
+        <div className="modal-actions"><button className="primary" onClick={add} disabled={busy}>{busy ? "Saving…" : "Save this idea"}</button></div>
       </div>
 
-      <div className="page-head" style={{ marginTop: 28 }}><h3 style={{ margin: 0 }}>Swipe file</h3><span className="muted">{outliers?.length ?? 0} saved</span></div>
+      <div className="page-head" style={{ marginTop: 28 }}><h3 style={{ margin: 0 }}>Saved ideas</h3><span className="muted">{outliers?.length ?? 0} saved</span></div>
       {outliers == null ? <div className="muted">Loading…</div> : outliers.length === 0 ? (
-        <div className="empty"><div className="big" style={{ fontSize: 26 }}>✎</div><div style={{ fontWeight: 700, color: "var(--text)" }}>Empty swipe file</div><div>Add an outlier above to start mining angles.</div></div>
+        <div className="empty"><div className="big" style={{ fontSize: 26 }}>💡</div><div style={{ fontWeight: 700, color: "var(--text)" }}>No saved ideas yet</div><div>Add one above to get started.</div></div>
       ) : (
         <div className="swipe-list">
           {outliers.map((o) => (
             <div className="swipe-card" key={o.id}>
               <div className="swipe-main">
-                <div className="swipe-angle">{o.angle || <span className="muted">(no angle)</span>}</div>
+                <div className="swipe-angle">{o.angle || <span className="muted">(no title)</span>}</div>
                 {o.hook && <div className="swipe-hook">“{o.hook}”</div>}
                 {o.why_popped && <div className="muted swipe-why">{o.why_popped}</div>}
                 {o.url && <a className="swipe-url" href={o.url} target="_blank" rel="noreferrer">{o.url}</a>}
               </div>
               <div className="swipe-actions">
-                <button className="primary" onClick={() => spin(o)}>Spin ticket →</button>
+                <button className="primary" onClick={() => spin(o)}>Make a video from this →</button>
                 <button className="icon-btn danger" title="Delete" onClick={() => del(o)}>🗑</button>
               </div>
             </div>
@@ -476,12 +488,12 @@ function Library() {
   if (items == null) return <div className="page"><div className="proj-grid">{[0, 1, 2, 3].map((i) => <div key={i} className="skeleton" style={{ height: 230 }} />)}</div></div>;
   return (
     <div className="page">
-      <div className="page-head"><h2>Exports</h2><span className="muted">{items.length} rendered output{items.length === 1 ? "" : "s"}</span></div>
+      <div className="page-head"><h2>Downloads</h2><span className="muted">{items.length} finished video{items.length === 1 ? "" : "s"}</span></div>
       {items.length === 0 ? (
         <div className="empty">
           <div className="big" style={{ fontSize: 28 }}>⬇</div>
-          <div style={{ fontWeight: 700, color: "var(--text)", fontSize: 16 }}>No exports yet</div>
-          <div>Render a clip or assemble a reel — finished videos collect here for download.</div>
+          <div style={{ fontWeight: 700, color: "var(--text)", fontSize: 16 }}>No videos yet</div>
+          <div>Make a video and it shows up here, ready to download.</div>
         </div>
       ) : (
         <div className="proj-grid">
@@ -518,29 +530,29 @@ function Insights() {
   );
   return (
     <div className="page">
-      <div className="page-head"><h2>Insights</h2><span className="muted">Signal Reader · ranks angles by saves + follows</span></div>
+      <div className="page-head"><h2>Results</h2><span className="muted">What's working — ranked by saves + follows, the numbers that matter</span></div>
       <div className="kpi-row">
-        {kpi("Tickets", k?.tickets ?? 0)}{kpi("Posted", k?.posted ?? 0)}
+        {kpi("Videos", k?.tickets ?? 0)}{kpi("Posted", k?.posted ?? 0)}
         {kpi("Follows", k?.follows ?? 0, true)}{kpi("Saves", k?.saves ?? 0, true)}
-        {kpi("Views", k?.views ?? 0)}{kpi("Sends", k?.sends ?? 0)}
+        {kpi("Views", k?.views ?? 0)}{kpi("Shares", k?.sends ?? 0)}
       </div>
 
       <PerfLogger tickets={tickets} onLogged={refresh} />
 
       <div className="ins-cols">
         <div>
-          <h3 className="ins-h">Angle ranking <span className="muted">(saves + follows)</span></h3>
-          {!data || data.angles.length === 0 ? <div className="muted">No angles ranked yet — log some performance below.</div> : (
-            <table className="ins-table"><thead><tr><th>Angle</th><th>Posts</th><th>Avg score</th></tr></thead>
+          <h3 className="ins-h">Best ideas <span className="muted">(by saves + follows)</span></h3>
+          {!data || data.angles.length === 0 ? <div className="muted">Nothing here yet — add how a video did below.</div> : (
+            <table className="ins-table"><thead><tr><th>Idea</th><th>Posts</th><th>Avg score</th></tr></thead>
               <tbody>{data.angles.map((a) => <tr key={a.angle}><td>{a.angle}</td><td>{a.posts_count}</td><td><b>{a.avg_score}</b></td></tr>)}</tbody>
             </table>
           )}
         </div>
         <div>
-          <h3 className="ins-h">Top performers</h3>
-          {!data || data.top.length === 0 ? <div className="muted">No performance logged yet.</div> : (
-            <table className="ins-table"><thead><tr><th>#</th><th>Angle</th><th>Saves+Follows</th></tr></thead>
-              <tbody>{data.top.map((t, i) => <tr key={t.ticket_id}><td>{i + 1}</td><td>{t.angle || `Ticket ${t.ticket_id}`}</td><td><b>{t.score}</b></td></tr>)}</tbody>
+          <h3 className="ins-h">Best videos</h3>
+          {!data || data.top.length === 0 ? <div className="muted">Nothing logged yet.</div> : (
+            <table className="ins-table"><thead><tr><th>#</th><th>Idea</th><th>Saves+Follows</th></tr></thead>
+              <tbody>{data.top.map((t, i) => <tr key={t.ticket_id}><td>{i + 1}</td><td>{t.angle || `Video ${t.ticket_id}`}</td><td><b>{t.score}</b></td></tr>)}</tbody>
             </table>
           )}
         </div>
@@ -564,18 +576,18 @@ function PerfLogger({ tickets, onLogged }: { tickets: Ticket[]; onLogged: () => 
   };
   return (
     <div className="perf-log">
-      <h3 className="ins-h">Log performance</h3>
+      <h3 className="ins-h">Add how a video did</h3>
       <div className="perf-row">
         <select value={tid} onChange={(e) => setTid(e.target.value ? parseInt(e.target.value, 10) : "")}>
-          <option value="">Select ticket…</option>
-          {tickets.map((t) => <option key={t.id} value={t.id}>{t.angle || `Ticket ${t.id}`} ({t.stage})</option>)}
+          <option value="">Pick a video…</option>
+          {tickets.map((t) => <option key={t.id} value={t.id}>{t.angle || `Video ${t.id}`}</option>)}
         </select>
         <select value={platform} onChange={(e) => setPlatform(e.target.value)}><option value="tt">TikTok</option><option value="ig">Instagram</option><option value="yt">YouTube</option></select>
         <label>Views<input type="number" value={f.views} onChange={num("views")} /></label>
         <label>Follows<input type="number" value={f.follows} onChange={num("follows")} /></label>
         <label>Saves<input type="number" value={f.saves} onChange={num("saves")} /></label>
-        <label>Sends<input type="number" value={f.sends} onChange={num("sends")} /></label>
-        <button className="primary" onClick={log} disabled={busy}>{busy ? "…" : "Log"}</button>
+        <label>Shares<input type="number" value={f.sends} onChange={num("sends")} /></label>
+        <button className="primary" onClick={log} disabled={busy}>{busy ? "…" : "Save"}</button>
       </div>
     </div>
   );
