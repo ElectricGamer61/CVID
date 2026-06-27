@@ -128,7 +128,7 @@ label.field { display: flex; flex-direction: column; gap: 6px; font-size: 12.5px
 .crumbs .cur { color: var(--text); }
 .spacer { flex: 1; }
 
-.page { max-width: 1240px; margin: 0 auto; padding: 28px 24px 60px; }
+.page { width: 100%; max-width: 1240px; margin: 0 auto; padding: 28px 24px 60px; }
 .page-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; }
 .page-head h2 { font-size: 24px; margin: 0; font-weight: 800; letter-spacing: -0.02em; }
 .muted { color: var(--muted); font-size: 14px; }
@@ -143,14 +143,14 @@ label.field { display: flex; flex-direction: column; gap: 6px; font-size: 12.5px
 .seg button.on { background: var(--surface); color: var(--text); box-shadow: var(--shadow-sm); }
 
 /* ---------------- project grid ---------------- */
-.proj-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(248px, 1fr)); gap: 18px; }
+.proj-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 18px; }
 .proj-card {
   background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg);
   overflow: hidden; box-shadow: var(--shadow-sm); transition: var(--ease); cursor: pointer;
   display: flex; flex-direction: column;
 }
 .proj-card:hover { box-shadow: var(--shadow-lg); transform: translateY(-3px); border-color: var(--border-2); }
-.proj-thumb { aspect-ratio: 16 / 10; background: linear-gradient(135deg, #eef0f6, #e3e6ef); position: relative; overflow: hidden; }
+.proj-thumb { aspect-ratio: 9 / 16; background: linear-gradient(135deg, #eef0f6, #e3e6ef); position: relative; overflow: hidden; }
 .proj-thumb img { width: 100%; height: 100%; object-fit: cover; }
 .proj-thumb .ph { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted-2); }
 .proj-body { padding: 13px 15px 15px; display: flex; flex-direction: column; gap: 8px; }
@@ -176,10 +176,10 @@ label.field { display: flex; flex-direction: column; gap: 6px; font-size: 12.5px
 @keyframes shimmer { 0% { background-position: 100% 0; } 100% { background-position: -100% 0; } }
 
 /* ---------------- moments grid ---------------- */
-.moments-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 18px; }
+.moments-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 18px; }
 .moment-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg); overflow: hidden; box-shadow: var(--shadow-sm); transition: var(--ease); }
 .moment-card:hover { box-shadow: var(--shadow-lg); transform: translateY(-3px); }
-.moment-thumb { position: relative; aspect-ratio: 16/9; background: #11141b; cursor: pointer; overflow: hidden; }
+.moment-thumb { position: relative; aspect-ratio: 9 / 16; background: #11141b; cursor: pointer; overflow: hidden; }
 .moment-thumb img { width: 100%; height: 100%; object-fit: cover; }
 .moment-play { position: absolute; inset: 0; margin: auto; width: 52px; height: 52px; border-radius: 50%; background: rgba(255,255,255,0.92); color: var(--primary); display: grid; place-items: center; font-size: 18px; box-shadow: var(--shadow); transition: var(--ease); }
 .moment-thumb:hover .moment-play { transform: scale(1.1); }
@@ -343,7 +343,7 @@ input[type=range] { width: 100%; accent-color: var(--primary); }
 /* exports / library */
 .exp-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r); overflow: hidden; box-shadow: var(--shadow-sm); transition: box-shadow var(--ease), transform var(--ease); }
 .exp-card:hover { box-shadow: var(--shadow); transform: translateY(-2px); }
-.exp-thumb { position: relative; aspect-ratio: 9 / 16; max-height: 240px; background: var(--surface-3); display: grid; place-items: center; overflow: hidden; }
+.exp-thumb { position: relative; aspect-ratio: 9 / 16; background: var(--surface-3); display: grid; place-items: center; overflow: hidden; }
 .exp-thumb img { width: 100%; height: 100%; object-fit: cover; }
 .exp-noimg { font-size: 40px; opacity: .5; }
 .exp-kind { position: absolute; top: 8px; left: 8px; background: rgba(0,0,0,.55); color: #fff; font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em; padding: 2px 8px; border-radius: 999px; }
