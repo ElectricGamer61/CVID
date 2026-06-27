@@ -39,6 +39,13 @@ ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "")
 ELEVENLABS_MODEL = os.getenv("CVIDEO_ELEVENLABS_MODEL", "scribe_v1")
 DEFAULT_TRANSCRIBE = os.getenv("CVIDEO_DEFAULT_TRANSCRIBE", "local")
 
+# --- Posting (Phase 6 schedule/post) -----------------------------------------
+# Upload-Post SDK key. When empty, the poster runs in DRY-RUN mode (logs instead
+# of sending) — see app/pipeline/poster.py. Real posting is gated on this.
+UPLOAD_POST_API_KEY = os.getenv("UPLOAD_POST_API_KEY", "")
+# Platforms we can target (matches the per-platform caption keys tt/ig/yt).
+PLATFORMS = ["tt", "ig", "yt"]
+
 # --- Clip generation defaults ------------------------------------------------
 TARGET_CLIP_COUNT = int(os.getenv("CVIDEO_TARGET_CLIPS", "6"))
 MIN_CLIP_SEC = float(os.getenv("CVIDEO_MIN_CLIP", "15"))

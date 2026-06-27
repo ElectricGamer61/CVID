@@ -133,6 +133,17 @@ class LogPerf(BaseModel):
     sends: int = 0
 
 
+class ScheduleTicket(BaseModel):
+    scheduled_at: Optional[str] = None     # ISO datetime; None = unschedule
+    platforms: Optional[list] = None       # ['tt','ig','yt']
+    captions: Optional[dict] = None        # per-platform {tt,ig,yt}
+
+
+class PostTicket(BaseModel):
+    platforms: Optional[list] = None       # default: ticket's platforms or all
+    caption: Optional[str] = None          # default: derived from ticket
+
+
 def _proj_dict(p: Project) -> dict:
     return p.model_dump()
 
@@ -546,11 +557,36 @@ def insights():
         tickets = s.exec(select(Ticket)).all()
         perfs = s.exec(select(Perf)).all()
         angles = s.exec(select(Angle).order_by(Angle.avg_score.desc())).all()
+    from collections import defaultdict
     tmap = {t.id: t for t in tickets}
     by_ticket: dict[int, int] = {}
     for p in perfs:
         by_ticket[p.ticket_id] = by_ticket.get(p.ticket_id, 0) + p.saves + p.follows
     top = sorted(by_ticket.items(), key=lambda kv: kv[1], reverse=True)[:8]
+
+    # Per-platform breakdown (which channel is actually working).
+    _plat: dict[str, dict] = defaultdict(
+        lambda: {"views": 0, "follows": 0, "saves": 0, "sends": 0, "posts": 0})
+    for p in perfs:
+        row = _plat[p.platform or "?"]
+        row["views"] += p.views; row["follows"] += p.follows
+        row["saves"] += p.saves; row["sends"] += p.sends; row["posts"] += 1
+    by_platform = [{"platform": k, **v, "score": v["saves"] + v["follows"]}
+                   for k, v in sorted(_plat.items(),
+                                      key=lambda kv: kv[1]["saves"] + kv[1]["follows"],
+                                      reverse=True)]
+
+    # Trend: totals per capture day (chronological) so the UI can chart momentum.
+    _days: dict[str, dict] = defaultdict(
+        lambda: {"views": 0, "follows": 0, "saves": 0, "sends": 0})
+    for p in perfs:
+        d = p.captured_at.date().isoformat() if p.captured_at else "?"
+        row = _days[d]
+        row["views"] += p.views; row["follows"] += p.follows
+        row["saves"] += p.saves; row["sends"] += p.sends
+    trend = [{"date": d, **v, "score": v["saves"] + v["follows"]}
+             for d, v in sorted(_days.items())]
+
     return {
         "kpis": {
             "tickets": len(tickets),
@@ -563,7 +599,103 @@ def insights():
         "top": [{"ticket_id": tid, "angle": (tmap[tid].angle if tid in tmap else ""),
                  "score": sc} for tid, sc in top],
         "angles": [a.model_dump() for a in angles],
+        "by_platform": by_platform,
+        "trend": trend,
     }
+
+
+# --------------------------------------------------------------------------- #
+# Scheduling / posting (P6) — Upload-Post behind a dry-run adapter
+# --------------------------------------------------------------------------- #
+from .pipeline import poster  # noqa: E402
+
+
+def _ticket_caption(t: Ticket, platform: Optional[str] = None) -> str:
+    """Best caption for a ticket: the platform's own, else any set, else the hook."""
+    caps_map = t.captions if isinstance(t.captions, dict) else {}
+    if platform and caps_map.get(platform):
+        return caps_map[platform]
+    for v in caps_map.values():
+        if v:
+            return v
+    return t.hook_text or t.angle or ""
+
+
+@app.get("/api/queue")
+def queue():
+    """Scheduling board: what's ready to schedule, what's queued, what's posted.
+    `dry_run` tells the UI we'll only log (no UPLOAD_POST_API_KEY set)."""
+    from datetime import datetime
+    from sqlmodel import select
+    with get_session() as s:
+        tickets = s.exec(select(Ticket)).all()
+
+    def card(t: Ticket) -> dict:
+        d = t.model_dump()
+        d["has_video"] = bool(t.clip_url and Path(t.clip_url).exists())
+        return d
+
+    ready = [card(t) for t in tickets if t.stage in ("assembled", "ready") and t.clip_url]
+    sched = sorted([t for t in tickets if t.stage == "scheduled"],
+                   key=lambda t: t.scheduled_at or datetime.max)
+    posted = sorted([t for t in tickets if t.stage == "posted"],
+                    key=lambda t: t.posted_at or datetime.min, reverse=True)[:20]
+    return {"dry_run": not poster.is_live(), "platforms": settings.PLATFORMS,
+            "ready": ready, "scheduled": [card(t) for t in sched],
+            "posted": [card(t) for t in posted]}
+
+
+@app.post("/api/tickets/{tid}/schedule")
+def schedule_ticket(tid: int, body: ScheduleTicket):
+    """Queue a reel for a time (or clear it). Sets stage=scheduled."""
+    from datetime import datetime
+    with get_session() as s:
+        t = s.get(Ticket, tid)
+        if not t:
+            raise HTTPException(404, "ticket not found")
+        if body.scheduled_at:
+            try:
+                t.scheduled_at = datetime.fromisoformat(body.scheduled_at)
+            except ValueError:
+                raise HTTPException(400, "scheduled_at must be an ISO datetime")
+            t.stage = "scheduled"
+        else:                                   # clear → back out of the queue
+            t.scheduled_at = None
+            if t.stage == "scheduled":
+                t.stage = "ready" if t.clip_url else "assembled"
+        if body.platforms is not None:
+            t.platforms = body.platforms
+        if body.captions is not None:
+            t.captions = body.captions
+        s.add(t); s.commit(); s.refresh(t)
+        return t.model_dump()
+
+
+@app.post("/api/tickets/{tid}/post")
+def post_ticket(tid: int, body: PostTicket):
+    """Post now via the dry-run adapter (logs unless UPLOAD_POST_API_KEY is set).
+    Marks the ticket posted so it shows up in Results."""
+    from datetime import datetime
+    with get_session() as s:
+        t = s.get(Ticket, tid)
+        if not t:
+            raise HTTPException(404, "ticket not found")
+        platforms = body.platforms or t.platforms or settings.PLATFORMS
+        caption = body.caption or _ticket_caption(t)
+        video = t.clip_url
+    try:
+        result = poster.post_reel(ticket_id=tid, video_path=video, caption=caption,
+                                  platforms=platforms, when=None)
+    except Exception as e:  # surfaces real-mode misconfig as a 400
+        raise HTTPException(400, f"{e}")
+    with get_session() as s:
+        t = s.get(Ticket, tid)
+        t.stage = "posted"
+        t.platforms = platforms
+        if not t.posted_at:
+            t.posted_at = datetime.utcnow()
+        s.add(t); s.commit()
+    return result
 
 
 # --------------------------------------------------------------------------- #

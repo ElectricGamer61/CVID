@@ -1,4 +1,4 @@
-type View = "home" | "board" | "intake" | "insights" | "library";
+type View = "home" | "board" | "intake" | "queue" | "insights" | "library";
 
 const ICONS: Record<string, JSX.Element> = {
   home: (
@@ -22,6 +22,11 @@ const ICONS: Record<string, JSX.Element> = {
       <path d="M4 19V5" /><path d="M4 19h16" /><rect x="7" y="11" width="3" height="5" /><rect x="13" y="7" width="3" height="9" />
     </svg>
   ),
+  queue: (
+    <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="3" y="4" width="18" height="17" rx="2" /><path d="M3 9h18" /><path d="M8 2v4" /><path d="M16 2v4" /><path d="M12 13l2 2 4-4" transform="translate(-3 0)" />
+    </svg>
+  ),
   library: (
     <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <rect x="3" y="4" width="7" height="7" rx="1.5" /><rect x="14" y="4" width="7" height="7" rx="1.5" />
@@ -36,7 +41,7 @@ const ICONS: Record<string, JSX.Element> = {
   ),
 };
 
-export function Sidebar({ view, onHome, onBoard, onIntake, onInsights, onLibrary }: { view: View; onHome: () => void; onBoard?: () => void; onIntake?: () => void; onInsights?: () => void; onLibrary?: () => void }) {
+export function Sidebar({ view, onHome, onBoard, onIntake, onQueue, onInsights, onLibrary }: { view: View; onHome: () => void; onBoard?: () => void; onIntake?: () => void; onQueue?: () => void; onInsights?: () => void; onLibrary?: () => void }) {
   const item = (key: string, label: string, active: boolean, onClick?: () => void) => (
     <button className={"nav-item" + (active ? " on" : "")} onClick={onClick} title={label} disabled={!onClick}>
       {ICONS[key]}
@@ -52,6 +57,7 @@ export function Sidebar({ view, onHome, onBoard, onIntake, onInsights, onLibrary
         {item("home", "Home", view === "home", onHome)}
         {item("intake", "Outliers", view === "intake", onIntake)}
         {item("board", "Create videos", view === "board", onBoard)}
+        {item("queue", "Schedule", view === "queue", onQueue)}
         {item("insights", "Results", view === "insights", onInsights)}
         {item("library", "Downloads", view === "library", onLibrary)}
       </nav>

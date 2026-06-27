@@ -120,10 +120,33 @@ export interface Outlier {
   created_at: string;
 }
 
+export interface PlatformStat {
+  platform: string; views: number; follows: number; saves: number; sends: number; posts: number; score: number;
+}
+export interface TrendPoint {
+  date: string; views: number; follows: number; saves: number; sends: number; score: number;
+}
 export interface InsightsData {
   kpis: { tickets: number; posted: number; views: number; follows: number; saves: number; sends: number };
   top: { ticket_id: number; angle: string; score: number }[];
   angles: { angle: string; outlier_id: number | null; posts_count: number; avg_score: number }[];
+  by_platform: PlatformStat[];
+  trend: TrendPoint[];
+}
+
+export interface QueueTicket extends Ticket {
+  has_video: boolean;
+}
+export interface QueueData {
+  dry_run: boolean;
+  platforms: string[];
+  ready: QueueTicket[];
+  scheduled: QueueTicket[];
+  posted: QueueTicket[];
+}
+export interface PostResult {
+  dry_run: boolean; action: string; platforms: string[];
+  results: Record<string, string>; message: string;
 }
 
 export interface ExportItem {
@@ -263,6 +286,13 @@ export const api = {
   getInsights: (): Promise<InsightsData> => fetch("/api/insights").then((r) => r.json()),
   logPerf: (body: { ticket_id: number; platform: string; views: number; follows: number; saves: number; sends: number }): Promise<{ ok: boolean }> =>
     fetch("/api/perf", { method: "POST", headers: J, body: JSON.stringify(body) }).then((r) => r.json()),
+
+  // --- Scheduling / posting (P6) ---
+  getQueue: (): Promise<QueueData> => fetch("/api/queue").then((r) => r.json()),
+  scheduleTicket: (tid: number, body: { scheduled_at: string | null; platforms?: string[]; captions?: Record<string, string> }): Promise<Ticket> =>
+    fetch(`/api/tickets/${tid}/schedule`, { method: "POST", headers: J, body: JSON.stringify(body) }).then(async (r) => { if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.status); return r.json(); }),
+  postTicket: (tid: number, body: { platforms?: string[]; caption?: string } = {}): Promise<PostResult> =>
+    fetch(`/api/tickets/${tid}/post`, { method: "POST", headers: J, body: JSON.stringify(body) }).then(async (r) => { if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.status); return r.json(); }),
 
   sourceUrl: (pid: number) => `/api/projects/${pid}/source`,
   previewUrl: (cid: number) => `/api/clips/${cid}/preview`,

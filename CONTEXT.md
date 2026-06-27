@@ -136,8 +136,13 @@ uploads AND by `build-edit` reels).
   markers+words, then open it in the editor) · `/{tid}/script-factory` · `/{tid}/hook-forge` ·
   `/{tid}/assemble` (+ `/assemble-status`) · `/{tid}/use-clip/{cid}` · `/{tid}/download`.
 - **Beats:** `PATCH /api/beats/{bid}` · add/`DELETE`/reorder · `POST /{bid}/clip` · `/{bid}/voiceover`.
+- **Schedule/post (P6):** **`GET /api/queue`** → `{dry_run, platforms, ready[], scheduled[], posted[]}`
+  (each card carries `has_video`). **`POST /api/tickets/{tid}/schedule`** (set `scheduled_at`/`platforms`/
+  `captions`, stage→`scheduled`; null `scheduled_at` clears → back to `ready`). **`POST /{tid}/post`**
+  → calls `pipeline/poster.post_reel` (dry-run unless `UPLOAD_POST_API_KEY` set), stage→`posted`.
 - **Outliers:** CRUD + `POST /api/tickets/from-outlier/{oid}`.
-- **Insights:** `POST /api/perf` · `GET /api/insights`. **`GET /api/exports`** — all rendered clips +
+- **Insights:** `POST /api/perf` · `GET /api/insights` (now also returns **`by_platform`**
+  per-channel views/follows/saves/sends/score + **`trend`** totals-per-capture-day). **`GET /api/exports`** — all rendered clips +
   reels, each with folder metadata: `group` (brand for reels / project for clips), `subgroup`
   ("Reels"/"Clips"), `hook`, `filename` (hook-based).
 - **Presets:** `GET /api/presets` — captions, caption_styles, aspects, brains, transcribe,
@@ -149,8 +154,8 @@ uploads AND by `build-edit` reels).
 ## 6. Frontend (frontend/src/, React + Vite + TS, plain CSS)
 
 Light "Soft-UI" theme (Plus Jakarta Sans). **Sidebar:** Home · **Outliers** · **Create videos** ·
-Results · Downloads (internal routes: home/intake/board/insights/library). Plain-language UI: a
-ticket = "video", a beat = "scene", an outlier = an "idea".
+**Schedule** · Results · Downloads (internal routes: home/intake/board/queue/insights/library).
+Plain-language UI: a ticket = "video", a beat = "scene", an outlier = an "idea".
 
 - **App.tsx** — routes (home | board | intake | insights | library | project | **editor** with an
   optional `from:"board"`), shell, and all screens + the **ClipEditor** workspace.
@@ -212,9 +217,14 @@ ticket = "video", a beat = "scene", an outlier = an "idea".
 
 ## 8. Known limitations / next ideas (next-steps backlog)
 
-- **Pipeline P6 (schedule/post) NOT built** — spec'd in `.claude/commands/goal.md` as an Upload-Post
-  **dry-run adapter** (needs `UPLOAD_POST_API_KEY`) + a Queue/calendar screen. P1–P5 done.
-- **Metrics** — Results logs perf manually; beef up dashboards / per-platform / trends; later auto-pull.
+- **Pipeline P6 (schedule/post) BUILT** (2026-06-27) — `pipeline/poster.py` Upload-Post **dry-run
+  adapter** (`is_live()` = `bool(UPLOAD_POST_API_KEY)`; no key → logs only, returns synthetic result;
+  real SDK path gated behind the key with a `# FUTURE` wire-up) + `/api/queue` + `/schedule` + `/post`
+  + a **Schedule** screen (ready-to-schedule cards w/ datetime + platform pick + Schedule/Post-now,
+  the queue, recently-posted). All P1–P6 done.
+- **Metrics — Results upgraded** (2026-06-27): `/api/insights` adds `by_platform` + `trend`; the
+  Results screen now shows a **Momentum** day-by-day bar chart + a **By platform** breakdown table.
+  Still manual entry — **auto-pull stats** remains the next refinement.
 - **Forced caption alignment** to the actual recorded speech (currently even-split across the voice).
 - **Long-form whole-clip voice** lacks the reading-speed control + uses `-shortest` (can clip the
   tail); the per-scene reel path has the full voice-first treatment.

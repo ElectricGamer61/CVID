@@ -1,5 +1,5 @@
 import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
-import { api, Beat, Clip, ExportItem, InsightsData, Outlier, Presets, Project, Ticket } from "./api";
+import { api, Beat, Clip, ExportItem, InsightsData, Outlier, Presets, Project, QueueData, QueueTicket, Ticket } from "./api";
 import { CaptionOverlay } from "./CaptionOverlay";
 import { CaptionStyle, FALLBACK_PRESETS, groupLines, Word, wordsInRange } from "./captionStyles";
 import { Sidebar } from "./Sidebar";
@@ -12,6 +12,7 @@ type Route =
   | { name: "home" }
   | { name: "board" }
   | { name: "intake" }
+  | { name: "queue" }
   | { name: "insights" }
   | { name: "library" }
   | { name: "project"; pid: number }
@@ -26,16 +27,17 @@ export default function App() {
   const goHome = () => setRoute({ name: "home" });
   const goBoard = () => setRoute({ name: "board" });
   const goIntake = () => setRoute({ name: "intake" });
+  const goQueue = () => setRoute({ name: "queue" });
   const goInsights = () => setRoute({ name: "insights" });
   const goLibrary = () => setRoute({ name: "library" });
 
-  const NAMED: Record<string, string> = { board: "Create videos", intake: "Outliers", insights: "Results", library: "Downloads" };
+  const NAMED: Record<string, string> = { board: "Create videos", intake: "Outliers", queue: "Schedule", insights: "Results", library: "Downloads" };
   const crumbLabel = NAMED[route.name] ?? null;
-  const sbView = (["board", "intake", "insights", "library"].includes(route.name) ? route.name : "home") as any;
+  const sbView = (["board", "intake", "queue", "insights", "library"].includes(route.name) ? route.name : "home") as any;
 
   return (
     <div className="shell">
-      <Sidebar view={sbView} onHome={goHome} onBoard={goBoard} onIntake={goIntake} onInsights={goInsights} onLibrary={goLibrary} />
+      <Sidebar view={sbView} onHome={goHome} onBoard={goBoard} onIntake={goIntake} onQueue={goQueue} onInsights={goInsights} onLibrary={goLibrary} />
       <main className="main">
         <header className="topbar">
           <div className="crumbs">
@@ -50,6 +52,7 @@ export default function App() {
 
         {route.name === "board" && <Board presets={presets} onOpenEditor={(pid, cid) => setRoute({ name: "editor", pid, cid, from: "board" })} />}
         {route.name === "intake" && <Intake onSpun={goBoard} />}
+        {route.name === "queue" && <Queue />}
         {route.name === "insights" && <Insights />}
         {route.name === "library" && <Library />}
         {route.name === "home" && <Home presets={presets} onOpen={(pid) => setRoute({ name: "project", pid })} />}
@@ -611,6 +614,129 @@ function DownloadFolder({ group, subs, onPreview, onDownload }: {
   );
 }
 
+/* ------------------------------- Queue --------------------------------- */
+const PLATFORM_LABELS: Record<string, string> = { tt: "TikTok", ig: "Instagram", yt: "YouTube" };
+const platLabel = (p: string) => PLATFORM_LABELS[p] ?? p.toUpperCase();
+
+function defaultWhen(): string {
+  // Tomorrow 9:00, formatted for <input type="datetime-local"> (YYYY-MM-DDTHH:MM).
+  const d = new Date(); d.setDate(d.getDate() + 1); d.setHours(9, 0, 0, 0);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+function fmtWhen(iso?: string | null): string {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return iso;
+  return d.toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+}
+
+function Queue() {
+  const [data, setData] = useState<QueueData | null>(null);
+  const refresh = () => api.getQueue().then(setData);
+  useEffect(() => { refresh(); }, []);
+
+  return (
+    <div className="page">
+      <div className="page-head">
+        <h2>Schedule</h2>
+        <span className="muted">Queue your videos and post them to TikTok, Instagram &amp; YouTube</span>
+      </div>
+      {data?.dry_run && (
+        <div className="dry-banner">🧪 <b>Practice mode</b> — posting is simulated, nothing is sent. Add <code>UPLOAD_POST_API_KEY</code> to <code>backend/.env</code> to post for real.</div>
+      )}
+
+      <h3 className="ins-h">Ready to schedule</h3>
+      {!data ? <div className="muted">Loading…</div>
+        : data.ready.length === 0 ? <div className="muted">Nothing ready yet — make a video first; it shows up here once it's assembled.</div>
+        : <div className="q-grid">{data.ready.map((t) => <ScheduleCard key={t.id} t={t} platforms={data.platforms} onDone={refresh} />)}</div>}
+
+      <h3 className="ins-h" style={{ marginTop: 28 }}>In the queue ({data?.scheduled.length ?? 0})</h3>
+      {!data || data.scheduled.length === 0 ? <div className="muted">Nothing queued.</div>
+        : <div className="q-list">{data.scheduled.map((t) => <QueuedRow key={t.id} t={t} onDone={refresh} />)}</div>}
+
+      {data && data.posted.length > 0 && (
+        <>
+          <h3 className="ins-h" style={{ marginTop: 28 }}>Recently posted</h3>
+          <div className="q-list">{data.posted.map((t) => <PostedRow key={t.id} t={t} />)}</div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function ScheduleCard({ t, platforms, onDone }: { t: QueueTicket; platforms: string[]; onDone: () => void }) {
+  const [when, setWhen] = useState(defaultWhen());
+  const [picked, setPicked] = useState<string[]>(t.platforms?.length ? t.platforms : platforms);
+  const [busy, setBusy] = useState("");
+  const toast = useToast();
+  const title = t.hook_text || t.angle || `Video ${t.id}`;
+  const toggle = (p: string) => setPicked((cur) => cur.includes(p) ? cur.filter((x) => x !== p) : [...cur, p]);
+
+  const schedule = async () => {
+    if (picked.length === 0) { toast("Pick at least one platform", "err"); return; }
+    setBusy("sch");
+    try { await api.scheduleTicket(t.id, { scheduled_at: when, platforms: picked }); toast("Added to the queue", "ok"); onDone(); }
+    catch (e: any) { toast(`Failed: ${e?.message || e}`, "err"); } finally { setBusy(""); }
+  };
+  const postNow = async () => {
+    if (picked.length === 0) { toast("Pick at least one platform", "err"); return; }
+    setBusy("post");
+    try { const r = await api.postTicket(t.id, { platforms: picked }); toast(r.message, "ok"); onDone(); }
+    catch (e: any) { toast(`Failed: ${e?.message || e}`, "err"); } finally { setBusy(""); }
+  };
+
+  return (
+    <div className="q-card">
+      <div className="q-thumb">{t.has_video ? <img src={api.ticketThumbUrl(t.id)} alt="" /> : <div className="q-noimg">No preview</div>}</div>
+      <div className="q-body">
+        <div className="q-title">{title}</div>
+        <div className="q-sub muted">{t.brand} · {t.format}</div>
+        <label className="q-when">When<input type="datetime-local" value={when} onChange={(e) => setWhen(e.target.value)} /></label>
+        <div className="q-plats">{platforms.map((p) => (
+          <button key={p} type="button" className={"q-chip" + (picked.includes(p) ? " on" : "")} onClick={() => toggle(p)}>{platLabel(p)}</button>
+        ))}</div>
+        <div className="q-actions">
+          <button className="ghost" onClick={schedule} disabled={!!busy}>{busy === "sch" ? "…" : "Schedule"}</button>
+          <button className="primary" onClick={postNow} disabled={!!busy}>{busy === "post" ? "…" : "Post now"}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function QueuedRow({ t, onDone }: { t: QueueTicket; onDone: () => void }) {
+  const [busy, setBusy] = useState("");
+  const toast = useToast();
+  const title = t.hook_text || t.angle || `Video ${t.id}`;
+  const postNow = async () => { setBusy("post"); try { const r = await api.postTicket(t.id); toast(r.message, "ok"); onDone(); } catch (e: any) { toast(`Failed: ${e?.message || e}`, "err"); } finally { setBusy(""); } };
+  const unsched = async () => { setBusy("un"); try { await api.scheduleTicket(t.id, { scheduled_at: null }); toast("Removed from the queue", "ok"); onDone(); } catch (e: any) { toast(`Failed: ${e?.message || e}`, "err"); } finally { setBusy(""); } };
+  return (
+    <div className="q-row">
+      <div className="q-row-main">
+        <div className="q-title">{title}</div>
+        <div className="q-sub muted">🗓 {fmtWhen(t.scheduled_at)} · {(t.platforms || []).map(platLabel).join(", ") || "no platforms"}</div>
+      </div>
+      <div className="q-actions">
+        <button className="ghost" onClick={unsched} disabled={!!busy}>{busy === "un" ? "…" : "Unschedule"}</button>
+        <button className="primary" onClick={postNow} disabled={!!busy}>{busy === "post" ? "…" : "Post now"}</button>
+      </div>
+    </div>
+  );
+}
+
+function PostedRow({ t }: { t: QueueTicket }) {
+  const title = t.hook_text || t.angle || `Video ${t.id}`;
+  return (
+    <div className="q-row done">
+      <div className="q-row-main">
+        <div className="q-title">{title}</div>
+        <div className="q-sub muted">✅ Posted {fmtWhen(t.posted_at)} · {(t.platforms || []).map(platLabel).join(", ")}</div>
+      </div>
+    </div>
+  );
+}
+
 /* ------------------------------ Insights ------------------------------- */
 function Insights() {
   const [data, setData] = useState<InsightsData | null>(null);
@@ -631,7 +757,21 @@ function Insights() {
         {kpi("Views", k?.views ?? 0)}{kpi("Shares", k?.sends ?? 0)}
       </div>
 
+      {data && data.trend.length > 0 && <TrendChart trend={data.trend} />}
+
       <PerfLogger tickets={tickets} onLogged={refresh} />
+
+      {data && data.by_platform.length > 0 && (
+        <div style={{ marginTop: 8 }}>
+          <h3 className="ins-h">By platform <span className="muted">(where it's landing)</span></h3>
+          <table className="ins-table plat-table">
+            <thead><tr><th>Platform</th><th>Posts</th><th>Views</th><th>Follows</th><th>Saves</th><th>Shares</th><th>Score</th></tr></thead>
+            <tbody>{data.by_platform.map((p) => (
+              <tr key={p.platform}><td>{platLabel(p.platform)}</td><td>{p.posts}</td><td>{p.views}</td><td>{p.follows}</td><td>{p.saves}</td><td>{p.sends}</td><td><b>{p.score}</b></td></tr>
+            ))}</tbody>
+          </table>
+        </div>
+      )}
 
       <div className="ins-cols">
         <div>
@@ -650,6 +790,23 @@ function Insights() {
             </table>
           )}
         </div>
+      </div>
+    </div>
+  );
+}
+
+function TrendChart({ trend }: { trend: InsightsData["trend"] }) {
+  const max = Math.max(1, ...trend.map((p) => p.score));
+  return (
+    <div className="trend">
+      <h3 className="ins-h">Momentum <span className="muted">(saves + follows per day)</span></h3>
+      <div className="trend-bars">
+        {trend.map((p) => (
+          <div key={p.date} className="trend-col" title={`${p.date}: ${p.score} (saves+follows)`}>
+            <div className="trend-bar" style={{ height: `${Math.round((p.score / max) * 100)}%` }} />
+            <div className="trend-x">{p.date.length >= 10 ? p.date.slice(5) : p.date}</div>
+          </div>
+        ))}
       </div>
     </div>
   );

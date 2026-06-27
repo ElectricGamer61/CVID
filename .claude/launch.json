@@ -1,12 +1,11 @@
 {
   "version": "0.0.1",
-  "autoPort": false,
+  "autoPort": true,
   "configurations": [
     {
       "name": "frontend",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev", "--prefix", "frontend"],
-      "port": 5173
+      "runtimeArgs": ["run", "dev", "--prefix", "frontend"]
     }
   ]
 }
