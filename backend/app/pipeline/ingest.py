@@ -147,6 +147,18 @@ def extract_audio(video_path: Path, audio_path: Path) -> Path:
     return audio_path
 
 
+def extract_voiceover(src_path: Path, audio_path: Path) -> Path:
+    """Full-quality voiceover WAV (48 kHz stereo) — for recorded voice that ends up
+    in the export, NOT the 16 kHz mono Whisper path."""
+    cmd = [
+        "ffmpeg", "-y", "-i", str(src_path),
+        "-vn", "-ac", "2", "-ar", "48000",
+        "-c:a", "pcm_s16le", str(audio_path),
+    ]
+    subprocess.run(cmd, check=True, capture_output=True)
+    return audio_path
+
+
 def probe_duration(video_path: Path) -> float:
     cmd = [
         "ffprobe", "-v", "error", "-show_entries", "format=duration",

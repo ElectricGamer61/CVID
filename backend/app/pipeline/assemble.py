@@ -48,6 +48,35 @@ def _write_beat_ass(beat: dict, dur: float, ass_path: Path) -> None:
             f.write(line)
 
 
+def _concat_segments(seg_files: list[Path], out_path: Path,
+                     out_w: int = W, out_h: int = H) -> None:
+    """Join rendered segments into one file with NO inter-clip stutter.
+
+    Uses the concat *filter* (not the demuxer): each segment is normalized to the
+    same size/fps/SAR and its PTS reset, then concatenated into a single continuous
+    timeline. This avoids the per-segment timestamp resets and AAC encoder-priming
+    gaps that the concat demuxer leaves at every boundary (the stutter)."""
+    inputs: list[str] = []
+    for s in seg_files:
+        inputs += ["-i", str(s)]
+    n = len(seg_files)
+    parts, labels = [], ""
+    for i in range(n):
+        parts.append(f"[{i}:v:0]fps=30,scale={out_w}:{out_h},setsar=1,setpts=PTS-STARTPTS[v{i}];")
+        parts.append(f"[{i}:a:0]aresample=48000,asetpts=PTS-STARTPTS[a{i}];")
+        labels += f"[v{i}][a{i}]"
+    fc = "".join(parts) + f"{labels}concat=n={n}:v=1:a=1[v][a]"
+    cmd = ["ffmpeg", "-y", *inputs, "-filter_complex", fc,
+           "-map", "[v]", "-map", "[a]",
+           "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", "30",
+           "-preset", "veryfast", "-crf", "20",
+           "-c:a", "aac", "-ar", "48000", "-ac", "2", "-movflags", "+faststart",
+           str(out_path)]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise RuntimeError(f"concat failed:\n{proc.stderr[-1800:]}")
+
+
 def _render_beat(beat: dict, out_path: Path, work: Path) -> None:
     clip = beat.get("clip_path")
     vo = beat.get("voiceover_path")
@@ -150,16 +179,8 @@ def build_edit_video(ticket_id: int, project_dir: Path) -> dict:
                           "end": round(t0 + w["end"], 2), "word": w["word"]})
         t0 += dur
 
-    listf = segdir / "list.txt"
-    listf.write_text("".join(f"file '{s.as_posix()}'\n" for s in seg_files), encoding="utf-8")
     source = project_dir / "source.mp4"
-    cmd = ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(listf),
-           "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", "30",
-           "-preset", "veryfast", "-crf", "20",
-           "-c:a", "aac", "-ar", "48000", "-ac", "2", "-movflags", "+faststart", str(source)]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
-    if proc.returncode != 0:
-        raise RuntimeError(f"reel build concat failed:\n{proc.stderr[-1500:]}")
+    _concat_segments(seg_files, source, W, H)
     return {"duration": round(t0, 2), "scenes": scenes, "words": words}
 
 
@@ -221,15 +242,7 @@ def render_scene_reel(source: Path, out_path: Path, markers: list[dict],
             raise RuntimeError(f"scene {i + 1} render failed:\n{proc.stderr[-1200:]}")
         seg_files.append(seg)
 
-    listf = work / "list.txt"
-    listf.write_text("".join(f"file '{p.as_posix()}'\n" for p in seg_files), encoding="utf-8")
-    cmd = ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(listf),
-           "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", "30",
-           "-preset", "veryfast", "-crf", "20",
-           "-c:a", "aac", "-ar", "48000", "-ac", "2", "-movflags", "+faststart", str(out_path)]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
-    if proc.returncode != 0:
-        raise RuntimeError(f"scene reel concat failed:\n{proc.stderr[-1200:]}")
+    _concat_segments(seg_files, out_path, out_w, out_h)
     return out_path
 
 
@@ -269,15 +282,7 @@ def assemble_ticket(ticket_id: int, progress=None) -> Path:
 
     if progress:
         progress("Stitching reel")
-    listf = segdir / "list.txt"
-    listf.write_text("".join(f"file '{s.as_posix()}'\n" for s in seg_files), encoding="utf-8")
     reel = td / "reel.mp4"
-    cmd = ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(listf),
-           "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", "30",
-           "-preset", "veryfast", "-crf", "20",
-           "-c:a", "aac", "-ar", "48000", "-ac", "2", "-movflags", "+faststart", str(reel)]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
-    if proc.returncode != 0:
-        raise RuntimeError(f"reel concat failed:\n{proc.stderr[-1500:]}")
+    _concat_segments(seg_files, reel, W, H)
     # FUTURE: write the reel to object storage instead of local disk.
     return reel

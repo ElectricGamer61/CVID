@@ -1,18 +1,22 @@
 # Cvideo — Project Context
 
-A local, free clone of wayinvideo / OpusClip. Turns long-form YouTube videos into vertical
-short clips: transcribe → AI picks viral moments → 9:16 reframe → TikTok-style captions →
-editor → export. Runs entirely on this machine. Built to replace a paid wayinvideo sub.
+A local, free clone of wayinvideo / OpusClip. Two creation paths, one editor:
+1. **Long-form → shorts:** paste a YouTube URL (or upload), transcribe → AI picks viral moments →
+   9:16 reframe → TikTok captions → editor → export.
+2. **Native reels:** write a script (scenes), film/upload a clip per scene, **record a voiceover per
+   scene**, and assemble into a 9:16 reel — edited in the **same clip editor**.
 
-> This file is the single source of truth for *how Cvideo works today*. `GOAL.md` is the
+Runs entirely on this machine. Built to replace a paid wayinvideo sub.
+
+> This file is the single source of truth for *how Cvideo works today*. `GOAL.md`/`SPEC.md` are the
 > original spec; `README.md` is setup. When in doubt, trust this file + the code.
 
 ---
 
 ## 1. How to run
 
-Two servers. **Every shell must refresh PATH first** (winget installed ffmpeg/ollama into
-the registry PATH, but already-running shells have a stale env):
+Two servers. **Every shell must refresh PATH first** (winget installed ffmpeg/ollama into the
+registry PATH, but already-running shells have a stale env):
 
 ```powershell
 $env:Path = [System.Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [System.Environment]::GetEnvironmentVariable('Path','User')
@@ -20,245 +24,212 @@ $env:Path = [System.Environment]::GetEnvironmentVariable('Path','Machine') + ';'
 
 - **Backend** (FastAPI, port 8000):
   `cd backend; .\.venv\Scripts\python.exe -m uvicorn app.main:app --port 8000`
-- **Frontend** (Vite, port 5173, proxies `/api` → 8000):
-  `cd frontend; npm run dev`
-- One-click: **double-click `start.cmd`** (repo root) — runs `scripts\start.ps1`, which launches
-  both servers and opens http://localhost:5173. (`start.ps1` is ASCII-only; the earlier em-dash/`…`
-  chars made Windows PowerShell 5.1 throw a parse error so nothing started.)
-- The backend reads `backend/.env` (gitignored) for API keys.
-
-Restart the backend after changing `.env` or backend code (no `--reload` in the launch
-scripts; it loads keys/code at startup).
+- **Frontend** (Vite, port 5173, proxies `/api` → 8000): `cd frontend; npm run dev`
+- One-click: **double-click `start.cmd`** (repo root) → `scripts\start.ps1` launches both + opens
+  http://localhost:5173. (`start.ps1` is ASCII-only — em-dash/`…` chars broke PowerShell 5.1 parsing.)
+- The backend reads `backend/.env` (gitignored) for API keys. **No `--reload`** — restart after
+  changing `.env` or backend code.
 
 **Repo is under git** (branch `main`); `.gitignore` covers `data/`, `backend/.venv/`,
-`frontend/node_modules/`, `.env`, `*.log`, `*.tsbuildinfo`. Build with Claude Code in this stack
-(FastAPI + SQLite + React) — see `SPEC.md`'s stack-override header; **NOT Lovable/Supabase**.
+`frontend/node_modules/`, `.env`, `*.log`, `*.tsbuildinfo`. Stack = FastAPI + SQLite + React with
+Claude Code — **NOT Lovable/Supabase** (see `SPEC.md`'s stack-override header).
 
 ---
 
 ## 2. Machine / environment (verified)
 
 - **GPU:** RTX 5070 (Blackwell, `sm_120`, 12 GB). Transcription runs **on GPU** via
-  faster-whisper / CTranslate2 4.8.0 (no PyTorch needed). **Do NOT add PyTorch/mediapipe.**
+  faster-whisper / CTranslate2 (no PyTorch). **Do NOT add PyTorch/mediapipe.**
 - **Python:** 3.11 venv at `backend/.venv` (system `py` is 3.13, too new for the ML stack).
-- **Tools:** ffmpeg 8.1.1, Ollama (qwen2.5:7b pulled), Node 24, yt-dlp (keep it updated:
-  `pip install -U yt-dlp`, or YouTube returns "Requested format is not available").
-- **CUDA DLL gotcha:** the pip `nvidia-cublas/cudnn` DLLs live in `site-packages/nvidia/*/bin`,
-  not on the DLL path — `transcribe.py::_register_cuda_dlls()` adds them via
+- **Tools:** ffmpeg 8.x, Ollama (qwen2.5:7b), Node 24, yt-dlp (keep updated: `pip install -U yt-dlp`).
+- **CUDA DLL gotcha:** `transcribe.py::_register_cuda_dlls()` adds the pip `nvidia/*/bin` dirs via
   `os.add_dll_directory` at import, else CTranslate2 errors "cublas64_12.dll not found".
 
 ---
 
 ## 3. Pipeline (backend/app/pipeline/)
 
-```
-ingest → transcribe → brain → (reframe + captions) → render
-```
+Long-form: `ingest → transcribe → brain → (reframe + captions) → render`.
+Native reel: scenes (Beats) → `build_edit_video` (stitch to one editable video) → editor → export
+via `render_scene_reel` (voice-first) or `assemble_ticket`.
 
-- **ingest.py** — efficient downloads for URL projects: `download_audio()` (analysis only),
-  `download_proxy()` (360p, editor preview), `download_full()` (full video, fetched **once**
-  on first export, cached as `source.mp4`). Uploads use `save_upload` + `extract_audio`.
-  (`download_clip_range` exists but unused — yt-dlp's force-keyframe cut is flaky on Windows.)
-- **transcribe.py** — `transcribe(audio, backend, progress)`. `local` = faster-whisper
-  (GPU→CPU auto-fallback). `elevenlabs` = Scribe STT (`ELEVENLABS_API_KEY`), maps `words[]`
-  (type=="word") → `{start,end,word}`; falls back to local on error. Output → `words.json`.
-- **brain.py** — picks viral moments. Backends: `ollama` (default), `gemini`, `heuristic`
-  (no-LLM fallback so it never hard-fails). Prompt uses a **virality framework** (hooks,
-  emotional peaks, opinion bombs, revelations, conflict, quotable lines, story peaks,
-  practical value); each clip → `{start,end,title,score,hook_sentence,reason}`. Long
-  transcripts are **chunked** (~20 min/60 s overlap) then cross-chunk de-duped (>50% overlap
-  → higher score). Clips snap to **sentence boundaries**. NOTE: any field you want populated
-  must be in `_CLIPS_SCHEMA["...required"]` or the model omits it.
-- **reframe.py** — 9:16 crop center via **OpenCV YuNet DNN** (`cv2.FaceDetectorYN`,
-  auto-downloads onnx to `data/models/`), Haar fallback, median over sampled frames.
-  `crop_filter()` builds the ffmpeg crop+scale. **MediaPipe was removed** (broken wheel +
-  protobuf 5.x conflict with Gemini).
-- **captions.py** — word-synced ASS (the TikTok look). `PRESETS`: capcut / hormozi / beasty /
-  clean (web-hex style mirrored in frontend `captionStyles.ts`). Active word gets a color +
-  scale pop. **Inline color must be `{\1c&HBBGGRR&}` (6-digit + trailing &)**, not 8-digit.
-- **render.py** — ffmpeg cut → crop → burn ASS. **Windows libass needs `fontsdir` pointing
-  at `C:\Windows\Fonts`** or it renders no text. Subtitle path is escaped (`\` → `/`, `:` → `\:`).
-  Output dims come from `settings.output_dims(aspect, resolution)` — a per-clip **resolution
-  tier** (`RESOLUTIONS`: 1080p/1440p/4k, keyed by output **width**; height derived from the
-  aspect so 1:1/4:5 aren't distorted). The ASS keeps its 1080×1920 `PlayRes` baseline; libass
-  scales captions up to the real frame, so they stay proportional + crisp at 4K. `_FMT_FULL`
-  fetches source up to **2160p** so high-res exports have real detail (4K is still a lanczos
-  upscale of the 9:16 crop — see §8).
+- **ingest.py** — URL downloads: `download_audio()` (analysis), `download_proxy()` (360p preview),
+  `download_full()` (full video, fetched **once** on first export, cached `source.mp4`). Uploads use
+  `save_upload`. **Two audio extractors:** `extract_audio()` = 16 kHz mono (for Whisper);
+  **`extract_voiceover()` = 48 kHz stereo** (for recorded voice that ends up in the export — do NOT
+  run voiceovers through the 16 kHz Whisper path or they sound bad).
+- **transcribe.py** — `local` faster-whisper (GPU→CPU fallback) / `elevenlabs` Scribe. Output → `words.json`.
+- **brain.py** — viral-moment picker: `ollama`/`gemini`/`heuristic`. Virality-framework prompt,
+  chunking + cross-chunk de-dupe, sentence-boundary snapping. Fields must be in `_CLIPS_SCHEMA` required.
+- **reframe.py** — 9:16 crop center via OpenCV **YuNet DNN** (+ Haar fallback). `crop_filter()` builds
+  the ffmpeg crop+scale. **No MediaPipe.**
+- **captions.py** — word-synced ASS. `PRESETS` capcut/hormozi/beasty/clean (mirrored in
+  `captionStyles.ts`). `build_ass(words, clip_start, clip_end, preset, overrides, out_w, out_h)`.
+  **Inline color must be `{\1c&HBBGGRR&}`** (6-digit + trailing &). ASS keeps a 1080×1920 PlayRes
+  baseline; libass scales it to the real frame — **don't pass real out_w/out_h to `write_ass`** for
+  hi-res, only to the render's crop/scale.
+- **render.py** — clip export. Three paths, chosen in `main._render_clip_job`:
+  - **plain** `render_clip(... voiceover=?)` — cut [start,end] → crop → burn ASS. If the clip has a
+    `voiceover`, it's muxed as the audio (`-map 1:a:0 -shortest`).
+  - **middle-cuts** `kept_segments()` + `render_clip_segments()` — when `cuts_json` removes inner
+    ranges: trim+concat the kept pieces (filter_complex) and **re-time captions** onto the compressed
+    timeline (`remap_words_for_cuts`).
+  - **per-scene reel** → delegates to `assemble.render_scene_reel` when a reel clip has scene voices.
+  - Output dims from `settings.output_dims(aspect, resolution)` (1080p/1440p/4k tier).
+- **assemble.py** — reel building (local ffmpeg). All joins go through **`_concat_segments()` which
+  uses the ffmpeg concat *FILTER*** (normalizes size/fps/SAR, resets PTS, gapless audio) — this is
+  what keeps clip-to-clip joins **stutter-free** (the old concat *demuxer* left timestamp + AAC
+  encoder-priming gaps at every boundary). Functions:
+  - **`build_edit_video(ticket_id, project_dir)`** — stitch a ticket's Beat clips (natural length,
+    9:16) into one `source.mp4`, returning scene **markers** `[{start,end,label}]` and caption
+    **words** (each Beat's `caption` text `_even_split` across its length — no transcription). Backs
+    the "edit a reel in the normal editor" flow.
+  - **`render_scene_reel(source, out, markers, words, scene_vos, preset, style)`** — **voice-first
+    export:** per scene, cut [s,e] from source, loop/hold to that scene's voiceover duration, even-
+    split its caption words across the voice, mux the voice, then `_concat_segments`. So each scene
+    takes exactly as long as you spoke (readable + natural). Scenes with no voice keep natural length.
+  - **`assemble_ticket(ticket_id)`** — original native path (per-Beat render via `_render_beat` +
+    concat) → `data/tickets/{id}/reel.mp4`. Proof-guard on number-claim beats.
+- **ai.py** — Script Factory + Hook Forge (reuse brain clients; heuristic fallbacks).
 
-- **assemble.py** (native path) — `assemble_ticket(ticket_id)` stitches a ticket's **Beats**
-  into one 9:16 reel via local ffmpeg: proof-guard → per beat, 9:16-render the uploaded clip +
-  **even-split the known `beat.caption` words across the voiceover duration** (no transcription
-  guess) + burn ASS + top overlay `on_screen_text` + mux the VO audio → ffmpeg `concat` in
-  `order_index` → `data/tickets/{id}/reel.mp4`. Pure ids-in/path-out with `# FUTURE:` storage/
-  worker-swap markers; dispatched via the same `_render_pool` as clip render.
-- **ai.py** — Script Factory + Hook Forge: reuse the brain.py Ollama/Gemini clients to generate
-  a labeled script (parsed by `intake.parse_script`) / candidate hooks, with heuristic fallbacks
-  so the endpoints never hard-fail when no LLM is up.
-
-`jobs.py` runs analysis in a background thread (ingest→transcribe→brain→create clips→proxy),
-writing progress onto the Project row.
+`jobs.py` runs long-form analysis in a background thread. **`Project.mode`**: `moments` (default,
+run the brain) or `caption` (skip brain, make ONE full-length clip — used by "Just caption my clip"
+uploads AND by `build-edit` reels).
 
 ---
 
 ## 4. Data model (backend/app/db.py, SQLite via SQLModel)
 
-- **Project**: name, source_type (url|file), source_url, brain, **transcribe_backend**
-  (local|elevenlabs), aspect, caption_preset, status, stage, progress, error, duration.
-- **Clip**: project_id, idx, start, end, title, score, **hook**, reason, aspect,
-  caption_preset, **resolution** (1080p|1440p|4k), crop_center, status
-  (suggested|rendering|rendered|error), **stage**, output_path, error, **style_json**
-  (per-clip caption style), **words_json** (edited caption text). Additive columns are
-  added by `_migrate()` (ALTER ADD COLUMN) on startup.
+- **Project**: name, source_type (url|file), source_url, brain, transcribe_backend, aspect,
+  caption_preset, **mode (moments|caption)**, status, stage, progress, error, duration.
+- **Clip**: project_id, idx, start, end, title, score, hook, reason, aspect, caption_preset,
+  resolution (1080p|1440p|4k), crop_center, status, stage, output_path, error, **style_json**
+  (caption style), **words_json** (edited caption words), **cuts_json** (removed middle ranges
+  `[[a,b],…]`), **markers_json** (scene boundaries when stitched from a reel), **voiceover_path**
+  (whole-clip recorded voice), **scene_vo_json** (per-scene voices, aligned to markers). Additive
+  columns added by `_migrate()` on startup.
 
-**Pipeline lifecycle tables (Phase 1 — the 10-order content pipeline wrapping the clip engine):**
-- **Ticket** (the spine): brand, **stage** (outlier|scripted|staged|sourced|assembled|ready|
-  scheduled|posted), angle, outlier_id FK, **format** (reel|carousel), **capture_mode**
-  (longform-clip|native-short|repurpose), **project_id FK → Project** (long-form path only),
-  source_ref, hook_text, clip_url (assembler output, both paths), captions/platforms (JSON),
-  scheduled_at/posted_at, created_at.
-- **Beat** (the script-as-timeline; beats ARE the script — no duplicate script blob): ticket_id
-  FK, order_index, spoken_line, on_screen_text, caption, shot_cue, clip_path?, voiceover_path?,
-  **is_proof_beat** (real-number claim → clip must show product/label).
-- **Outlier** (swipe file), **Perf** (per-platform stats), **Angle** (`avg_score = avg(saves+
-  follows)`, the needle metric, NOT views). New tables are created by `create_all` (no `_migrate`
-  needed; `_migrate` stays for Project/Clip only). JSON via `sa_column=Column(JSON)`.
+**Pipeline lifecycle tables:**
+- **Ticket** (spine): brand, stage (outlier→posted), angle, outlier_id, format, capture_mode
+  (longform-clip|native-short|repurpose), **project_id** (set by `build-edit`/`use-clip`), source_ref,
+  hook_text, clip_url, captions/platforms (JSON), scheduled_at/posted_at.
+- **Beat** (script-as-timeline): ticket_id, order_index, spoken_line, on_screen_text, caption,
+  shot_cue, clip_path?, voiceover_path?, is_proof_beat.
+- **Outlier** (swipe file), **Perf** (per-platform stats), **Angle** (`avg_score = avg(saves+follows)`).
 
 ---
 
 ## 5. API (backend/app/main.py)
 
-- `POST /api/projects` (url) · `POST /api/projects/upload` (file) — accept brain,
-  transcribe_backend, aspect, caption_preset.
-- `GET /api/projects` · `GET /api/projects/{pid}` (project + clips) · `DELETE /api/projects/{pid}`.
-- `GET /api/projects/{pid}/source` — preview video (proxy for url, source for upload).
-- `GET /api/projects/{pid}/thumb` · `GET /api/clips/{cid}/thumb` — lazy cached JPGs.
-- `GET /api/projects/{pid}/frame?t=SS` — small cached filmstrip frame (editor timeline).
-- `POST /api/clips/{cid}/auto-center` — face-based 9:16 crop center for the clip range (editor Reframe).
-- `PATCH /api/clips/{cid}` — start/end/title/caption_preset/aspect/crop_center/**style**/**words**.
-- `POST /api/clips/{cid}/render` · `GET /api/clips/{cid}/download` · `/preview` · `DELETE /api/clips/{cid}`.
-- `GET /api/presets` — captions, caption_styles, aspects, brains, transcribe, resolutions,
-  **stages, formats, capture_modes**.
-- **Tickets:** `POST /api/tickets` · `POST /api/tickets/from-script` (paste script → ticket +
-  auto-split beats) · `POST /api/tickets/{tid}/import-script` (re-import, replaces beats) ·
-  `GET /api/tickets` · `GET /api/tickets/{tid}` (ticket + ordered beats) · `PATCH /api/tickets/{tid}`
-  (stage advance etc., validates stage/format/capture_mode) · `DELETE /api/tickets/{tid}`.
-- **Beats:** `PATCH /api/beats/{bid}` (edit fields incl. **toggle `is_proof_beat`**), add
-  (`POST /api/tickets/{tid}/beats`), `DELETE /api/beats/{bid}`, reorder
-  (`POST /api/tickets/{tid}/beats/reorder`), uploads (`POST /api/beats/{bid}/clip` and
-  `/voiceover`).
-- **AI buttons:** `POST /api/tickets/{tid}/script-factory` (fills beats), `/hook-forge` (hooks).
-- **Assemble:** `POST /api/tickets/{tid}/assemble` (native, background) + `/assemble-status`;
-  `POST /api/tickets/{tid}/use-clip/{cid}` (long-form: point at a rendered clip);
-  `GET /api/tickets/{tid}/download` (reel).
-- **Outliers:** `POST/GET /api/outliers`, `DELETE /api/outliers/{oid}`,
-  `POST /api/tickets/from-outlier/{oid}`.
-- **Insights:** `POST /api/perf` (logs stats, recomputes Angle rollup), `GET /api/insights`
-  (KPIs, top performers, angle ranking by saves+follows). `GET /api/exports` (all rendered clips
-  + reels).
-- **Script import** lives in `backend/app/intake.py::parse_script(text)` → `{hook, beats[]}`:
-  deterministic (no LLM), splits on `BEAT`/`Beat N`/`## `/`---`/`1.`, reads labeled fields
-  (Spoken/On-screen/Caption/Shot/Proof), defaults caption→spoken line, flags proof on an explicit
-  `Proof:` **or** a real number in the text.
+- **Projects:** `POST /api/projects` (url) · `POST /api/projects/upload` (file) — both take brain,
+  transcribe_backend, aspect, caption_preset, **mode**. `GET /api/projects` · `GET /{pid}` ·
+  `DELETE /{pid}` · `/{pid}/source` · `/{pid}/thumb` · `/{pid}/frame?t=`.
+- **Clips:** `PATCH /api/clips/{cid}` (start/end/title/caption_preset/aspect/crop_center/style/words/
+  **cuts**) · `POST /{cid}/render` · `GET /{cid}/download|/preview|/thumb` · `DELETE /{cid}` ·
+  `POST /{cid}/auto-center`.
+  - **Clip voiceover (whole-clip):** `POST /{cid}/voiceover` (48 kHz via `extract_voiceover`) ·
+    `GET /{cid}/voiceover-file` · `DELETE /{cid}/voiceover`.
+  - **Per-scene voiceover (reels):** `POST/GET/DELETE /api/clips/{cid}/scene-voiceover/{idx}`.
+- **Tickets:** `POST /api/tickets` · `/from-script` · `/{tid}/import-script` · `GET /api/tickets` ·
+  `GET /{tid}` · `PATCH /{tid}` · `DELETE /{tid}` · `GET /{tid}/thumb` (reel poster) ·
+  **`POST /{tid}/build-edit`** (stitch a native reel's scenes into one caption-mode Project+Clip with
+  markers+words, then open it in the editor) · `/{tid}/script-factory` · `/{tid}/hook-forge` ·
+  `/{tid}/assemble` (+ `/assemble-status`) · `/{tid}/use-clip/{cid}` · `/{tid}/download`.
+- **Beats:** `PATCH /api/beats/{bid}` · add/`DELETE`/reorder · `POST /{bid}/clip` · `/{bid}/voiceover`.
+- **Outliers:** CRUD + `POST /api/tickets/from-outlier/{oid}`.
+- **Insights:** `POST /api/perf` · `GET /api/insights`. **`GET /api/exports`** — all rendered clips +
+  reels, each with folder metadata: `group` (brand for reels / project for clips), `subgroup`
+  ("Reels"/"Clips"), `hook`, `filename` (hook-based).
+- **Presets:** `GET /api/presets` — captions, caption_styles, aspects, brains, transcribe,
+  resolutions, stages, formats, capture_modes.
+- **Script import:** `intake.parse_script(text)` → `{hook, beats[]}` (deterministic, no LLM).
 
 ---
 
 ## 6. Frontend (frontend/src/, React + Vite + TS, plain CSS)
 
-Light "Soft-UI" theme (Plus Jakarta Sans). **Layout mirrors wayin**: left **Sidebar** →
-project opens a **MomentsGrid** (clip cards: thumbnail, viral score /100, hook line, actions
-Edit/Download/Re-export/Delete) → click a card → **ClipEditor**.
+Light "Soft-UI" theme (Plus Jakarta Sans). **Sidebar:** Home · **Outliers** · **Create videos** ·
+Results · Downloads (internal routes: home/intake/board/insights/library). Plain-language UI: a
+ticket = "video", a beat = "scene", an outlier = an "idea".
 
-**Plain-language UI (dead-simple):** the sidebar reads **Home · Ideas · My Videos · Results ·
-Downloads** (these map to the internal routes intake/board/insights/library). In the UI a ticket
-is a "video", a beat is a "scene", an outlier is an "idea", stages show as "1. Idea … 8. Posted",
-and capture modes read "Film it myself / From a long video / Reuse old footage". The DB still
-stores the original values — only labels changed. Video cards/exports use **9:16 vertical
-thumbnails in rows** (the `.page` shrink-to-content bug that forced one column was fixed with
-`width:100%`).
-
-- **App.tsx** — routes (home | **board** | **intake** | **insights** | **library** | project |
-  editor), shell, Home/NewProject/ProjectCard, MomentsGrid/MomentCard, **Board**, **Intake**,
-  **Insights**, **Library**(Exports), and the **ClipEditor** workspace + its helpers
-  (`ToolRail`/`useHistory`/`TrimPanel`/`ReframePanel`/`SubtitleWordEditor`/`FilmstripTimeline`,
-  reusing `StyleEditor`). *(The old line-based `CaptionTextEditor` + thin `Timeline` were replaced
-  by the per-word editor + filmstrip.)*
-- **Pipeline screens (Sidebar):** **Intake** (paste outliers → swipe file → spin tickets),
-  **Board** (kanban), **Insights** (Signal Reader: KPIs, perf-logging, angle ranking by
-  saves+follows), **Exports** (all rendered clips + reels, download). **TicketDetail** drawer is a
-  full editor: edit ticket + per-beat fields, add/reorder/delete beats, **proof toggle**, AI
-  buttons (Script Factory / Hook Forge), per-beat **clip + voiceover upload**, and **Assemble reel**
-  (native) → progress → player + download. Reusable `downloadFile()` saves to the remembered folder.
-- **My Videos** (Board) — kanban, a column per stage (labelled "1. Idea … 8. Posted"); cards show
-  the capture mode, angle, hook, ◀▶ hand stage-advance, delete, plus a **how-it-works** banner
-  (Save an idea → Write & film → Make the video → See results). **+ New video** modal pastes a
-  script → auto-split scenes (or start blank). Clicking a card opens the **TicketDetail** editor
-  (above). *(Lane A/B/R badges were dropped in the plain-language pass.)*
-- **ClipEditor** — **wayinvideo-style workspace** (`.ed2`): top bar (editable title · undo/redo ·
-  autosave "Saved" · Export/Download) · left **tool rail** (Trim · Reframe · Subtitles built;
-  Text/B-roll/Music/Transitions/AI Hook = "coming soon") · big 9:16 preview (`<video>` CSS-crop via
-  `objectPosition` + live **CaptionOverlay**) · contextual right panel · **filmstrip timeline**.
-  - **Trim** numeric start/end (handles live on the filmstrip). **Reframe** = Left/Center/Right +
-    fine slider + **Auto-center** (`/api/clips/{cid}/auto-center` → `reframe.detect_center`) + **drag
-    on the preview**. **Subtitles** = Style (presets + `StyleEditor` + resolution) and **Edit words**
-    (`SubtitleWordEditor` — per-word list w/ timestamps, click-to-seek, inline edit, empty-to-delete,
-    active word highlights during playback).
-  - **`useHistory`** = undo/redo with debounced commit (Ctrl+Z / Ctrl+Shift+Z). **Autosave** =
-    debounced `patchClip` on any change (no manual Save). **FilmstripTimeline** draws frames from
-    `/api/projects/{pid}/frame?t=` across a frozen window, with zoom + drag-trim + scrub.
-- **CaptionOverlay.tsx / captionStyles.ts** — shared caption logic (must match captions.py).
-- **Toast.tsx** — toast notifications.
-- **Download** (`downloadClip()` in App.tsx + `exportDir.ts`) — editor + moment-card ⬇ buttons.
-  On Chromium (Chrome/Edge) the clip streams **straight into a remembered export folder**: the
-  user picks a folder once (`showDirectoryPicker`), its `FileSystemDirectoryHandle` is persisted
-  in **IndexedDB** (`exportDir.ts`), and every later download writes there with **no dialog**
-  (permission may re-prompt once after a reload — must be inside the click gesture). The editor
-  shows "Save folder: <name> · change". Firefox/Safari fall back to a normal browser download.
-  (Earlier "export not working" was a `<button>` nested in `<a>` — invalid HTML; now a real
-  `onClick`. Backend `/api/clips/{cid}/download` already serves `Content-Disposition: attachment`.)
+- **App.tsx** — routes (home | board | intake | insights | library | project | **editor** with an
+  optional `from:"board"`), shell, and all screens + the **ClipEditor** workspace.
+- **Home / NewProject** — paste URL or upload. A **mode toggle**: "Find viral moments" (default) vs
+  **"Just caption my clip"** (caption mode → one full-length clip → auto-opens the editor).
+- **Create videos** (Board) — redesigned: the 8 DB stages collapse to **4 phase lanes** (`PHASES`:
+  Idea / Make it / Ready / Posted) with accent colors; cards show a reel thumbnail, the hook, mode
+  badge, ◀▶ phase move. **+ New video** modal: angle + **✨ Generate with AI** (create + script-
+  factory in one step) or paste/blank. Clicking a card opens **TicketDetail**; a native reel's
+  **"✏️ Open in editor"** calls `build-edit` and routes into the clip editor.
+- **TicketDetail** drawer — edit ticket + per-beat fields, add/reorder/delete scenes, proof toggle,
+  AI buttons, per-beat clip/voiceover upload, "Open in editor" + "Make my video" (assemble).
+- **Downloads (Library)** — **collapsible folders**: group (brand→Reels / project→Clips) → cards
+  named by hook. **Click a card → `VideoModal`** lightbox preview (play + download). `downloadFile()`
+  saves to a remembered folder (Chromium `showDirectoryPicker` persisted in IndexedDB via
+  `exportDir.ts`); Firefox/Safari fall back to a normal download.
+- **ClipEditor** (`.ed2`) — wayin-style workspace: top bar (title · undo/redo · autosave · Export) ·
+  **tool rail** · 9:16 preview (`<video>` CSS-crop + live `CaptionOverlay`, + `<audio>` for voice) ·
+  contextual panel · **FilmstripTimeline** (frames, zoom, drag-trim, scrub, cut bands, scene markers).
+  Tools: **Trim** · **Cut** · **Reframe** · **Subtitles** · **Voice** (Text/B-roll/Music/Transitions/
+  AI Hook = coming soon).
+  - **Cut** = remove a middle chunk (red bands on the timeline; preview skips them; export via
+    `render_clip_segments`). **Captions resync** to the transcript when you trim to a new section
+    (until you hand-edit words).
+  - **Voice** — two modes:
+    - **Reel clips (have scene markers): per-scene.** `SceneVoicePanel` — ◀ Scene N/M ▶ selector,
+      a **karaoke `Teleprompter`** scoped to the scene, a **reading-speed** control (0.5/0.75/1×, slows
+      record playback only — mic stays natural), **Record this scene** (rolls that scene looping +
+      mic via `useRecorder`) → preview → Save, **"▶ Hear this scene with voice"**, and **"▶ Play whole
+      video with voice"** (chains all scenes for a full pre-export preview). Export = voice-first per
+      scene.
+    - **Long-form clips: whole-clip voice** (single `VoicePanel`, record over the clip).
+  - **`useHistory`** undo/redo, **autosave** debounced `patchClip`.
+- **New components:** `Teleprompter` (karaoke, reuses `captionAt`/`groupLines`), `useRecorder.ts`
+  (MediaRecorder → webm blob), `VideoModal.tsx` (lightbox). `CaptionOverlay.tsx`/`captionStyles.ts`
+  mirror `captions.py`. `Toast.tsx` notifications.
 
 ---
 
 ## 7. Key decisions & gotchas (don't relearn these)
 
-- **No PyTorch, no MediaPipe.** Blackwell + protobuf conflicts. Use faster-whisper + YuNet.
-- **Efficient downloads:** never pull the full video for analysis — audio + 360p proxy only;
-  full video once on first export.
-- **Captions burn fine** — earlier "no captions" was the malformed `\1c` color + missing
-  fontsdir (both fixed). If captions vanish: check the ASS color format + fontsdir.
-- **Export "not working"** was (1) missing UI feedback during the one-time full-video
-  download — now shows a `stage` ("Downloading video / Rendering"); and (2) **transient
-  YouTube HTTP 403** on `download_full` (expired/throttled googlevideo URLs) killing the
-  export and leaving the clip stuck in `status="error"`. `ingest._ydl()` now **retries**
-  (up to 4 fresh `extract_info` calls with backoff, plus yt-dlp's own fragment retries)
-  on 403/timeout-class errors. A stuck `error` clip just needs its render re-triggered.
-- **PATH refresh** is mandatory in every new shell (see §1).
+- **No PyTorch, no MediaPipe.** faster-whisper + YuNet.
+- **Concat the reel with the FILTER, not the demuxer.** `_concat_segments` (concat filter, reset PTS,
+  gapless audio) — the demuxer left timestamp + AAC-priming gaps at each join = **inter-clip stutter**.
+  Verified fix: frame deltas are a uniform 1/30 s with no >50 ms gaps.
+- **Voiceovers are 48 kHz stereo** (`extract_voiceover`), not the 16 kHz mono Whisper path — using the
+  Whisper path made recorded voice sound bad.
+- **Voice-first timing:** the recorded voice is the master; the scene's video is looped/held to it.
+  Captions are **even-split** across the voice (forced alignment is a future refinement).
+- **Editor reuse for reels:** `build-edit` turns a reel into a caption-mode Project+Clip so the normal
+  editor (preview/captions/trim/cut/voice) applies; scene boundaries ride along as `markers_json`.
+  `MomentsGrid` auto-opens a caption-mode project's editor once (module-level `autoOpenedPids` guard
+  prevents a back-navigation loop).
+- **Captions burn fine** only with `{\1c&H..&}` color + libass `fontsdir` → `C:\Windows\Fonts`.
+- **Export 403s:** `ingest._ydl()` retries transient YouTube 403/timeout on `download_full`.
+- **PATH refresh** mandatory in every new shell (§1).
 
 ---
 
-## 8. Known limitations / next ideas
+## 8. Known limitations / next ideas (next-steps backlog)
 
-- Reframe is a **static** smoothed center per clip (no per-frame panning yet).
-- **4K is upscale-bound by source:** a 9:16 crop of a 1080p source is ~600px wide of real
-  detail; even a 2160p source crops to ~1215px. 4K/1440p export (lanczos) looks crisper and
-  platforms favor higher-res uploads, but it isn't native 4K detail. `_FMT_FULL` already pulls
-  the best available source (≤2160p) to maximise real pixels.
-- Brain quality is good but tied to qwen2.5:7b; a bigger local model or Gemini lifts it.
-- ElevenLabs needs `ELEVENLABS_API_KEY` in `backend/.env`; local is the free default.
-- Existing clips created before a schema change won't have new fields (e.g. hooks) until the
-  project is re-analyzed.
-- **Clip editor advanced tools deferred** (rail shows "coming soon"): Text overlays, B-roll,
-  Music/audio volume, Transitions, AI Hook. Core = Trim · Reframe · Subtitles.
-- **Native assemble caption timing is even-split** across the VO duration (the words are known
-  from the script). Forced alignment to the actual speech is a future refinement.
-- **Pipeline P6 (schedule/post) is NOT built** — spec'd in `.claude/commands/goal.md` as an
-  Upload-Post **dry-run adapter** that needs `UPLOAD_POST_API_KEY`; run it later via `/goal`.
-  P1–P5 (Ideas/Board/AI/Assemble/Insights) are done and committed.
+- **Pipeline P6 (schedule/post) NOT built** — spec'd in `.claude/commands/goal.md` as an Upload-Post
+  **dry-run adapter** (needs `UPLOAD_POST_API_KEY`) + a Queue/calendar screen. P1–P5 done.
+- **Metrics** — Results logs perf manually; beef up dashboards / per-platform / trends; later auto-pull.
+- **Forced caption alignment** to the actual recorded speech (currently even-split across the voice).
+- **Long-form whole-clip voice** lacks the reading-speed control + uses `-shortest` (can clip the
+  tail); the per-scene reel path has the full voice-first treatment.
+- **Middle-cut (Cut) + per-scene voice are mutually exclusive** — the per-scene export path ignores
+  `cuts_json`.
+- **Reel render is fixed 1080×1920** (no 1440p/4k tier; long-form clips already support tiers).
+- Reframe is a static smoothed center (no per-frame panning). 4K is upscale-bound by source.
+- Advanced editor tools deferred: Text overlays, B-roll, Music, Transitions, AI Hook.
 
 ---
 
 ## 9. Verify quickly
 
 - `cd frontend && npm run build` → 0 TS errors.
-- `cd backend && .\.venv\Scripts\python.exe -c "import sys;sys.path.insert(0,'.');import app.main;from app.db import init_db;init_db();print('OK')"`
-- `backend/verify_render.py` (caption/crop render), `backend/test_api2.py` (upload/url/delete
-  e2e), `backend/verify_pt4.py` (brain hooks + chunking).
+- `cd backend && .\.venv\Scripts\python.exe -c "import app.main; print('OK')"` (imports + would migrate).
+- Schema check: `PRAGMA table_info(clip)` should include cuts_json/markers_json/voiceover_path/scene_vo_json.
+- Reel smoothness: probe an exported reel's `v:0` `pts_time` deltas — uniform ~0.0333 s, no >50 ms gaps.
+- `backend/verify_render.py`, `backend/test_api2.py`, `backend/verify_pt4.py`.

@@ -605,7 +605,7 @@ async def upload_beat_voiceover(bid: int, file: UploadFile = File(...)):
         shutil.copyfileobj(file.file, f)
     wav = mdir / "voiceover.wav"
     try:
-        ingest.extract_audio(raw, wav)      # normalise to 16k mono wav
+        ingest.extract_voiceover(raw, wav)      # full-quality 48k stereo wav
     finally:
         raw.unlink(missing_ok=True)
     _set_beat_media(bid, voiceover_path=str(wav))
@@ -888,7 +888,7 @@ async def upload_clip_voiceover(cid: int, file: UploadFile = File(...)):
         shutil.copyfileobj(file.file, f)
     wav = mdir / f"clip_{cid}_voiceover.wav"
     try:
-        ingest.extract_audio(raw, wav)      # webm/whatever → 16k mono wav
+        ingest.extract_voiceover(raw, wav)      # webm/whatever → 48k stereo wav
     finally:
         raw.unlink(missing_ok=True)
     with get_session() as s:
@@ -951,7 +951,7 @@ async def upload_scene_voiceover(cid: int, idx: int, file: UploadFile = File(...
         shutil.copyfileobj(file.file, f)
     wav = mdir / f"clip_{cid}_scene_{idx}.wav"
     try:
-        ingest.extract_audio(raw, wav)
+        ingest.extract_voiceover(raw, wav)
     finally:
         raw.unlink(missing_ok=True)
     with get_session() as s:
