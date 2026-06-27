@@ -175,6 +175,9 @@ Plain-language UI: a ticket = "video", a beat = "scene", an outlier = an "idea".
 - **ClipEditor** (`.ed2`) — wayin-style workspace: top bar (title · undo/redo · autosave · Export) ·
   **tool rail** · 9:16 preview (`<video>` CSS-crop + live `CaptionOverlay`, + `<audio>` for voice) ·
   contextual panel · **FilmstripTimeline** (frames, zoom, drag-trim, scrub, cut bands, scene markers).
+  The timeline window spans the **whole source** (0..duration), so trimming can reach **any** part of
+  a longer video (navigated by zoom + horizontal scroll; auto-zooms/centers on a small clip). Was
+  previously anchored to a ~15s margin around the clip, which made the rest of the source unreachable.
   Tools: **Trim** · **Cut** · **Reframe** · **Subtitles** · **Voice** (Text/B-roll/Music/Transitions/
   AI Hook = coming soon).
   - **Cut** = remove a middle chunk (red bands on the timeline; preview skips them; export via
