@@ -9,7 +9,7 @@ export function useRecorder() {
   const streamRef = useRef<MediaStream | null>(null);
   const resolveRef = useRef<((b: Blob | null) => void) | null>(null);
 
-  const start = async () => {
+  const start = async (): Promise<boolean> => {
     setError("");
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -27,9 +27,11 @@ export function useRecorder() {
       mediaRef.current = mr;
       mr.start();
       setRecording(true);
+      return true;
     } catch (e: any) {
       setError(e?.message || "Microphone unavailable");
       setRecording(false);
+      return false;
     }
   };
 

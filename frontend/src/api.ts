@@ -41,6 +41,7 @@ export interface Clip {
   cuts_json?: string;
   markers_json?: string;
   voiceover_path?: string | null;
+  scene_vo_json?: string;
 }
 
 export interface ResolutionOption {
@@ -232,6 +233,15 @@ export const api = {
   deleteClipVoiceover: (cid: number): Promise<{ ok: boolean }> =>
     fetch(`/api/clips/${cid}/voiceover`, { method: "DELETE" }).then((r) => r.json()),
   clipVoiceoverUrl: (cid: number) => `/api/clips/${cid}/voiceover-file`,
+
+  // Per-scene voiceover (reel clips)
+  uploadSceneVoiceover: (cid: number, idx: number, file: Blob): Promise<{ voiceover_path: string; scene_vos: (string | null)[] }> => {
+    const fd = new FormData(); fd.append("file", file, "voiceover.webm");
+    return fetch(`/api/clips/${cid}/scene-voiceover/${idx}`, { method: "POST", body: fd }).then((r) => r.json());
+  },
+  deleteSceneVoiceover: (cid: number, idx: number): Promise<{ ok: boolean }> =>
+    fetch(`/api/clips/${cid}/scene-voiceover/${idx}`, { method: "DELETE" }).then((r) => r.json()),
+  sceneVoiceoverUrl: (cid: number, idx: number) => `/api/clips/${cid}/scene-voiceover/${idx}`,
 
   scriptFactory: (tid: number, brief = ""): Promise<TicketWithBeats> =>
     fetch(`/api/tickets/${tid}/script-factory`, { method: "POST", headers: J, body: JSON.stringify({ brief }) }).then((r) => r.json()),

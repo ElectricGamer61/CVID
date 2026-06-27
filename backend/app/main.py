@@ -809,6 +809,8 @@ def _render_clip_job(cid: int):
         words = json.loads(clip.words_json) if clip.words_json else None
         cuts = json.loads(clip.cuts_json) if clip.cuts_json else []
         voiceover = clip.voiceover_path if (clip.voiceover_path and Path(clip.voiceover_path).exists()) else None
+        markers = json.loads(clip.markers_json) if clip.markers_json else []
+        scene_vos = json.loads(clip.scene_vo_json) if clip.scene_vo_json else []
         proj = s.get(Project, pid)
         source_type, source_url = proj.source_type, proj.source_url
     try:
@@ -831,7 +833,11 @@ def _render_clip_job(cid: int):
         out_w, out_h = settings.output_dims(aspect, resolution)
         vo_path = Path(voiceover) if voiceover else None
         segments = render.kept_segments(start, end, cuts)
-        if cuts and len(segments) != 1:
+        if markers and any(scene_vos):
+            # Per-scene voice-first reel: re-time each scene to its own recorded voice.
+            assemble.render_scene_reel(source, out, markers, words, scene_vos, preset,
+                                       style, out_w=out_w, out_h=out_h)
+        elif cuts and len(segments) != 1:
             # Middle parts removed → concat kept segments + retime captions.
             # ASS keeps the 1080×1920 PlayRes baseline; libass scales it to the frame.
             local_words, total = render.remap_words_for_cuts(words, segments)
@@ -913,6 +919,77 @@ def delete_clip_voiceover(cid: int):
         clip.voiceover_path = None
         clip.status = "suggested"
         s.add(clip); s.commit()
+    return {"ok": True}
+
+
+def _scene_count(clip: Clip) -> int:
+    return len(json.loads(clip.markers_json)) if clip.markers_json else 0
+
+
+def _load_scene_vos(clip: Clip) -> list:
+    vos = json.loads(clip.scene_vo_json) if clip.scene_vo_json else []
+    n = _scene_count(clip)
+    if len(vos) < n:
+        vos = vos + [None] * (n - len(vos))
+    return vos
+
+
+@app.post("/api/clips/{cid}/scene-voiceover/{idx}")
+async def upload_scene_voiceover(cid: int, idx: int, file: UploadFile = File(...)):
+    """Save a recorded voiceover for one scene of a stitched reel."""
+    with get_session() as s:
+        clip = s.get(Clip, cid)
+        if not clip:
+            raise HTTPException(404, "clip not found")
+        if idx < 0 or idx >= _scene_count(clip):
+            raise HTTPException(400, "scene index out of range")
+        pid = clip.project_id
+    mdir = settings.project_dir(pid)
+    mdir.mkdir(parents=True, exist_ok=True)
+    raw = mdir / f"clip_{cid}_scene_{idx}_raw"
+    with raw.open("wb") as f:
+        shutil.copyfileobj(file.file, f)
+    wav = mdir / f"clip_{cid}_scene_{idx}.wav"
+    try:
+        ingest.extract_audio(raw, wav)
+    finally:
+        raw.unlink(missing_ok=True)
+    with get_session() as s:
+        clip = s.get(Clip, cid)
+        vos = _load_scene_vos(clip)
+        vos[idx] = str(wav)
+        clip.scene_vo_json = json.dumps(vos)
+        clip.status = "suggested"
+        s.add(clip); s.commit()
+    return {"voiceover_path": str(wav), "scene_vos": vos}
+
+
+@app.get("/api/clips/{cid}/scene-voiceover/{idx}")
+def scene_voiceover_file(cid: int, idx: int):
+    with get_session() as s:
+        clip = s.get(Clip, cid)
+        if not clip:
+            raise HTTPException(404, "clip not found")
+        vos = _load_scene_vos(clip)
+        path = vos[idx] if 0 <= idx < len(vos) else None
+        if not path or not Path(path).exists():
+            raise HTTPException(404, "no voiceover for this scene")
+        return FileResponse(path, media_type="audio/wav")
+
+
+@app.delete("/api/clips/{cid}/scene-voiceover/{idx}")
+def delete_scene_voiceover(cid: int, idx: int):
+    with get_session() as s:
+        clip = s.get(Clip, cid)
+        if not clip:
+            raise HTTPException(404, "clip not found")
+        vos = _load_scene_vos(clip)
+        if 0 <= idx < len(vos) and vos[idx]:
+            Path(vos[idx]).unlink(missing_ok=True)
+            vos[idx] = None
+            clip.scene_vo_json = json.dumps(vos)
+            clip.status = "suggested"
+            s.add(clip); s.commit()
     return {"ok": True}
 
 

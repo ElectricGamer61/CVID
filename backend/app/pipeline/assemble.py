@@ -163,6 +163,76 @@ def build_edit_video(ticket_id: int, project_dir: Path) -> dict:
     return {"duration": round(t0, 2), "scenes": scenes, "words": words}
 
 
+def render_scene_reel(source: Path, out_path: Path, markers: list[dict],
+                      words: list[dict], scene_vos: list, preset_name: str,
+                      style: dict | None = None,
+                      out_w: int = W, out_h: int = H) -> Path:
+    """Voice-first export of a stitched reel: re-time each scene to its own voiceover.
+    For each scene marker [s,e]: cut that range from `source`; if it has a VO, loop the
+    video to the VO duration with that scene's caption text even-split across the VO;
+    otherwise keep the natural range. Concat the scenes. Reuses `_even_split` + the
+    clip's caption preset/style."""
+    work = out_path.parent / f"_scenes_{out_path.stem}"
+    shutil.rmtree(work, ignore_errors=True)
+    work.mkdir(parents=True, exist_ok=True)
+
+    seg_files: list[Path] = []
+    for i, m in enumerate(markers):
+        s, e = float(m["start"]), float(m["end"])
+        vo = scene_vos[i] if i < len(scene_vos) else None
+        has_vo = bool(vo and Path(vo).exists())
+        scene_words = [w for w in words if w["end"] > s and w["start"] < e]
+
+        raw = work / f"raw_{i:03d}.mp4"
+        proc = subprocess.run(
+            ["ffmpeg", "-y", "-ss", f"{s:.3f}", "-to", f"{e:.3f}", "-i", str(source),
+             "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-an", str(raw)],
+            capture_output=True, text=True)
+        if proc.returncode != 0:
+            raise RuntimeError(f"scene {i + 1} cut failed:\n{proc.stderr[-1200:]}")
+
+        if has_vo:
+            dur = max(0.8, float(probe_duration(Path(vo)) or (e - s)))
+            local_words = _even_split(" ".join(w["word"] for w in scene_words), dur)
+        else:
+            dur = max(0.8, float(e - s))
+            local_words = [{"start": round(w["start"] - s, 2), "end": round(w["end"] - s, 2),
+                            "word": w["word"]} for w in scene_words]
+
+        ass = work / f"seg_{i:03d}.ass"
+        write_ass(local_words, 0.0, dur, preset_name, ass, overrides=style)
+        subs = f"subtitles='{_escape_subtitles_path(ass)}'"
+        fd = _fonts_dir()
+        if fd:
+            subs += f":fontsdir='{fd}'"
+        rw, rh = probe_size(raw)
+        vf = f"{crop_filter(rw, rh, '9:16', 0.5, out_w, out_h)},{subs}"
+
+        seg = work / f"seg_{i:03d}.mp4"
+        cmd = ["ffmpeg", "-y", "-stream_loop", "-1", "-i", str(raw)]
+        cmd += (["-i", str(vo)] if has_vo
+                else ["-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo"])
+        cmd += ["-t", f"{dur:.3f}", "-vf", vf, "-map", "0:v:0", "-map", "1:a:0",
+                "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", "30",
+                "-preset", "veryfast", "-crf", "20",
+                "-c:a", "aac", "-ar", "48000", "-ac", "2", str(seg)]
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        if proc.returncode != 0:
+            raise RuntimeError(f"scene {i + 1} render failed:\n{proc.stderr[-1200:]}")
+        seg_files.append(seg)
+
+    listf = work / "list.txt"
+    listf.write_text("".join(f"file '{p.as_posix()}'\n" for p in seg_files), encoding="utf-8")
+    cmd = ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(listf),
+           "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", "30",
+           "-preset", "veryfast", "-crf", "20",
+           "-c:a", "aac", "-ar", "48000", "-ac", "2", "-movflags", "+faststart", str(out_path)]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise RuntimeError(f"scene reel concat failed:\n{proc.stderr[-1200:]}")
+    return out_path
+
+
 def assemble_ticket(ticket_id: int, progress=None) -> Path:
     """Stitch a ticket's beats (in order_index) into data/tickets/{id}/reel.mp4.
     Raises on the proof guard or any ffmpeg failure."""

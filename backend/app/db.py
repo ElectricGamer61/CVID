@@ -61,6 +61,10 @@ class Clip(SQLModel, table=True):
     # Recorded/replaced voiceover for this clip (set in the editor). When present,
     # render muxes it as the audio track instead of the source audio.
     voiceover_path: Optional[str] = None
+    # Per-scene voiceovers for a stitched reel — JSON list aligned to markers_json,
+    # each entry a wav path or null. When any is set, render re-times each scene to
+    # its voice (voice-first timing).
+    scene_vo_json: Optional[str] = None
 
 
 # --------------------------------------------------------------------------- #
@@ -152,7 +156,7 @@ def _migrate() -> None:
     from sqlalchemy import text
     wanted = {
         "clip": {"style_json": "TEXT", "words_json": "TEXT", "cuts_json": "TEXT",
-                 "markers_json": "TEXT", "voiceover_path": "TEXT",
+                 "markers_json": "TEXT", "voiceover_path": "TEXT", "scene_vo_json": "TEXT",
                  "stage": "TEXT DEFAULT ''", "hook": "TEXT DEFAULT ''",
                  "resolution": f"TEXT DEFAULT '{settings.DEFAULT_RESOLUTION}'"},
         "project": {"transcribe_backend": "TEXT DEFAULT 'local'",

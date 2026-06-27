@@ -1,7 +1,7 @@
 import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
 import { api, Beat, Clip, ExportItem, InsightsData, Outlier, Presets, Project, Ticket } from "./api";
 import { CaptionOverlay } from "./CaptionOverlay";
-import { CaptionStyle, FALLBACK_PRESETS, Word, wordsInRange } from "./captionStyles";
+import { CaptionStyle, FALLBACK_PRESETS, groupLines, Word, wordsInRange } from "./captionStyles";
 import { Sidebar } from "./Sidebar";
 import { useToast } from "./Toast";
 import { useRecorder } from "./useRecorder";
@@ -991,6 +991,7 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
   const [manualWords, setManualWords] = useState<boolean>(false);
   const [time, setTime] = useState(clip.start);
   const [playing, setPlaying] = useState(false);
+  const [recording, setRecording] = useState(false);
   const [boxH, setBoxH] = useState(560);
   const [zoom, setZoom] = useState(1);
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved">("idle");
@@ -1004,6 +1005,13 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
   const markers: { start: number; end: number; label: string }[] = jsonOr(clip.markers_json, []);
   // Recorded voiceover for this clip (layered in preview, muxed on export).
   const [voUrl, setVoUrl] = useState<string | null>(clip.voiceover_path ? api.clipVoiceoverUrl(clip.id) + "?t=" + Date.now() : null);
+  // Per-scene voice (reel clips with scene markers).
+  const hasScenes = markers.length > 0;
+  const [sceneIdx, setSceneIdx] = useState(0);
+  const [readRate, setReadRate] = useState(1);
+  const [sceneVos, setSceneVos] = useState<(string | null)[]>(() => jsonOr(clip.scene_vo_json, [] as (string | null)[]));
+  const loopRangeRef = useRef<{ s: number; e: number } | null>(null);
+  const activeScene = hasScenes ? markers[Math.min(sceneIdx, markers.length - 1)] : null;
 
   // Seed captions when the transcript arrives after mount and nothing is loaded yet.
   useEffect(() => {
@@ -1044,12 +1052,17 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
     const tick = () => {
       const v = videoRef.current;
       if (v) {
-        if (v.currentTime >= doc.end) v.currentTime = doc.start;
-        // Skip over removed middle sections so preview matches the cut export.
-        for (const [a, b] of doc.cuts) { if (v.currentTime >= a && v.currentTime < b) { v.currentTime = b; break; } }
-        // Keep the recorded voiceover aligned to the clip's local time.
-        const au = audioRef.current;
-        if (au && voUrl) { const want = v.currentTime - doc.start; if (Math.abs(au.currentTime - want) > 0.25) au.currentTime = Math.max(0, want); }
+        const lr = loopRangeRef.current;
+        if (lr) {
+          // Recording a scene: loop within its range so you can keep reading.
+          if (v.currentTime >= lr.e || v.currentTime < lr.s - 0.05) v.currentTime = lr.s;
+        } else {
+          if (v.currentTime >= doc.end) v.currentTime = doc.start;
+          for (const [a, b] of doc.cuts) { if (v.currentTime >= a && v.currentTime < b) { v.currentTime = b; break; } }
+          // Keep a saved voiceover aligned to the clip's local time (preview only).
+          const au = audioRef.current;
+          if (au && voUrl) { const want = v.currentTime - doc.start; if (Math.abs(au.currentTime - want) > 0.25) au.currentTime = Math.max(0, want); }
+        }
         setTime(v.currentTime);
       }
       raf = requestAnimationFrame(tick);
@@ -1079,6 +1092,20 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
     }
   };
   const seek = (t: number) => { if (videoRef.current) videoRef.current.currentTime = t; setTime(t); };
+  // Recording: roll the video over a range (a scene, or the whole clip) — muted, at
+  // the chosen reading rate — so the teleprompter scrolls while you read.
+  const startRecordPlayback = (range?: { s: number; e: number }) => {
+    const v = videoRef.current; if (!v) return;
+    const r = range ?? { s: doc.start, e: doc.end };
+    loopRangeRef.current = r;
+    v.currentTime = r.s; v.muted = true; v.playbackRate = readRate; v.play().catch(() => {});
+    setPlaying(true); setRecording(true);
+  };
+  const stopRecordPlayback = () => {
+    const v = videoRef.current; if (v) { v.pause(); v.playbackRate = 1; }
+    loopRangeRef.current = null; setPlaying(false); setRecording(false);
+  };
+  const selectScene = (i: number) => { const j = Math.max(0, Math.min(i, markers.length - 1)); setSceneIdx(j); if (markers[j]) seek(markers[j].start); };
   const choosePreset = (name: string) => set({ preset: name, style: presetMap[name] ?? FALLBACK_PRESETS.capcut });
   const doAutoCenter = async () => { setAutoBusy(true); try { const r = await api.autoCenter(clip.id); set({ center: r.center }); toast("Centered on the speaker", "ok"); } catch { toast("Auto-center failed", "err"); } finally { setAutoBusy(false); } };
   const onPreviewDown = (e: React.PointerEvent) => {
@@ -1123,6 +1150,7 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
             <CaptionOverlay words={doc.words} time={time} style={doc.style} containerHeight={boxH} />
             {tool === "reframe" && <div className="reframe-guide" style={{ left: `${doc.center * 100}%` }} />}
           </div>
+          {tool === "voice" && <Teleprompter words={activeScene ? wordsInRange(doc.words, activeScene.start, activeScene.end) : doc.words} time={time} maxWords={doc.style.max_words} />}
           <div className="play-row">
             <button className="primary round" onClick={togglePlay}>{playing ? "❚❚" : "▶"}</button>
             <span className="timecode">{fmt(time - doc.start)} / {fmt(doc.end - doc.start)}</span>
@@ -1135,7 +1163,11 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
         <div className="ed2-panel">
           {tool === "trim" && <TrimPanel doc={doc} set={set} />}
           {tool === "cut" && <CutPanel doc={doc} set={set} time={time} onSeek={seek} />}
-          {tool === "voice" && <VoicePanel cid={clip.id} voUrl={voUrl} onChanged={(u) => { setVoUrl(u); onChange(); }} toast={toast} />}
+          {tool === "voice" && (hasScenes
+            ? <SceneVoicePanel cid={clip.id} markers={markers} sceneIdx={Math.min(sceneIdx, markers.length - 1)} onSelectScene={selectScene}
+                sceneVos={sceneVos} setSceneVos={setSceneVos} readRate={readRate} setReadRate={setReadRate}
+                activeScene={activeScene!} onRecordStart={startRecordPlayback} onRecordStop={stopRecordPlayback} onChanged={onChange} toast={toast} />
+            : <VoicePanel cid={clip.id} voUrl={voUrl} onChanged={(u) => { setVoUrl(u); onChange(); }} toast={toast} onRecordStart={startRecordPlayback} onRecordStop={stopRecordPlayback} />)}
           {tool === "reframe" && <ReframePanel center={doc.center} set={set} autoCenter={doAutoCenter} autoBusy={autoBusy} />}
           {tool === "subs" && (
             <div className="panel-body">
@@ -1263,13 +1295,40 @@ function CutPanel({ doc, set, time, onSeek }: { doc: EditDoc; set: (p: Partial<E
   );
 }
 
-function VoicePanel({ cid, voUrl, onChanged, toast }: { cid: number; voUrl: string | null; onChanged: (u: string | null) => void; toast: Notify }) {
+// Karaoke teleprompter: shows the current caption line big, highlighting the
+// active word as the video plays, with the next line faded beneath.
+function Teleprompter({ words, time, maxWords }: { words: Word[]; time: number; maxWords: number }) {
+  if (!words.length) return <div className="teleprompter empty">Add captions to use the teleprompter</div>;
+  const lines = groupLines(words, maxWords);
+  // Find the line covering `time` (else the next upcoming line, else the last).
+  let idx = lines.findIndex((ln) => time >= ln[0].start && time <= ln[ln.length - 1].end + 0.15);
+  if (idx < 0) idx = lines.findIndex((ln) => ln[0].start > time);
+  if (idx < 0) idx = lines.length - 1;
+  const cur = lines[idx];
+  const next = lines[idx + 1];
+  let activeIdx = -1;
+  for (let i = 0; i < cur.length; i++) if (time >= cur[i].start) activeIdx = i;
+  return (
+    <div className="teleprompter">
+      <div className="tp-line">
+        {cur.map((w, i) => (
+          <span key={i} className={"tp-word" + (i === activeIdx ? " active" : i < activeIdx ? " done" : "")}>{w.word.trim()}</span>
+        ))}
+      </div>
+      {next && <div className="tp-next">{next.map((w) => w.word.trim()).join(" ")}</div>}
+    </div>
+  );
+}
+
+function VoicePanel({ cid, voUrl, onChanged, toast, onRecordStart, onRecordStop }: { cid: number; voUrl: string | null; onChanged: (u: string | null) => void; toast: Notify; onRecordStart: () => void; onRecordStop: () => void }) {
   const { recording, error, start, stop } = useRecorder();
   const [pending, setPending] = useState<{ blob: Blob; url: string } | null>(null);
   const [busy, setBusy] = useState(false);
 
+  const onRecord = async () => { onRecordStart(); const ok = await start(); if (!ok) onRecordStop(); };  // roll video+teleprompter, then mic
   const onStop = async () => {
     const blob = await stop();
+    onRecordStop();                                                  // pause the video
     if (blob) setPending({ blob, url: URL.createObjectURL(blob) });
   };
   const save = async () => {
@@ -1294,7 +1353,7 @@ function VoicePanel({ cid, voUrl, onChanged, toast }: { cid: number; voUrl: stri
       <div className="muted" style={{ fontSize: 12.5 }}>Press ▶ on the video, read your lines, and record your voice over it. Your voice becomes the audio of the final video.</div>
       <div className="vo-controls">
         {!recording
-          ? <button className="primary big-btn" onClick={start} disabled={busy || !!pending}>● Record voice</button>
+          ? <button className="primary big-btn" onClick={onRecord} disabled={busy || !!pending}>● Record voice</button>
           : <button className="big-btn danger" onClick={onStop}>■ Stop</button>}
       </div>
       {recording && <div className="muted vo-live">● Recording… read your script, then press Stop.</div>}
@@ -1316,6 +1375,71 @@ function VoicePanel({ cid, voUrl, onChanged, toast }: { cid: number; voUrl: stri
           <button className="sm danger" style={{ marginTop: 8 }} onClick={remove} disabled={busy}>Remove voice</button>
         </div>
       )}
+    </div>
+  );
+}
+
+function SceneVoicePanel({ cid, markers, sceneIdx, onSelectScene, sceneVos, setSceneVos, readRate, setReadRate, activeScene, onRecordStart, onRecordStop, onChanged, toast }: {
+  cid: number; markers: { start: number; end: number; label: string }[]; sceneIdx: number; onSelectScene: (i: number) => void;
+  sceneVos: (string | null)[]; setSceneVos: (v: (string | null)[]) => void; readRate: number; setReadRate: (r: number) => void;
+  activeScene: { start: number; end: number; label: string }; onRecordStart: (r?: { s: number; e: number }) => void; onRecordStop: () => void;
+  onChanged: () => void; toast: Notify;
+}) {
+  const { recording, error, start, stop } = useRecorder();
+  const [pending, setPending] = useState<{ blob: Blob; url: string } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const hasVoice = !!sceneVos[sceneIdx];
+  const doneCount = sceneVos.filter(Boolean).length;
+
+  const onRecord = async () => { onRecordStart({ s: activeScene.start, e: activeScene.end }); const ok = await start(); if (!ok) onRecordStop(); };
+  const onStop = async () => { const blob = await stop(); onRecordStop(); if (blob) setPending({ blob, url: URL.createObjectURL(blob) }); };
+  const save = async () => {
+    if (!pending) return; setBusy(true);
+    try { const r = await api.uploadSceneVoiceover(cid, sceneIdx, pending.blob); URL.revokeObjectURL(pending.url); setPending(null); setSceneVos(r.scene_vos); onChanged(); toast(`Scene ${sceneIdx + 1} voice saved`, "ok"); }
+    catch (e: any) { toast(`Save failed: ${e?.message || e}`, "err"); } finally { setBusy(false); }
+  };
+  const discard = () => { if (pending) URL.revokeObjectURL(pending.url); setPending(null); };
+  const remove = async () => {
+    setBusy(true);
+    try { await api.deleteSceneVoiceover(cid, sceneIdx); const copy = [...sceneVos]; copy[sceneIdx] = null; setSceneVos(copy); onChanged(); toast("Voice removed", "ok"); }
+    catch (e: any) { toast(`Failed: ${e?.message || e}`, "err"); } finally { setBusy(false); }
+  };
+
+  return (
+    <div className="panel-body">
+      <h3 className="panel-title">Voiceover — one scene at a time</h3>
+      <div className="scene-nav">
+        <button className="icon-btn" disabled={sceneIdx <= 0 || recording} onClick={() => onSelectScene(sceneIdx - 1)}>◀</button>
+        <span className="scene-pos">Scene {sceneIdx + 1} / {markers.length}{hasVoice ? " ✓" : ""}</span>
+        <button className="icon-btn" disabled={sceneIdx >= markers.length - 1 || recording} onClick={() => onSelectScene(sceneIdx + 1)}>▶</button>
+      </div>
+      {activeScene.label && <div className="muted scene-label">“{activeScene.label}”</div>}
+      <div className="muted" style={{ fontSize: 12.5, marginTop: 8 }}>Reading speed (only while recording):</div>
+      <div className="seg-toggle wide">
+        {[0.5, 0.75, 1].map((r) => <button key={r} className={readRate === r ? "on" : ""} disabled={recording} onClick={() => setReadRate(r)}>{r}×</button>)}
+      </div>
+      <div className="vo-controls">
+        {!recording
+          ? <button className="primary big-btn" onClick={onRecord} disabled={busy || !!pending}>● Record this scene</button>
+          : <button className="big-btn danger" onClick={onStop}>■ Stop</button>}
+      </div>
+      {recording && <div className="muted vo-live">● Recording scene {sceneIdx + 1}… read along with the highlight.</div>}
+      {error && <div className="err">{error}</div>}
+      {pending && (
+        <div className="vo-pending">
+          <div className="muted" style={{ fontSize: 12.5, marginBottom: 6 }}>Listen to your take:</div>
+          <audio src={pending.url} controls style={{ width: "100%" }} />
+          <div className="modal-actions"><button onClick={discard} disabled={busy}>Discard</button><button className="primary" onClick={save} disabled={busy}>{busy ? "Saving…" : "Save scene voice"}</button></div>
+        </div>
+      )}
+      {!pending && hasVoice && (
+        <div className="vo-current">
+          <div className="muted" style={{ fontSize: 12.5, margin: "10px 0 6px" }}>Scene {sceneIdx + 1} voice:</div>
+          <audio key={sceneVos[sceneIdx]} src={api.sceneVoiceoverUrl(cid, sceneIdx) + "?t=" + Date.now()} controls style={{ width: "100%" }} />
+          <button className="sm danger" style={{ marginTop: 8 }} onClick={remove} disabled={busy}>Remove this scene's voice</button>
+        </div>
+      )}
+      <div className="muted scene-progress">{doneCount} / {markers.length} scenes have voice. Export times each scene to your voice.</div>
     </div>
   );
 }
