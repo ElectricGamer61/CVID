@@ -56,21 +56,34 @@ def kept_segments(start: float, end: float,
 
 def remap_words_for_cuts(words: list[dict],
                          segments: list[tuple[float, float]]) -> tuple[list[dict], float]:
-    """Re-time transcript words onto the post-cut (compressed) timeline. Words inside
-    removed gaps drop out; the rest shift left by the removed duration before them.
-    Returns (local_words, total_duration) — times are already clip-local (start=0)."""
-    out: list[dict] = []
+    """Re-time caption words onto the post-cut (compressed) timeline. A cut removes
+    VIDEO, not caption text — so EVERY word is kept (word 4 5 6, cut, 7 8 — never
+    dropped). Words that fell inside a removed gap collapse to the seam, keeping their
+    order. Returns (local_words, total_duration) — times are clip-local (start=0)."""
+    bounds = []  # (src_start, src_end, edited_base)
     base = 0.0
     for a, b in segments:
-        for w in words:
-            s = max(w["start"], a)
-            e = min(w["end"], b)
-            if e > s:
-                out.append({"start": base + (s - a), "end": base + (e - a),
-                            "word": w["word"]})
+        bounds.append((a, b, base))
         base += (b - a)
+    total = base
+
+    def to_edited(t: float) -> float:
+        for a, b, eb in bounds:
+            if t < a:
+                return eb          # inside a removed gap before this segment -> the seam
+            if t <= b:
+                return eb + (t - a)
+        return total
+
+    out: list[dict] = []
+    for w in words:
+        s = to_edited(w["start"])
+        e = to_edited(w["end"])
+        if e <= s:                 # word lived entirely inside a cut -> keep it at the seam
+            e = s + max(0.15, w["end"] - w["start"])
+        out.append({"start": s, "end": e, "word": w["word"]})
     out.sort(key=lambda x: x["start"])
-    return out, base
+    return out, total
 
 
 def render_clip_segments(source: Path, out_path: Path,

@@ -178,19 +178,21 @@ Plain-language UI: a ticket = "video", a beat = "scene", an outlier = an "idea".
   · **Subtitles** · **Voice** (Text/B-roll/Music/Transitions/AI Hook = coming soon).
   - **SegmentTimeline** = the kept pieces (`keptSegments(start,end,cuts)`, mirrors backend
     `render.kept_segments`) shown as **separate clip blocks on a collapsed (edited) timeline** — a
-    removed middle takes **no width** (no red bar). Click a clip to select → drag its **edge handles**
-    to trim, or **×** to delete it (deleting collapses the rest). Persisted model is unchanged
-    (`start/end + cuts_json`); the editor maps segment edits back via `segmentsToDoc()` (start=first,
-    end=last, cuts=gaps). Playhead/scrub/markers/frames all run in **edited time** (`srcToEdited`/
-    `editedToSrc`); the `<video>` plays source time and `seek()` jumps over cuts.
+    removed middle takes **no width** (no red bar). **Drag anywhere = scrub the playhead** (no
+    selection/highlight); **hover a clip** to reveal its **edge handles** (drag to trim) and **×**
+    (delete it → the rest collapse). Persisted model is unchanged (`start/end + cuts_json`); the editor
+    maps segment edits back via `segmentsToDoc()` (start=first, end=last, cuts=gaps). Playhead/scrub/
+    markers/frames run in **edited time** (`srcToEdited`/`editedToSrc`); the `<video>` plays source time
+    and `seek()` jumps over cuts.
   - **Cut** = mark a middle range to remove (Cut tool: set cut start → cut to here); the timeline then
-    shows two clip blocks; export via `render_clip_segments`. The **Trim** numeric panel still sets the
-    outer bounds and reaches any part of the source (0..duration).
-  - **Captions are WYSIWYG**: the preview overlay uses words retimed onto the edited timeline
-    (`remapWords`, mirrors backend `remap_words_for_cuts`) at `srcToEdited(time)`, so captions
-    **continue across a cut** and the preview matches the export exactly. Captions also **STAY** on any
-    trim/cut (no auto-resync); **"↻ Match captions to this part"** (Subtitles → Edit words, shown when a
-    transcript exists) pulls the section's transcript on demand. `manualWords` seeds on first mount only.
+    shows two clip blocks; export via `render_clip_segments`. The **Trim** numeric panel sets the outer
+    bounds and reaches any part of the source (0..duration).
+  - **A cut removes VIDEO, not caption words.** `remapWords` (preview) and backend
+    `remap_words_for_cuts` (export) **keep EVERY word**, retimed onto the edited timeline — words that
+    fell inside a removed gap collapse to the seam but stay in sequence (so captions read
+    "word4 5 6 → cut → 7 8", never dropping words). Preview == export (WYSIWYG). Captions also **STAY**
+    on any trim/cut (no auto-resync); **"↻ Match captions to this part"** (Subtitles → Edit words, shown
+    when a transcript exists) pulls the section's transcript on demand.
   - **Voice** — two modes:
     - **Reel clips (have scene markers): per-scene.** `SceneVoicePanel` — ◀ Scene N/M ▶ selector,
       a **karaoke `Teleprompter`** scoped to the scene, a **reading-speed** control (0.5/0.75/1×, slows

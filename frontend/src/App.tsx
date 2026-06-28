@@ -1491,19 +1491,19 @@ function editedToSrc(te: number, segs: Seg[]): number {
   return last ? last[1] : 0;
 }
 
-/* Retime caption words onto the edited timeline (drop words inside cuts) — mirrors
+/* Retime caption words onto the edited timeline. A cut removes VIDEO, not caption
+   text — so EVERY word is kept (word 4 5 6, cut, 7 8 — never dropped). Words that
+   fell inside a removed gap collapse to the seam, keeping their order. Mirrors
    backend render.remap_words_for_cuts so the preview matches the export exactly. */
 function remapWords(words: Word[], segs: Seg[]): Word[] {
-  const out: Word[] = [];
-  let base = 0;
-  for (const [a, b] of segs) {
-    for (const w of words) {
-      const s = Math.max(w.start, a), e = Math.min(w.end, b);
-      if (e > s) out.push({ ...w, start: base + (s - a), end: base + (e - a) });
-    }
-    base += b - a;
-  }
-  return out.sort((x, y) => x.start - y.start);
+  return words
+    .map((w) => {
+      const s = srcToEdited(w.start, segs);
+      let e = srcToEdited(w.end, segs);
+      if (e <= s) e = s + Math.max(0.15, w.end - w.start);   // word lived inside a cut → keep it at the seam
+      return { ...w, start: s, end: e };
+    })
+    .sort((x, y) => x.start - y.start);
 }
 
 const TOOLS: { id: string; label: string; icon: string; soon?: boolean }[] = [
@@ -1807,14 +1807,13 @@ function SegmentTimeline({ pid, segments, duration, time, zoom, markers, onTrimE
   onScrub: (srcT: number) => void;
 }) {
   const trackRef = useRef<HTMLDivElement>(null);
-  const [sel, setSel] = useState<number | null>(segments.length === 1 ? 0 : null);
   const total = Math.max(0.1, segTotal(segments));
   let acc = 0;
   const starts = segments.map(([a, b]) => { const s = acc; acc += b - a; return s; });
   const pct = (editedT: number) => Math.max(0, Math.min(100, (editedT / total) * 100));
   const editedAtX = (clientX: number) => { const r = trackRef.current!.getBoundingClientRect(); const x = Math.min(Math.max(0, clientX - r.left), r.width); return (x / r.width) * total; };
   const dragEdge = (i: number, side: "left" | "right") => (e: React.PointerEvent) => {
-    e.preventDefault(); e.stopPropagation(); setSel(i);
+    e.preventDefault(); e.stopPropagation();
     const move = (ev: PointerEvent) => onTrimEdge(i, side, editedToSrc(editedAtX(ev.clientX), segments));
     const up = () => { window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up); };
     window.addEventListener("pointermove", move); window.addEventListener("pointerup", up);
@@ -1828,23 +1827,23 @@ function SegmentTimeline({ pid, segments, duration, time, zoom, markers, onTrimE
   return (
     <div className="fs-wrap">
       <div className="fs-scroll">
-        <div className="seg-track" ref={trackRef} onPointerDown={(e) => { setSel(null); scrub(e); }} style={{ width: `${zoom * 100}%` }}>
+        <div className="seg-track" ref={trackRef} onPointerDown={scrub} style={{ width: `${zoom * 100}%` }}>
           {segments.map(([a, b], i) => {
             const left = pct(starts[i]); const w = pct(starts[i] + (b - a)) - left; const len = b - a;
             const nf = Math.max(2, Math.round((len / total) * 10 * zoom));
             const frames = Array.from({ length: nf }, (_, k) => a + ((k + 0.5) / nf) * len);
             return (
-              <div key={i} className={"seg-clip" + (sel === i ? " sel" : "")} style={{ left: `${left}%`, width: `${w}%` }}
-                   onPointerDown={(e) => { e.stopPropagation(); setSel(i); scrub(e); }}>
+              <div key={i} className="seg-clip" style={{ left: `${left}%`, width: `${w}%` }}
+                   onPointerDown={(e) => { e.stopPropagation(); scrub(e); }}>
                 <div className="seg-frames">{frames.map((t, k) => (
                   <img key={k} src={api.frameUrl(pid, t)} alt="" draggable={false} onError={(e) => ((e.target as HTMLImageElement).style.opacity = "0")} />
                 ))}</div>
                 <span className="seg-len">{fmt(len)}</span>
-                <div className="seg-handle l" onPointerDown={dragEdge(i, "left")} />
-                <div className="seg-handle r" onPointerDown={dragEdge(i, "right")} />
-                {sel === i && segments.length > 1 && (
+                <div className="seg-handle l" title="Drag to trim" onPointerDown={dragEdge(i, "left")} />
+                <div className="seg-handle r" title="Drag to trim" onPointerDown={dragEdge(i, "right")} />
+                {segments.length > 1 && (
                   <button className="seg-del" title="Delete this clip" onPointerDown={(e) => e.stopPropagation()}
-                          onClick={(e) => { e.stopPropagation(); onDeleteSeg(i); setSel(null); }}>×</button>
+                          onClick={(e) => { e.stopPropagation(); onDeleteSeg(i); }}>×</button>
                 )}
               </div>
             );
@@ -1858,7 +1857,7 @@ function SegmentTimeline({ pid, segments, duration, time, zoom, markers, onTrimE
       <div className="timeline-labels">
         <span className="tag">{segments.length} clip{segments.length > 1 ? "s" : ""}</span>
         <span className="tag">{fmt(total)} total</span>
-        <span className="tag muted">{segments.length > 1 ? "click a clip → drag its edges to trim, or × to delete" : "click the clip → drag its edges to trim"}</span>
+        <span className="tag muted">drag anywhere to move the playhead · hover a clip → drag its edges to trim{segments.length > 1 ? ", or × to delete" : ""}</span>
       </div>
     </div>
   );
