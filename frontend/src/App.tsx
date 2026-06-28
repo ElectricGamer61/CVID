@@ -1227,8 +1227,11 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
       if (v) {
         const lr = loopRangeRef.current;
         if (lr) {
-          // Recording a scene: loop within its range so you can keep reading.
+          // Recording: loop within the range so you can keep reading — and skip over
+          // any cut ranges so you record against the SAME video the export produces
+          // (a removed middle no longer plays back during recording).
           if (v.currentTime >= lr.e || v.currentTime < lr.s - 0.05) v.currentTime = lr.s;
+          else { for (const [a, b] of doc.cuts) { if (v.currentTime >= a && v.currentTime < b) { v.currentTime = b; break; } } }
         } else {
           if (v.currentTime >= doc.end) v.currentTime = doc.start;
           for (const [a, b] of doc.cuts) { if (v.currentTime >= a && v.currentTime < b) { v.currentTime = b; break; } }
