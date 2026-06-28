@@ -139,7 +139,8 @@ uploads AND by `build-edit` reels).
 - **Schedule/post (P6):** **`GET /api/queue`** → `{dry_run, platforms, ready[], scheduled[], posted[]}`
   (each card carries `has_video`). **`POST /api/tickets/{tid}/schedule`** (set `scheduled_at`/`platforms`/
   `captions`, stage→`scheduled`; null `scheduled_at` clears → back to `ready`). **`POST /{tid}/post`**
-  → calls `pipeline/poster.post_reel` (dry-run unless `UPLOAD_POST_API_KEY` set), stage→`posted`.
+  (body: `platforms`, `caption`, optional **`scheduled_at`**) → `pipeline/poster.post_reel` against the
+  Upload-Post API (dry-run unless key set); `scheduled_at` set → stage `scheduled`, else stage `posted`.
 - **Outliers:** CRUD + `POST /api/tickets/from-outlier/{oid}`.
 - **Insights:** `POST /api/perf` · `GET /api/insights` (now also returns **`by_platform`**
   per-channel views/follows/saves/sends/score + **`trend`** totals-per-capture-day). **`GET /api/exports`** — all rendered clips +
@@ -227,11 +228,17 @@ Plain-language UI: a ticket = "video", a beat = "scene", an outlier = an "idea".
 
 ## 8. Known limitations / next ideas (next-steps backlog)
 
-- **Pipeline P6 (schedule/post) BUILT** (2026-06-27) — `pipeline/poster.py` Upload-Post **dry-run
-  adapter** (`is_live()` = `bool(UPLOAD_POST_API_KEY)`; no key → logs only, returns synthetic result;
-  real SDK path gated behind the key with a `# FUTURE` wire-up) + `/api/queue` + `/schedule` + `/post`
-  + a **Schedule** screen (ready-to-schedule cards w/ datetime + platform pick + Schedule/Post-now,
-  the queue, recently-posted). All P1–P6 done.
+- **Pipeline P6 (schedule/post) BUILT + REAL POSTING WIRED** (2026-06-27) — `pipeline/poster.py` calls
+  the **Upload-Post REST API** (`POST https://api.upload-post.com/api/upload`, header
+  `Authorization: Apikey <key>`, multipart `user`/`title`/`platform[]`/`video`, `scheduled_date`+
+  `timezone` for scheduling) behind a **dry-run guard** (`is_live()` = `bool(UPLOAD_POST_API_KEY)`; no
+  key → logs only). Platform map tt→tiktok/ig→instagram/yt→youtube. Needs `UPLOAD_POST_API_KEY` +
+  `UPLOAD_POST_USER` (profile from the Upload-Post dashboard, social accounts connected) +
+  `UPLOAD_POST_TIMEZONE` (IANA) in `backend/.env`. `/api/queue` returns `config{live,user_set,user}`;
+  **`/post`** takes optional `scheduled_at` → schedule (stage `scheduled`) vs post-now (stage `posted`).
+  **Schedule** screen: practice/almost-live/live banner, ready cards (datetime + platform pick →
+  Schedule or Post-now), the queue (status + Remove), recently-posted. Verified: dry-run flow green +
+  real request validated against the live endpoint (bogus key → 401, proves request shape). All P1–P6 done.
 - **Metrics — Results upgraded** (2026-06-27): `/api/insights` adds `by_platform` + `trend`; the
   Results screen now shows a **Momentum** day-by-day bar chart + a **By platform** breakdown table.
   Still manual entry — **auto-pull stats** remains the next refinement.

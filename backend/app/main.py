@@ -142,6 +142,7 @@ class ScheduleTicket(BaseModel):
 class PostTicket(BaseModel):
     platforms: Optional[list] = None       # default: ticket's platforms or all
     caption: Optional[str] = None          # default: derived from ticket
+    scheduled_at: Optional[str] = None     # ISO datetime → schedule for then; None → post now
 
 
 def _proj_dict(p: Project) -> dict:
@@ -641,6 +642,7 @@ def queue():
     posted = sorted([t for t in tickets if t.stage == "posted"],
                     key=lambda t: t.posted_at or datetime.min, reverse=True)[:20]
     return {"dry_run": not poster.is_live(), "platforms": settings.PLATFORMS,
+            "config": poster.configured(),
             "ready": ready, "scheduled": [card(t) for t in sched],
             "posted": [card(t) for t in posted]}
 
@@ -673,8 +675,8 @@ def schedule_ticket(tid: int, body: ScheduleTicket):
 
 @app.post("/api/tickets/{tid}/post")
 def post_ticket(tid: int, body: PostTicket):
-    """Post now via the dry-run adapter (logs unless UPLOAD_POST_API_KEY is set).
-    Marks the ticket posted so it shows up in Results."""
+    """Send a reel to Upload-Post — now (scheduled_at=None) or scheduled for a time.
+    Dry-run (no UPLOAD_POST_API_KEY) just logs. Updates the ticket stage accordingly."""
     from datetime import datetime
     with get_session() as s:
         t = s.get(Ticket, tid)
@@ -683,17 +685,25 @@ def post_ticket(tid: int, body: PostTicket):
         platforms = body.platforms or t.platforms or settings.PLATFORMS
         caption = body.caption or _ticket_caption(t)
         video = t.clip_url
+    when = body.scheduled_at or None
     try:
         result = poster.post_reel(ticket_id=tid, video_path=video, caption=caption,
-                                  platforms=platforms, when=None)
+                                  platforms=platforms, when=when)
     except Exception as e:  # surfaces real-mode misconfig as a 400
         raise HTTPException(400, f"{e}")
     with get_session() as s:
         t = s.get(Ticket, tid)
-        t.stage = "posted"
         t.platforms = platforms
-        if not t.posted_at:
-            t.posted_at = datetime.utcnow()
+        if when:
+            t.stage = "scheduled"
+            try:
+                t.scheduled_at = datetime.fromisoformat(when)
+            except ValueError:
+                pass
+        else:
+            t.stage = "posted"
+            if not t.posted_at:
+                t.posted_at = datetime.utcnow()
         s.add(t); s.commit()
     return result
 

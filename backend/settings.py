@@ -40,9 +40,14 @@ ELEVENLABS_MODEL = os.getenv("CVIDEO_ELEVENLABS_MODEL", "scribe_v1")
 DEFAULT_TRANSCRIBE = os.getenv("CVIDEO_DEFAULT_TRANSCRIBE", "local")
 
 # --- Posting (Phase 6 schedule/post) -----------------------------------------
-# Upload-Post SDK key. When empty, the poster runs in DRY-RUN mode (logs instead
+# Upload-Post API key. When empty, the poster runs in DRY-RUN mode (logs instead
 # of sending) — see app/pipeline/poster.py. Real posting is gated on this.
 UPLOAD_POST_API_KEY = os.getenv("UPLOAD_POST_API_KEY", "")
+# Upload-Post "user" profile name (created in the Upload-Post dashboard, with your
+# TikTok/IG/YouTube accounts connected). Required for real posting.
+UPLOAD_POST_USER = os.getenv("UPLOAD_POST_USER", "")
+# IANA timezone the scheduled times are written in (e.g. America/New_York).
+UPLOAD_POST_TIMEZONE = os.getenv("UPLOAD_POST_TIMEZONE", "UTC")
 # Platforms we can target (matches the per-platform caption keys tt/ig/yt).
 PLATFORMS = ["tt", "ig", "yt"]
 

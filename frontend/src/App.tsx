@@ -642,8 +642,14 @@ function Queue() {
         <h2>Schedule</h2>
         <span className="muted">Queue your videos and post them to TikTok, Instagram &amp; YouTube</span>
       </div>
-      {data?.dry_run && (
-        <div className="dry-banner">🧪 <b>Practice mode</b> — posting is simulated, nothing is sent. Add <code>UPLOAD_POST_API_KEY</code> to <code>backend/.env</code> to post for real.</div>
+      {data && data.dry_run && (
+        <div className="dry-banner">🧪 <b>Practice mode</b> — posting is simulated, nothing is sent. Add <code>UPLOAD_POST_API_KEY</code> + <code>UPLOAD_POST_USER</code> to <code>backend/.env</code> to post for real.</div>
+      )}
+      {data && !data.dry_run && !data.config.user_set && (
+        <div className="dry-banner warn">⚠ <b>Almost live</b> — your API key is set, but <code>UPLOAD_POST_USER</code> isn't. Set it to your Upload-Post profile name (with TikTok/Instagram/YouTube connected on the Upload-Post dashboard) in <code>backend/.env</code>.</div>
+      )}
+      {data && !data.dry_run && data.config.user_set && (
+        <div className="dry-banner live">🟢 <b>Live</b> — posting as <b>{data.config.user}</b> via Upload-Post.</div>
       )}
 
       <h3 className="ins-h">Ready to schedule</h3>
@@ -653,7 +659,7 @@ function Queue() {
 
       <h3 className="ins-h" style={{ marginTop: 28 }}>In the queue ({data?.scheduled.length ?? 0})</h3>
       {!data || data.scheduled.length === 0 ? <div className="muted">Nothing queued.</div>
-        : <div className="q-list">{data.scheduled.map((t) => <QueuedRow key={t.id} t={t} onDone={refresh} />)}</div>}
+        : <div className="q-list">{data.scheduled.map((t) => <QueuedRow key={t.id} t={t} dryRun={data.dry_run} onDone={refresh} />)}</div>}
 
       {data && data.posted.length > 0 && (
         <>
@@ -676,7 +682,7 @@ function ScheduleCard({ t, platforms, onDone }: { t: QueueTicket; platforms: str
   const schedule = async () => {
     if (picked.length === 0) { toast("Pick at least one platform", "err"); return; }
     setBusy("sch");
-    try { await api.scheduleTicket(t.id, { scheduled_at: when, platforms: picked }); toast("Added to the queue", "ok"); onDone(); }
+    try { const r = await api.postTicket(t.id, { platforms: picked, scheduled_at: when }); toast(r.message, "ok"); onDone(); }
     catch (e: any) { toast(`Failed: ${e?.message || e}`, "err"); } finally { setBusy(""); }
   };
   const postNow = async () => {
@@ -705,21 +711,19 @@ function ScheduleCard({ t, platforms, onDone }: { t: QueueTicket; platforms: str
   );
 }
 
-function QueuedRow({ t, onDone }: { t: QueueTicket; onDone: () => void }) {
+function QueuedRow({ t, dryRun, onDone }: { t: QueueTicket; dryRun: boolean; onDone: () => void }) {
   const [busy, setBusy] = useState("");
   const toast = useToast();
   const title = t.hook_text || t.angle || `Video ${t.id}`;
-  const postNow = async () => { setBusy("post"); try { const r = await api.postTicket(t.id); toast(r.message, "ok"); onDone(); } catch (e: any) { toast(`Failed: ${e?.message || e}`, "err"); } finally { setBusy(""); } };
   const unsched = async () => { setBusy("un"); try { await api.scheduleTicket(t.id, { scheduled_at: null }); toast("Removed from the queue", "ok"); onDone(); } catch (e: any) { toast(`Failed: ${e?.message || e}`, "err"); } finally { setBusy(""); } };
   return (
     <div className="q-row">
       <div className="q-row-main">
         <div className="q-title">{title}</div>
-        <div className="q-sub muted">🗓 {fmtWhen(t.scheduled_at)} · {(t.platforms || []).map(platLabel).join(", ") || "no platforms"}</div>
+        <div className="q-sub muted">{dryRun ? "🗓 queued (practice)" : "🟢 queued on Upload-Post"} for {fmtWhen(t.scheduled_at)} · {(t.platforms || []).map(platLabel).join(", ") || "no platforms"}</div>
       </div>
       <div className="q-actions">
-        <button className="ghost" onClick={unsched} disabled={!!busy}>{busy === "un" ? "…" : "Unschedule"}</button>
-        <button className="primary" onClick={postNow} disabled={!!busy}>{busy === "post" ? "…" : "Post now"}</button>
+        <button className="ghost" onClick={unsched} disabled={!!busy}>{busy === "un" ? "…" : "Remove from list"}</button>
       </div>
     </div>
   );

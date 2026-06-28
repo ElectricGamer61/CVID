@@ -140,6 +140,7 @@ export interface QueueTicket extends Ticket {
 export interface QueueData {
   dry_run: boolean;
   platforms: string[];
+  config: { live: boolean; user_set: boolean; user: string };
   ready: QueueTicket[];
   scheduled: QueueTicket[];
   posted: QueueTicket[];
@@ -291,7 +292,7 @@ export const api = {
   getQueue: (): Promise<QueueData> => fetch("/api/queue").then((r) => r.json()),
   scheduleTicket: (tid: number, body: { scheduled_at: string | null; platforms?: string[]; captions?: Record<string, string> }): Promise<Ticket> =>
     fetch(`/api/tickets/${tid}/schedule`, { method: "POST", headers: J, body: JSON.stringify(body) }).then(async (r) => { if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.status); return r.json(); }),
-  postTicket: (tid: number, body: { platforms?: string[]; caption?: string } = {}): Promise<PostResult> =>
+  postTicket: (tid: number, body: { platforms?: string[]; caption?: string; scheduled_at?: string } = {}): Promise<PostResult> =>
     fetch(`/api/tickets/${tid}/post`, { method: "POST", headers: J, body: JSON.stringify(body) }).then(async (r) => { if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.status); return r.json(); }),
 
   sourceUrl: (pid: number) => `/api/projects/${pid}/source`,
