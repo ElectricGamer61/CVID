@@ -552,10 +552,14 @@ function Library() {
     sub.get(sg)!.push(it);
   }
   const dl = (it: ExportItem) => downloadFile(it.download, it.filename || safeFileName(it.title), toast);
+  const move = async (kind: string, id: number, folder: string) => {
+    try { await api.setExportFolder(kind as "clip" | "reel", id, folder); toast(`Moved to "${folder}"`, "ok"); api.listExports().then(setItems).catch(() => {}); }
+    catch (e: any) { toast(`Move failed: ${e?.message || e}`, "err"); }
+  };
 
   return (
     <div className="page">
-      <div className="page-head"><h2>Downloads</h2><span className="muted">{items.length} finished video{items.length === 1 ? "" : "s"}</span></div>
+      <div className="page-head"><h2>Downloads</h2><span className="muted">{items.length} finished video{items.length === 1 ? "" : "s"} · drag a video to move it between folders</span></div>
       {items.length === 0 ? (
         <div className="empty">
           <div className="big" style={{ fontSize: 28 }}>⬇</div>
@@ -563,9 +567,12 @@ function Library() {
           <div>Make a video and it shows up here, ready to download.</div>
         </div>
       ) : (
-        [...folders.entries()].map(([group, subs]) => (
-          <DownloadFolder key={group} group={group} subs={subs} onPreview={setPreview} onDownload={dl} />
-        ))
+        <>
+          {[...folders.entries()].map(([group, subs]) => (
+            <DownloadFolder key={group} group={group} subs={subs} onPreview={setPreview} onDownload={dl} onMove={move} />
+          ))}
+          <NewFolderDrop onMove={move} />
+        </>
       )}
       {preview && (
         <VideoModal src={preview.download} title={preview.title}
@@ -575,13 +582,22 @@ function Library() {
   );
 }
 
-function DownloadFolder({ group, subs, onPreview, onDownload }: {
-  group: string; subs: Map<string, ExportItem[]>; onPreview: (it: ExportItem) => void; onDownload: (it: ExportItem) => void;
+function DownloadFolder({ group, subs, onPreview, onDownload, onMove }: {
+  group: string; subs: Map<string, ExportItem[]>; onPreview: (it: ExportItem) => void;
+  onDownload: (it: ExportItem) => void; onMove: (kind: string, id: number, folder: string) => void;
 }) {
   const [open, setOpen] = useState(true);
+  const [over, setOver] = useState(false);
   const total = [...subs.values()].reduce((n, arr) => n + arr.length, 0);
+  const onDrop = (e: React.DragEvent) => {
+    e.preventDefault(); setOver(false);
+    try { const d = JSON.parse(e.dataTransfer.getData("text/plain")); if (d && d.group !== group) onMove(d.kind, d.id, group); } catch { /* not our payload */ }
+  };
   return (
-    <div className="dl-folder">
+    <div className={"dl-folder" + (over ? " drop-over" : "")}
+         onDragOver={(e) => { e.preventDefault(); setOver(true); }}
+         onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setOver(false); }}
+         onDrop={onDrop}>
       <button className="dl-folder-head" onClick={() => setOpen((o) => !o)}>
         <span className="dl-caret">{open ? "▾" : "▸"}</span>
         <span className="dl-folder-ic">📁</span>
@@ -591,25 +607,43 @@ function DownloadFolder({ group, subs, onPreview, onDownload }: {
       {open && [...subs.entries()].map(([sg, arr]) => (
         <div className="dl-sub" key={sg}>
           <div className="dl-sub-head">{sg} <span className="muted">· {arr.length}</span></div>
-          <div className="exp-grid">
+          <div className="exp-rows">
             {arr.map((it) => (
-              <div className="exp-card" key={`${it.kind}-${it.id}`}>
-                <div className="exp-thumb" onClick={() => onPreview(it)} title="Click to preview">
-                  {it.thumb ? <img src={it.thumb} alt="" loading="lazy" onError={(e) => ((e.target as HTMLImageElement).style.visibility = "hidden")} /> : <div className="exp-noimg">🎬</div>}
-                  <div className="exp-play">▶</div>
-                  <span className={"exp-kind " + it.kind}>{it.kind}</span>
-                  {it.score != null && <span className="exp-score">{it.score}</span>}
+              <div className="exp-row" key={`${it.kind}-${it.id}`} draggable
+                   onDragStart={(e) => { e.dataTransfer.setData("text/plain", JSON.stringify({ kind: it.kind, id: it.id, group })); e.dataTransfer.effectAllowed = "move"; }}>
+                <span className="exp-drag" title="Drag to another folder">⠿</span>
+                <div className="exp-row-thumb" onClick={() => onPreview(it)} title="Click to preview">
+                  {it.thumb ? <img src={it.thumb} alt="" loading="lazy" onError={(e) => ((e.target as HTMLImageElement).style.visibility = "hidden")} /> : <div className="exp-noimg sm">🎬</div>}
+                  <div className="exp-play sm">▶</div>
                 </div>
-                <div className="exp-body">
+                <div className="exp-row-main">
                   <div className="exp-title">{it.title}</div>
-                  <div className="muted exp-sub">{it.subtitle}</div>
-                  <button className="primary exp-dl" onClick={() => onDownload(it)}>⬇ Download</button>
+                  <div className="muted exp-sub"><span className={"exp-kind-tag " + it.kind}>{it.kind}</span> · {it.subtitle}{it.score != null ? ` · ${it.score}` : ""}</div>
                 </div>
+                <button className="primary exp-dl-row" onClick={() => onDownload(it)}>⬇ Download</button>
               </div>
             ))}
           </div>
         </div>
       ))}
+    </div>
+  );
+}
+
+function NewFolderDrop({ onMove }: { onMove: (kind: string, id: number, folder: string) => void }) {
+  const [over, setOver] = useState(false);
+  const onDrop = (e: React.DragEvent) => {
+    e.preventDefault(); setOver(false);
+    try {
+      const d = JSON.parse(e.dataTransfer.getData("text/plain"));
+      const name = window.prompt("New folder name")?.trim();
+      if (d && name) onMove(d.kind, d.id, name);
+    } catch { /* not our payload */ }
+  };
+  return (
+    <div className={"dl-newfolder" + (over ? " drop-over" : "")}
+         onDragOver={(e) => { e.preventDefault(); setOver(true); }} onDragLeave={() => setOver(false)} onDrop={onDrop}>
+      ＋ Drop a video here to make a new folder
     </div>
   );
 }

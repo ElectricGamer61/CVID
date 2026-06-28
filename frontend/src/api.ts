@@ -282,6 +282,8 @@ export const api = {
     fetch(`/api/tickets/from-outlier/${oid}`, { method: "POST" }).then((r) => r.json()),
 
   listExports: (): Promise<ExportItem[]> => fetch("/api/exports").then((r) => r.json()),
+  setExportFolder: (kind: "clip" | "reel", id: number, folder: string): Promise<{ ok: boolean; folder: string | null }> =>
+    fetch(`/api/exports/${kind}/${id}/folder`, { method: "PATCH", headers: J, body: JSON.stringify({ folder }) }).then((r) => r.json()),
 
   // --- Insights (Signal Reader) ---
   getInsights: (): Promise<InsightsData> => fetch("/api/insights").then((r) => r.json()),

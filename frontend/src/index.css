@@ -464,6 +464,26 @@ input[type=range] { width: 100%; accent-color: var(--primary); }
 .dl-folder-head .board-count { margin-left: auto; }
 .dl-sub { padding: 14px 16px 4px; }
 .dl-sub-head { font-weight: 700; color: var(--text-2); font-size: 12.5px; text-transform: uppercase; letter-spacing: .04em; margin-bottom: 10px; }
+/* Downloads as rows (draggable between folders) */
+.exp-rows { display: flex; flex-direction: column; gap: 8px; }
+.exp-row { display: flex; align-items: center; gap: 12px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-sm); padding: 8px 12px; box-shadow: var(--shadow-sm); }
+.exp-row:hover { border-color: var(--border-2); }
+.exp-drag { cursor: grab; color: var(--muted-2); font-size: 17px; line-height: 1; flex: none; user-select: none; }
+.exp-drag:active { cursor: grabbing; }
+.exp-row-thumb { position: relative; width: 46px; height: 80px; flex: none; border-radius: 8px; overflow: hidden; background: var(--surface-3); display: grid; place-items: center; cursor: pointer; }
+.exp-row-thumb img { width: 100%; height: 100%; object-fit: cover; }
+.exp-noimg.sm { font-size: 20px; }
+.exp-play.sm { width: 26px; height: 26px; font-size: 12px; }
+.exp-row-main { flex: 1; min-width: 0; }
+.exp-row .exp-title { font-weight: 700; font-size: 14px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.exp-row .exp-sub { font-size: 12px; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.exp-kind-tag { text-transform: uppercase; font-size: 10px; letter-spacing: .04em; font-weight: 700; color: var(--muted); }
+.exp-kind-tag.reel { color: var(--primary); }
+.exp-dl-row { flex: none; font-size: 12.5px; padding: 6px 12px; }
+.dl-folder.drop-over { outline: 2px dashed var(--primary); outline-offset: -2px; }
+.dl-folder.drop-over .dl-folder-head { background: var(--primary-soft); }
+.dl-newfolder { margin-top: 6px; border: 1.5px dashed var(--border-2); border-radius: var(--r); padding: 16px; text-align: center; color: var(--muted); font-size: 13px; }
+.dl-newfolder.drop-over { border-color: var(--primary); color: var(--primary); background: var(--primary-soft); }
 
 /* Video preview lightbox */
 .vm-back { position: fixed; inset: 0; background: rgba(8,10,16,.74); backdrop-filter: blur(3px); display: grid; place-items: center; z-index: 60; padding: 24px; }

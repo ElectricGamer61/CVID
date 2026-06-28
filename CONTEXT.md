@@ -169,10 +169,13 @@ Plain-language UI: a ticket = "video", a beat = "scene", an outlier = an "idea".
   **"✏️ Open in editor"** calls `build-edit` and routes into the clip editor.
 - **TicketDetail** drawer — edit ticket + per-beat fields, add/reorder/delete scenes, proof toggle,
   AI buttons, per-beat clip/voiceover upload, "Open in editor" + "Make my video" (assemble).
-- **Downloads (Library)** — **collapsible folders**: group (brand→Reels / project→Clips) → cards
-  named by hook. **Click a card → `VideoModal`** lightbox preview (play + download). `downloadFile()`
-  saves to a remembered folder (Chromium `showDirectoryPicker` persisted in IndexedDB via
-  `exportDir.ts`); Firefox/Safari fall back to a normal download.
+- **Downloads (Library)** — **collapsible folders**, each listing its videos as **draggable rows**
+  (`.exp-rows`/`.exp-row`, not a grid). **Drag a video onto another folder to move it** (HTML5 DnD;
+  folders highlight on drag-over) or onto the **"＋ new folder"** drop zone (prompts a name). The move
+  persists via **`PATCH /api/exports/{kind}/{id}/folder`** → `Clip.folder`/`Ticket.folder` override
+  (empty clears → back to the default group = brand for reels / project for clips). **Click a row's
+  thumb → `VideoModal`** preview. `downloadFile()` saves to a remembered folder (Chromium
+  `showDirectoryPicker` persisted in IndexedDB via `exportDir.ts`); Firefox/Safari fall back.
 - **ClipEditor** (`.ed2`) — wayin-style workspace: top bar (title · undo/redo · autosave · Export) ·
   **tool rail** · 9:16 preview (`<video>` CSS-crop + live `CaptionOverlay`, + `<audio>` for voice) ·
   contextual panel · **FilmstripTimeline** (one continuous track of frames). Tools: **Trim** · **Cut**

@@ -65,6 +65,8 @@ class Clip(SQLModel, table=True):
     # each entry a wav path or null. When any is set, render re-times each scene to
     # its voice (voice-first timing).
     scene_vo_json: Optional[str] = None
+    # User-assigned Downloads folder (drag-to-move). None -> grouped under the project.
+    folder: Optional[str] = None
 
 
 # --------------------------------------------------------------------------- #
@@ -104,6 +106,8 @@ class Ticket(SQLModel, table=True):
     platforms: list = Field(default_factory=list, sa_column=Column(JSON))   # ['tt','ig','yt']
     scheduled_at: Optional[datetime] = None
     posted_at: Optional[datetime] = None
+    # User-assigned Downloads folder (drag-to-move). None -> grouped under the brand.
+    folder: Optional[str] = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
@@ -158,9 +162,11 @@ def _migrate() -> None:
         "clip": {"style_json": "TEXT", "words_json": "TEXT", "cuts_json": "TEXT",
                  "markers_json": "TEXT", "voiceover_path": "TEXT", "scene_vo_json": "TEXT",
                  "stage": "TEXT DEFAULT ''", "hook": "TEXT DEFAULT ''",
-                 "resolution": f"TEXT DEFAULT '{settings.DEFAULT_RESOLUTION}'"},
+                 "resolution": f"TEXT DEFAULT '{settings.DEFAULT_RESOLUTION}'",
+                 "folder": "TEXT"},
         "project": {"transcribe_backend": "TEXT DEFAULT 'local'",
                     "mode": "TEXT DEFAULT 'moments'"},
+        "ticket": {"folder": "TEXT"},
     }
     with _engine.connect() as conn:
         for table, cols in wanted.items():

@@ -420,7 +420,7 @@ def list_exports():
             title = c.title or f"Clip {c.idx + 1}"
             out.append({"kind": "clip", "id": c.id, "title": title,
                         "subtitle": pname,
-                        "group": pname, "subgroup": "Clips",
+                        "group": (c.folder or pname), "subgroup": "Clips",
                         "hook": c.hook or "", "filename": _safe_name(title, f"clip_{c.id}"),
                         "score": round(c.score), "download": f"/api/clips/{c.id}/download",
                         "thumb": f"/api/clips/{c.id}/thumb"})
@@ -429,12 +429,31 @@ def list_exports():
             title = hook or t.angle or f"Reel {t.id}"
             out.append({"kind": "reel", "id": t.id, "title": title,
                         "subtitle": f"{t.brand} · reel",
-                        "group": t.brand or "Reels", "subgroup": "Reels",
+                        "group": (t.folder or t.brand or "Reels"), "subgroup": "Reels",
                         "hook": hook, "filename": _safe_name(title, f"reel_{t.id}"),
                         "score": None,
                         "download": f"/api/tickets/{t.id}/download",
                         "thumb": f"/api/tickets/{t.id}/thumb"})
     return out
+
+
+class SetFolder(BaseModel):
+    folder: str = ""                       # "" clears the override (back to default)
+
+
+@app.patch("/api/exports/{kind}/{item_id}/folder")
+def set_export_folder(kind: str, item_id: int, body: SetFolder):
+    """Move a finished video into a different Downloads folder (drag-to-move)."""
+    folder = body.folder.strip() or None
+    with get_session() as s:
+        obj = s.get(Clip, item_id) if kind == "clip" else s.get(Ticket, item_id) if kind == "reel" else None
+        if kind not in ("clip", "reel"):
+            raise HTTPException(400, f"unknown kind {kind!r}")
+        if not obj:
+            raise HTTPException(404, "item not found")
+        obj.folder = folder
+        s.add(obj); s.commit()
+    return {"ok": True, "folder": folder}
 
 
 @app.post("/api/tickets/{tid}/beats")
