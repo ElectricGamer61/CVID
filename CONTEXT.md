@@ -174,19 +174,23 @@ Plain-language UI: a ticket = "video", a beat = "scene", an outlier = an "idea".
   `exportDir.ts`); Firefox/Safari fall back to a normal download.
 - **ClipEditor** (`.ed2`) — wayin-style workspace: top bar (title · undo/redo · autosave · Export) ·
   **tool rail** · 9:16 preview (`<video>` CSS-crop + live `CaptionOverlay`, + `<audio>` for voice) ·
-  contextual panel · **FilmstripTimeline** (frames, zoom, drag-trim, scrub, cut bands, scene markers).
-  The timeline window spans the **whole source** (0..duration), so trimming can reach **any** part of
-  a longer video (navigated by zoom + horizontal scroll; auto-zooms/centers on a small clip). Was
-  previously anchored to a ~15s margin around the clip, which made the rest of the source unreachable.
-  Tools: **Trim** · **Cut** · **Reframe** · **Subtitles** · **Voice** (Text/B-roll/Music/Transitions/
-  AI Hook = coming soon).
-  - **Cut** = remove a middle chunk (red bands on the timeline; preview **and manual scrub** skip
-    them — `seek()` jumps past a cut; the timecode shows the post-cut length `eff / total (−Xs cut)`;
-    export via `render_clip_segments`).
-  - **Captions STAY** when you trim or cut — editing the clip range never silently replaces your
-    captions (the old auto-resync wiped them, which is what Dennis hit). To instead pull the
-    transcript text for the current section, use **"↻ Match captions to this part"** (Subtitles →
-    Edit words; shown only when a transcript exists). `manualWords` still seeds on first mount only.
+  contextual panel · **SegmentTimeline** (CapCut/wayin-style). Tools: **Trim** · **Cut** · **Reframe**
+  · **Subtitles** · **Voice** (Text/B-roll/Music/Transitions/AI Hook = coming soon).
+  - **SegmentTimeline** = the kept pieces (`keptSegments(start,end,cuts)`, mirrors backend
+    `render.kept_segments`) shown as **separate clip blocks on a collapsed (edited) timeline** — a
+    removed middle takes **no width** (no red bar). Click a clip to select → drag its **edge handles**
+    to trim, or **×** to delete it (deleting collapses the rest). Persisted model is unchanged
+    (`start/end + cuts_json`); the editor maps segment edits back via `segmentsToDoc()` (start=first,
+    end=last, cuts=gaps). Playhead/scrub/markers/frames all run in **edited time** (`srcToEdited`/
+    `editedToSrc`); the `<video>` plays source time and `seek()` jumps over cuts.
+  - **Cut** = mark a middle range to remove (Cut tool: set cut start → cut to here); the timeline then
+    shows two clip blocks; export via `render_clip_segments`. The **Trim** numeric panel still sets the
+    outer bounds and reaches any part of the source (0..duration).
+  - **Captions are WYSIWYG**: the preview overlay uses words retimed onto the edited timeline
+    (`remapWords`, mirrors backend `remap_words_for_cuts`) at `srcToEdited(time)`, so captions
+    **continue across a cut** and the preview matches the export exactly. Captions also **STAY** on any
+    trim/cut (no auto-resync); **"↻ Match captions to this part"** (Subtitles → Edit words, shown when a
+    transcript exists) pulls the section's transcript on demand. `manualWords` seeds on first mount only.
   - **Voice** — two modes:
     - **Reel clips (have scene markers): per-scene.** `SceneVoicePanel` — ◀ Scene N/M ▶ selector,
       a **karaoke `Teleprompter`** scoped to the scene, a **reading-speed** control (0.5/0.75/1×, slows
