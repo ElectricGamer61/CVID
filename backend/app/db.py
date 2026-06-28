@@ -102,7 +102,12 @@ class Ticket(SQLModel, table=True):
     source_ref: str = ""               # 'LF 02:14' | 'native take 7' | 'b-roll set A'
     hook_text: str = ""                # chosen first-frame hook
     clip_url: Optional[str] = None     # assembler output — BOTH paths write here
-    captions: Optional[dict] = Field(default=None, sa_column=Column(JSON))  # POST captions {tt,ig,yt}
+    # DEPRECATED — legacy plain POST captions {tt,ig,yt}. Migrated into post_meta;
+    # kept only because SQLite can't drop a column. New code should read post_meta.
+    captions: Optional[dict] = Field(default=None, sa_column=Column(JSON))
+    # Per-platform PUBLISH copy (the "post box") — distinct from Beat.caption (on-screen
+    # karaoke text). {tt:{caption,hashtags}, ig:{caption,hashtags}, yt:{title,description,tags}}
+    post_meta: Optional[dict] = Field(default=None, sa_column=Column(JSON))
     platforms: list = Field(default_factory=list, sa_column=Column(JSON))   # ['tt','ig','yt']
     scheduled_at: Optional[datetime] = None
     posted_at: Optional[datetime] = None
@@ -123,6 +128,10 @@ class Beat(SQLModel, table=True):
     clip_path: Optional[str] = None    # uploaded silent video for this beat
     voiceover_path: Optional[str] = None  # recorded VO audio for this beat
     is_proof_beat: bool = False        # states a real number → clip MUST show product/label
+    # Per-word caption timing, filled in Phase 4 from the recorded voiceover (the words
+    # are known input — `caption` — the audio is only used to time them). e.g.
+    # [{word, start, end}, ...]. Nullable until the VO is processed.
+    caption_timings: Optional[list] = Field(default=None, sa_column=Column(JSON))
 
 
 class Perf(SQLModel, table=True):
@@ -152,6 +161,7 @@ _engine = create_engine(f"sqlite:///{settings.DB_PATH}", echo=False,
 def init_db() -> None:
     SQLModel.metadata.create_all(_engine)
     _migrate()
+    _backfill_post_meta()
 
 
 def _migrate() -> None:
@@ -166,7 +176,8 @@ def _migrate() -> None:
                  "folder": "TEXT"},
         "project": {"transcribe_backend": "TEXT DEFAULT 'local'",
                     "mode": "TEXT DEFAULT 'moments'"},
-        "ticket": {"folder": "TEXT"},
+        "ticket": {"folder": "TEXT", "post_meta": "TEXT"},
+        "beat": {"caption_timings": "TEXT"},
     }
     with _engine.connect() as conn:
         for table, cols in wanted.items():
@@ -175,6 +186,31 @@ def _migrate() -> None:
                 if col not in existing:
                     conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col} {decl}"))
         conn.commit()
+
+
+def _backfill_post_meta() -> None:
+    """One-time data migration: fold legacy `Ticket.captions {tt,ig,yt}` (plain strings)
+    into the new `post_meta`. Runs only for tickets that have captions but no post_meta yet,
+    so it's idempotent and safe on every startup. No code reads post_meta yet — that's the
+    P6 publisher rebuild."""
+    from sqlmodel import select
+    with Session(_engine) as s:
+        rows = s.exec(select(Ticket)).all()
+        changed = False
+        for t in rows:
+            if t.post_meta:
+                continue
+            caps = t.captions if isinstance(t.captions, dict) else None
+            if not caps:
+                continue
+            t.post_meta = {
+                "tt": {"caption": caps.get("tt", "") or "", "hashtags": ""},
+                "ig": {"caption": caps.get("ig", "") or "", "hashtags": ""},
+                "yt": {"title": "", "description": caps.get("yt", "") or "", "tags": ""},
+            }
+            s.add(t); changed = True
+        if changed:
+            s.commit()
 
 
 def get_session() -> Session:

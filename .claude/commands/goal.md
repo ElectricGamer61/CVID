@@ -81,3 +81,56 @@ Add Sidebar items for Intake + Insights.
 5. All phases committed; tree clean; `CONTEXT.md` + memory updated.
 
 Then report what shipped, the commit list, and anything deferred (P6). Do not stop before step 5 is green.
+
+---
+
+## REVISED ROADMAP & STATUS (updated 2026-06-28 — decisions made after P1–P6 were built)
+
+**Status:** P1–P6 are all built & committed on `main` (Phase 1 Board `1961554` → P6 real
+Upload-Post posting `80618fb`), plus the wayin-style editor, voice recording, and Downloads
+(folders/drag/rename). The items below are **refinements** to layer on, **one phase per
+session, review + commit each**. Build nothing ahead.
+
+### Schema (DONE 2026-06-28 — additive via `db._migrate` + backfill)
+- `Ticket.post_meta` (JSON) — per-platform PUBLISH copy
+  `{tt:{caption,hashtags}, ig:{caption,hashtags}, yt:{title,description,tags}}`. Canonical
+  "post box" copy, **distinct from `Beat.caption`** (on-screen karaoke text). Legacy
+  `Ticket.captions {tt,ig,yt}` is migrated into `post_meta` (`_backfill_post_meta`) and is now
+  DEPRECATED (kept only because SQLite can't drop a column; new code reads `post_meta`).
+- `Beat.caption_timings` (JSON, nullable) — per-word VO timing, filled in P4.
+- Proof flag stays per-beat toggleable (`Beat.is_proof_beat` + `PATCH /api/beats/{id}`).
+
+### P4 — Assemble (refinements; base built `6be7100`)
+- One assembler, BOTH intakes (long-form→clip 4a + native beat-slots 4b — both built).
+- ffmpeg LOCAL subprocess; isolate ALL file I/O behind ONE service with
+  `# FUTURE: cloud-worker swap` markers. No serverless.
+- **Karaoke captions timed from the VOICEOVER** via `Beat.caption_timings` (NOT transcribed —
+  words are known input, audio only times them). Current build even-splits; upgrade to real
+  per-word timing. Submagic-style animated word highlight, brand font/colors.
+- DO NOT add auto B-roll / auto emoji / auto SFX (break proof rule + brand voice).
+- Proof guardrail must survive assemble (already blocks an empty proof-beat clip slot).
+
+### P5 — Insights (refinements; base built `1261046`)
+- Rank by SAVES + FOLLOWS, NOT views (done). One perf log per video at ~day 7 (not day 1).
+- Add a **"Friday batch"** view: videos now 7+ days old, ready to log together.
+- Saves often missing from APIs → MANUAL saves entry in the Perf editor (fallback).
+
+### P6 — Publish — **FULL REBUILD (separate session)**; older Upload-Post version is being replaced
+Current P6 = single provider hard-wired to Upload-Post (`pipeline/poster.py`), copy from the
+legacy `Ticket.captions`, no abstraction / no Postiz / no per-ticket TikTok mode / no analytics.
+Rebuild:
+- **Publisher INTERFACE** so providers swap without a rewrite. Two adapters: **Postiz** (default,
+  self-hosted Docker, own dashboard + API) and **Upload-Post** (fallback — refactor today's
+  `poster.py` into this adapter).
+- Push finished reel + `Ticket.post_meta` to a running, account-connected Postiz via its API;
+  surface post status on the ticket (stay on the Cvideo board). Postiz dashboard stays available.
+- **Per-ticket TikTok mode:** default (original audio) → auto-post; **"add trending audio" flag
+  ON** → do NOT auto-post TikTok, route to draft / "finish in TikTok app". IG Reels + YT Shorts
+  always auto-post. Verify Postiz TikTok draft mode; else flag the ticket + skip TikTok auto-post.
+- Post copy reads from `Ticket.post_meta`.
+- Process: first explain what current P6 does, rebuild, then **test ONE real post end-to-end
+  before commit.**
+
+### Measure (stats back)
+- Pull metrics back through the same publisher adapter (Postiz/Upload-Post analytics) into `Perf`
+  where available; fall back to manual entry (especially saves). One log ~day 7.

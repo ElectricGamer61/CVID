@@ -112,9 +112,14 @@ uploads AND by `build-edit` reels).
 **Pipeline lifecycle tables:**
 - **Ticket** (spine): brand, stage (outlier→posted), angle, outlier_id, format, capture_mode
   (longform-clip|native-short|repurpose), **project_id** (set by `build-edit`/`use-clip`), source_ref,
-  hook_text, clip_url, captions/platforms (JSON), scheduled_at/posted_at.
+  hook_text, clip_url, platforms (JSON), scheduled_at/posted_at, folder (Downloads override).
+  **`post_meta`** (JSON) = per-platform PUBLISH copy `{tt:{caption,hashtags}, ig:{caption,hashtags},
+  yt:{title,description,tags}}` — the "post box" text, **distinct from `Beat.caption`** (on-screen
+  karaoke). `captions {tt,ig,yt}` is **DEPRECATED** — migrated into `post_meta` by
+  `db._backfill_post_meta`; new code should read `post_meta` (wired in the P6 publisher rebuild).
 - **Beat** (script-as-timeline): ticket_id, order_index, spoken_line, on_screen_text, caption,
-  shot_cue, clip_path?, voiceover_path?, is_proof_beat.
+  shot_cue, clip_path?, voiceover_path?, is_proof_beat, **`caption_timings`** (JSON, nullable —
+  per-word VO timing, filled in P4 for karaoke captions; words are known, audio only times them).
 - **Outlier** (swipe file), **Perf** (per-platform stats), **Angle** (`avg_score = avg(saves+follows)`).
 
 ---
