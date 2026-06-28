@@ -1422,15 +1422,8 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
           <span className="muted" style={{ fontSize: 12 }}>{zoom}×</span>
           <button className="icon-btn" onClick={() => setZoom((z) => Math.min(maxZoom, +(z + 0.5).toFixed(1)))} title="Zoom in">＋</button>
         </div>
-        <SegmentTimeline pid={pid} segments={segments} duration={win.e} time={time} zoom={zoom} markers={markers}
-          onTrimEdge={(i, side, srcT) => {
-            const MIN = 0.3; const segs = segments.map((s) => [...s] as Seg);
-            if (side === "left") { const lo = i > 0 ? segs[i - 1][1] : 0; segs[i][0] = Math.max(lo, Math.min(srcT, segs[i][1] - MIN)); }
-            else { const hi = i < segs.length - 1 ? segs[i + 1][0] : win.e; segs[i][1] = Math.min(hi, Math.max(srcT, segs[i][0] + MIN)); }
-            set(segmentsToDoc(segs));
-          }}
-          onDeleteSeg={(i) => { if (segments.length <= 1) return; set(segmentsToDoc(segments.filter((_, k) => k !== i))); }}
-          onScrub={seek} />
+        <FilmstripTimeline pid={pid} winStart={win.s} winEnd={win.e} start={doc.start} end={doc.end} time={time} zoom={zoom} cuts={doc.cuts} markers={markers}
+          onStart={(t) => set({ start: t })} onEnd={(t) => set({ end: t })} onScrub={seek} />
       </div>
     </div>
   );
@@ -1459,36 +1452,16 @@ function keptSegments(start: number, end: number, cuts: [number, number][]): Seg
   return segs.length ? segs : [[start, end]];
 }
 
-/* Inverse: kept segments -> {start,end,cuts}. The gaps between consecutive
-   segments are the removed (cut) ranges. */
-function segmentsToDoc(segs: Seg[]): { start: number; end: number; cuts: [number, number][] } {
-  const s = [...segs].sort((a, b) => a[0] - b[0]);
-  const cuts: [number, number][] = [];
-  for (let i = 0; i < s.length - 1; i++) cuts.push([s[i][1], s[i + 1][0]]);
-  return { start: s[0][0], end: s[s.length - 1][1], cuts };
-}
-
-const segTotal = (segs: Seg[]) => segs.reduce((t, [a, b]) => t + (b - a), 0);
-
-/* source time -> edited (compressed) time, and back. */
+/* source time -> edited (compressed) time. Used to retime captions for the preview
+   overlay so they match the export (a source time inside a cut maps to the seam). */
 function srcToEdited(t: number, segs: Seg[]): number {
   let base = 0;
   for (const [a, b] of segs) {
-    if (t < a) return base;            // inside a removed gap -> next segment start
+    if (t < a) return base;            // inside a removed gap -> the seam
     if (t <= b) return base + (t - a);
     base += b - a;
   }
   return base;
-}
-function editedToSrc(te: number, segs: Seg[]): number {
-  let base = 0;
-  for (const [a, b] of segs) {
-    const len = b - a;
-    if (te <= base + len) return a + (te - base);
-    base += len;
-  }
-  const last = segs[segs.length - 1];
-  return last ? last[1] : 0;
 }
 
 /* Retime caption words onto the edited timeline. A cut removes VIDEO, not caption
@@ -1796,68 +1769,56 @@ function SubtitleWordEditor({ words, time, onSeek, onChange }: { words: Word[]; 
   );
 }
 
-/* CapCut/wayin-style timeline: the kept segments shown as separate clip blocks.
-   Removed (cut) parts take NO width — they're gone, not a red bar. Click a clip to
-   select it, then drag its edge handles to trim or hit × to delete it. */
-function SegmentTimeline({ pid, segments, duration, time, zoom, markers, onTrimEdge, onDeleteSeg, onScrub }: {
-  pid: number; segments: Seg[]; duration: number; time: number; zoom: number;
+/* Continuous scrubbing timeline: one track of frames, dim outside the trim, a
+   movable playhead, and start/end trim handles. Drag ANYWHERE on the track to move
+   the playhead. Removed (cut) ranges show as a subtle grey band (the captions still
+   keep every word — only the video skips them). */
+function FilmstripTimeline({ pid, winStart, winEnd, start, end, time, zoom, cuts, markers, onStart, onEnd, onScrub }: {
+  pid: number; winStart: number; winEnd: number; start: number; end: number; time: number; zoom: number; cuts: [number, number][];
   markers?: { start: number; end: number; label: string }[];
-  onTrimEdge: (i: number, side: "left" | "right", srcT: number) => void;
-  onDeleteSeg: (i: number) => void;
-  onScrub: (srcT: number) => void;
+  onStart: (t: number) => void; onEnd: (t: number) => void; onScrub: (t: number) => void;
 }) {
-  const trackRef = useRef<HTMLDivElement>(null);
-  const total = Math.max(0.1, segTotal(segments));
-  let acc = 0;
-  const starts = segments.map(([a, b]) => { const s = acc; acc += b - a; return s; });
-  const pct = (editedT: number) => Math.max(0, Math.min(100, (editedT / total) * 100));
-  const editedAtX = (clientX: number) => { const r = trackRef.current!.getBoundingClientRect(); const x = Math.min(Math.max(0, clientX - r.left), r.width); return (x / r.width) * total; };
-  const dragEdge = (i: number, side: "left" | "right") => (e: React.PointerEvent) => {
+  const ref = useRef<HTMLDivElement>(null);
+  const span = Math.max(0.1, winEnd - winStart);
+  const pct = (t: number) => Math.max(0, Math.min(100, ((t - winStart) / span) * 100));
+  const toTime = (clientX: number) => { const r = ref.current!.getBoundingClientRect(); const x = Math.min(Math.max(0, clientX - r.left), r.width); return winStart + (x / r.width) * span; };
+  const drag = (which: "start" | "end" | "scrub") => (e: React.PointerEvent) => {
     e.preventDefault(); e.stopPropagation();
-    const move = (ev: PointerEvent) => onTrimEdge(i, side, editedToSrc(editedAtX(ev.clientX), segments));
-    const up = () => { window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up); };
-    window.addEventListener("pointermove", move); window.addEventListener("pointerup", up);
-  };
-  const scrub = (e: React.PointerEvent) => {
-    const move = (ev: PointerEvent) => onScrub(editedToSrc(editedAtX(ev.clientX), segments));
+    const move = (ev: PointerEvent) => {
+      const t = toTime(ev.clientX);
+      if (which === "start") onStart(Math.max(winStart, Math.min(t, end - 0.5)));
+      else if (which === "end") onEnd(Math.min(winEnd, Math.max(t, start + 0.5)));
+      else onScrub(Math.max(start, Math.min(end, t)));
+    };
     move(e.nativeEvent);
     const up = () => { window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up); };
     window.addEventListener("pointermove", move); window.addEventListener("pointerup", up);
   };
+  const n = Math.max(8, Math.round(10 * zoom));
+  const frames = useMemo(() => Array.from({ length: n }, (_, i) => winStart + ((i + 0.5) / n) * span), [winStart, span, n]);
   return (
     <div className="fs-wrap">
       <div className="fs-scroll">
-        <div className="seg-track" ref={trackRef} onPointerDown={scrub} style={{ width: `${zoom * 100}%` }}>
-          {segments.map(([a, b], i) => {
-            const left = pct(starts[i]); const w = pct(starts[i] + (b - a)) - left; const len = b - a;
-            const nf = Math.max(2, Math.round((len / total) * 10 * zoom));
-            const frames = Array.from({ length: nf }, (_, k) => a + ((k + 0.5) / nf) * len);
-            return (
-              <div key={i} className="seg-clip" style={{ left: `${left}%`, width: `${w}%` }}
-                   onPointerDown={(e) => { e.stopPropagation(); scrub(e); }}>
-                <div className="seg-frames">{frames.map((t, k) => (
-                  <img key={k} src={api.frameUrl(pid, t)} alt="" draggable={false} onError={(e) => ((e.target as HTMLImageElement).style.opacity = "0")} />
-                ))}</div>
-                <span className="seg-len">{fmt(len)}</span>
-                <div className="seg-handle l" title="Drag to trim" onPointerDown={dragEdge(i, "left")} />
-                <div className="seg-handle r" title="Drag to trim" onPointerDown={dragEdge(i, "right")} />
-                {segments.length > 1 && (
-                  <button className="seg-del" title="Delete this clip" onPointerDown={(e) => e.stopPropagation()}
-                          onClick={(e) => { e.stopPropagation(); onDeleteSeg(i); }}>×</button>
-                )}
-              </div>
-            );
-          })}
-          {(markers ?? []).map((m, i) => (
-            i > 0 ? <div key={"mk" + i} className="fs-marker" style={{ left: `${pct(srcToEdited(m.start, segments))}%` }} title={`Scene ${i + 1}: ${m.label}`} /> : null
+        <div className="fs-track" ref={ref} onPointerDown={drag("scrub")} style={{ width: `${zoom * 100}%` }}>
+          <div className="fs-frames">{frames.map((t, i) => (
+            <img key={i} src={api.frameUrl(pid, t)} alt="" draggable={false} onError={(e) => ((e.target as HTMLImageElement).style.opacity = "0")} />
+          ))}</div>
+          <div className="fs-dim" style={{ left: 0, width: `${pct(start)}%` }} />
+          <div className="fs-dim" style={{ left: `${pct(end)}%`, right: 0 }} />
+          <div className="fs-range" style={{ left: `${pct(start)}%`, width: `${pct(end) - pct(start)}%` }} />
+          {cuts.map(([a, b], i) => (
+            <div key={i} className="fs-cut" style={{ left: `${pct(a)}%`, width: `${Math.max(0, pct(b) - pct(a))}%` }} title="Removed from the video (captions keep flowing)" />
           ))}
-          <div className="fs-playhead" style={{ left: `${pct(srcToEdited(time, segments))}%` }} />
+          {(markers ?? []).map((m, i) => (
+            i > 0 ? <div key={"mk" + i} className="fs-marker" style={{ left: `${pct(m.start)}%` }} title={`Scene ${i + 1}: ${m.label}`} /> : null
+          ))}
+          <div className="fs-handle" style={{ left: `${pct(start)}%` }} onPointerDown={drag("start")} title="Drag to trim the start" />
+          <div className="fs-handle" style={{ left: `${pct(end)}%` }} onPointerDown={drag("end")} title="Drag to trim the end" />
+          <div className="fs-playhead" style={{ left: `${pct(time)}%` }} />
         </div>
       </div>
       <div className="timeline-labels">
-        <span className="tag">{segments.length} clip{segments.length > 1 ? "s" : ""}</span>
-        <span className="tag">{fmt(total)} total</span>
-        <span className="tag muted">drag anywhere to move the playhead · hover a clip → drag its edges to trim{segments.length > 1 ? ", or × to delete" : ""}</span>
+        <span className="tag">start {fmt(start)}</span><span className="tag">{fmt(end - start)} clip</span><span className="tag">end {fmt(end)}</span>
       </div>
     </div>
   );

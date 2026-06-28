@@ -368,26 +368,11 @@ input[type=range] { width: 100%; accent-color: var(--primary); }
 .fs-frames img { height: 100%; flex: 1 0 auto; object-fit: cover; pointer-events: none; }
 .fs-dim { position: absolute; top: 0; bottom: 0; background: rgba(255,255,255,.62); pointer-events: none; }
 .fs-range { position: absolute; top: 0; bottom: 0; border: 2px solid var(--primary); border-radius: 8px; box-shadow: 0 0 0 9999px rgba(0,0,0,0); pointer-events: none; }
-.fs-cut { position: absolute; top: 0; bottom: 0; background: repeating-linear-gradient(45deg, rgba(229,57,53,.55), rgba(229,57,53,.55) 6px, rgba(229,57,53,.32) 6px, rgba(229,57,53,.32) 12px); border-left: 2px solid #e53935; border-right: 2px solid #e53935; pointer-events: none; }
+.fs-cut { position: absolute; top: 0; bottom: 0; background: repeating-linear-gradient(45deg, rgba(60,65,80,.42), rgba(60,65,80,.42) 6px, rgba(60,65,80,.20) 6px, rgba(60,65,80,.20) 12px); border-left: 2px solid var(--muted-2); border-right: 2px solid var(--muted-2); pointer-events: none; }
 .fs-handle { position: absolute; top: -2px; width: 12px; height: 60px; margin-left: -6px; background: var(--primary); border-radius: 5px; cursor: ew-resize; box-shadow: var(--shadow); }
 .fs-handle::after { content: ''; position: absolute; left: 4px; top: 22px; width: 4px; height: 16px; border-left: 1px solid rgba(255,255,255,.6); border-right: 1px solid rgba(255,255,255,.6); }
 .fs-playhead { position: absolute; top: -2px; width: 2px; height: 60px; background: var(--blue); pointer-events: none; }
 .fs-marker { position: absolute; top: -2px; width: 0; height: 60px; border-left: 2px dashed var(--accent); pointer-events: none; }
-/* CapCut-style segment timeline — kept pieces as separate clip blocks */
-.seg-track { position: relative; height: 56px; min-width: 100%; background: var(--surface-3); border-radius: 12px; cursor: pointer; touch-action: none; }
-.seg-clip { position: absolute; top: 0; bottom: 0; overflow: hidden; box-sizing: border-box; border: 2px solid var(--border-2); border-radius: 8px; background: var(--surface-3); box-shadow: inset 0 0 0 1px var(--surface); transition: border-color .12s; }
-.seg-clip:hover { border-color: var(--primary); z-index: 2; }
-.seg-frames { position: absolute; inset: 0; display: flex; }
-.seg-frames img { height: 100%; flex: 1 0 auto; object-fit: cover; pointer-events: none; }
-.seg-len { position: absolute; bottom: 2px; left: 50%; transform: translateX(-50%); font-size: 10px; color: #fff; background: rgba(0,0,0,.5); border-radius: 4px; padding: 0 5px; pointer-events: none; font-variant-numeric: tabular-nums; }
-.seg-handle { position: absolute; top: 0; bottom: 0; width: 11px; background: var(--primary); cursor: ew-resize; z-index: 3; display: none; }
-.seg-clip:hover .seg-handle { display: block; }
-.seg-handle.l { left: 0; border-radius: 6px 0 0 6px; }
-.seg-handle.r { right: 0; border-radius: 0 6px 6px 0; }
-.seg-handle::after { content: ''; position: absolute; left: 4px; top: 20px; width: 3px; height: 16px; border-left: 1px solid rgba(255,255,255,.7); border-right: 1px solid rgba(255,255,255,.7); }
-.seg-del { position: absolute; top: 3px; right: 14px; z-index: 4; width: 20px; height: 20px; border-radius: 50%; background: #e5484d; color: #fff; border: none; font-size: 14px; line-height: 1; cursor: pointer; padding: 0; display: none; place-items: center; box-shadow: var(--shadow-sm); }
-.seg-clip:hover .seg-del { display: grid; }
-.seg-del:hover { background: #d33; }
 /* a clearer, grabbable playhead knob */
 .fs-playhead::before { content: ''; position: absolute; top: -5px; left: -5px; width: 12px; height: 12px; border-radius: 50%; background: var(--blue); box-shadow: var(--shadow-sm); }
 /* Karaoke teleprompter (voice tool) */
