@@ -556,6 +556,12 @@ function Library() {
     try { await api.setExportFolder(kind as "clip" | "reel", id, folder); toast(`Moved to "${folder}"`, "ok"); api.listExports().then(setItems).catch(() => {}); }
     catch (e: any) { toast(`Move failed: ${e?.message || e}`, "err"); }
   };
+  const rename = async (oldName: string, newName: string, list: ExportItem[]) => {
+    const n = newName.trim();
+    if (!n || n === oldName) return;
+    try { await Promise.all(list.map((it) => api.setExportFolder(it.kind as "clip" | "reel", it.id, n))); toast(`Renamed to "${n}"`, "ok"); api.listExports().then(setItems).catch(() => {}); }
+    catch (e: any) { toast(`Rename failed: ${e?.message || e}`, "err"); }
+  };
 
   return (
     <div className="page">
@@ -569,7 +575,7 @@ function Library() {
       ) : (
         <>
           {[...folders.entries()].map(([group, subs]) => (
-            <DownloadFolder key={group} group={group} subs={subs} onPreview={setPreview} onDownload={dl} onMove={move} />
+            <DownloadFolder key={group} group={group} subs={subs} onPreview={setPreview} onDownload={dl} onMove={move} onRename={(newName, list) => rename(group, newName, list)} />
           ))}
           <NewFolderDrop onMove={move} />
         </>
@@ -582,13 +588,25 @@ function Library() {
   );
 }
 
-function DownloadFolder({ group, subs, onPreview, onDownload, onMove }: {
+function DownloadFolder({ group, subs, onPreview, onDownload, onMove, onRename }: {
   group: string; subs: Map<string, ExportItem[]>; onPreview: (it: ExportItem) => void;
   onDownload: (it: ExportItem) => void; onMove: (kind: string, id: number, folder: string) => void;
+  onRename: (newName: string, items: ExportItem[]) => void;
 }) {
   const [open, setOpen] = useState(true);
   const [over, setOver] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [name, setName] = useState(group);
+  const cancelRef = useRef(false);
   const total = [...subs.values()].reduce((n, arr) => n + arr.length, 0);
+  const items = [...subs.values()].flat();
+  const startEdit = () => { setName(group); setEditing(true); };
+  const finishEdit = () => {
+    setEditing(false);
+    if (cancelRef.current) { cancelRef.current = false; return; }
+    const n = name.trim();
+    if (n && n !== group) onRename(n, items);
+  };
   const onDrop = (e: React.DragEvent) => {
     e.preventDefault(); setOver(false);
     try { const d = JSON.parse(e.dataTransfer.getData("text/plain")); if (d && d.group !== group) onMove(d.kind, d.id, group); } catch { /* not our payload */ }
@@ -598,12 +616,21 @@ function DownloadFolder({ group, subs, onPreview, onDownload, onMove }: {
          onDragOver={(e) => { e.preventDefault(); setOver(true); }}
          onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setOver(false); }}
          onDrop={onDrop}>
-      <button className="dl-folder-head" onClick={() => setOpen((o) => !o)}>
-        <span className="dl-caret">{open ? "▾" : "▸"}</span>
-        <span className="dl-folder-ic">📁</span>
-        <span className="dl-folder-name">{group}</span>
+      <div className="dl-folder-head">
+        {editing ? (
+          <input className="dl-rename" autoFocus value={name} onChange={(e) => setName(e.target.value)}
+                 onBlur={finishEdit}
+                 onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); else if (e.key === "Escape") { cancelRef.current = true; (e.target as HTMLInputElement).blur(); } }} />
+        ) : (
+          <button className="dl-head-main" onClick={() => setOpen((o) => !o)}>
+            <span className="dl-caret">{open ? "▾" : "▸"}</span>
+            <span className="dl-folder-ic">📁</span>
+            <span className="dl-folder-name" onDoubleClick={(e) => { e.stopPropagation(); startEdit(); }}>{group}</span>
+          </button>
+        )}
         <span className="board-count">{total}</span>
-      </button>
+        {!editing && <button className="dl-rename-btn" title="Rename folder" onClick={startEdit}>✏️</button>}
+      </div>
       {open && [...subs.entries()].map(([sg, arr]) => (
         <div className="dl-sub" key={sg}>
           <div className="dl-sub-head">{sg} <span className="muted">· {arr.length}</span></div>

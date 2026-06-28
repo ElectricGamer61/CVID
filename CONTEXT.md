@@ -173,8 +173,9 @@ Plain-language UI: a ticket = "video", a beat = "scene", an outlier = an "idea".
   (`.exp-rows`/`.exp-row`, not a grid). **Drag a video onto another folder to move it** (HTML5 DnD;
   folders highlight on drag-over) or onto the **"＋ new folder"** drop zone (prompts a name). The move
   persists via **`PATCH /api/exports/{kind}/{id}/folder`** → `Clip.folder`/`Ticket.folder` override
-  (empty clears → back to the default group = brand for reels / project for clips). **Click a row's
-  thumb → `VideoModal`** preview. `downloadFile()` saves to a remembered folder (Chromium
+  (empty clears → back to the default group = brand for reels / project for clips). **Rename a folder**
+  via the ✏️ button (or double-click its name) — re-tags every video in it (loops the same PATCH per
+  item). **Click a row's thumb → `VideoModal`** preview. `downloadFile()` saves to a remembered folder (Chromium
   `showDirectoryPicker` persisted in IndexedDB via `exportDir.ts`); Firefox/Safari fall back.
 - **ClipEditor** (`.ed2`) — wayin-style workspace: top bar (title · undo/redo · autosave · Export) ·
   **tool rail** · 9:16 preview (`<video>` CSS-crop + live `CaptionOverlay`, + `<audio>` for voice) ·

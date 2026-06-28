@@ -457,7 +457,12 @@ input[type=range] { width: 100%; accent-color: var(--primary); }
 /* Downloads folders */
 .exp-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 16px; }
 .dl-folder { margin-bottom: 18px; border: 1px solid var(--border); border-radius: var(--r); background: var(--surface); overflow: hidden; }
-.dl-folder-head { display: flex; align-items: center; gap: 9px; width: 100%; padding: 13px 16px; background: var(--surface-2); border: none; border-bottom: 1px solid var(--border); cursor: pointer; font: inherit; }
+.dl-folder-head { display: flex; align-items: center; gap: 9px; width: 100%; padding: 13px 16px; background: var(--surface-2); border: none; border-bottom: 1px solid var(--border); font: inherit; }
+.dl-head-main { display: flex; align-items: center; gap: 9px; flex: 1; min-width: 0; background: none; border: none; box-shadow: none; padding: 0; cursor: pointer; font: inherit; text-align: left; }
+.dl-head-main:hover { background: none; }
+.dl-rename { flex: 1; min-width: 0; font: inherit; font-weight: 800; font-size: 15px; color: var(--text); border: 1px solid var(--primary); border-radius: 8px; padding: 4px 9px; background: var(--surface); }
+.dl-rename-btn { background: none; border: none; box-shadow: none; cursor: pointer; font-size: 13px; padding: 2px 7px; border-radius: 7px; opacity: .55; }
+.dl-rename-btn:hover { opacity: 1; background: var(--surface-3); }
 .dl-caret { color: var(--muted); width: 12px; }
 .dl-folder-ic { font-size: 16px; }
 .dl-folder-name { font-weight: 800; color: var(--text); font-size: 15px; }
