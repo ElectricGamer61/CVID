@@ -1187,14 +1187,10 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
     if (!manualWords && doc.words.length === 0 && words.length) set({ words: wordsInRange(words, clip.start, clip.end) });
   }, [words]);
 
-  // Resync captions to the transcript whenever the clip range MOVES (a trim) — so
-  // captions follow you to a different section. Skips the initial mount (saved words
-  // are respected on open) and stops once the user hand-edits words this session.
-  const mountedRef = useRef(false);
-  useEffect(() => {
-    if (!mountedRef.current) { mountedRef.current = true; return; }
-    if (!manualWords && words.length) set({ words: wordsInRange(words, doc.start, doc.end) });
-  }, [doc.start, doc.end]);
+  // Captions STAY when you trim or cut — we never silently replace them (that used
+  // to wipe captions when you moved the clip). To instead pull the transcript text
+  // for the current section, the "Match captions to this part" button calls this.
+  const resyncCaptions = () => { if (words.length) { setManualWords(false); set({ words: wordsInRange(words, doc.start, doc.end) }); } };
 
   // STABLE timeline window = the WHOLE source video, so trimming can reach ANY
   // part of it (not just a margin around the current clip). Navigated by zoom +
@@ -1259,7 +1255,11 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
       v.play(); setPlaying(true);
     }
   };
-  const seek = (t: number) => { if (videoRef.current) videoRef.current.currentTime = t; setTime(t); };
+  const seek = (t: number) => {
+    // Skip into a removed (cut) chunk — jump past it so cuts behave as deleted.
+    for (const [a, b] of doc.cuts) { if (t >= a && t < b) { t = b; break; } }
+    if (videoRef.current) videoRef.current.currentTime = t; setTime(t);
+  };
   // Recording: roll the video over a range (a scene, or the whole clip) — muted, at
   // the chosen reading rate — so the teleprompter scrolls while you read.
   const startRecordPlayback = (range?: { s: number; e: number }) => {
@@ -1315,6 +1315,12 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
     window.addEventListener("pointermove", move); window.addEventListener("pointerup", up);
   };
 
+  // Effective (post-cut) length + position, so the timecode shows the real result.
+  const removedTotal = doc.cuts.reduce((s, [a, b]) => s + (b - a), 0);
+  const removedBefore = (t: number) => doc.cuts.reduce((s, [a, b]) => s + (t >= b ? b - a : t > a ? t - a : 0), 0);
+  const effLen = Math.max(0, (doc.end - doc.start) - removedTotal);
+  const effPos = Math.max(0, (time - doc.start) - removedBefore(time));
+
   const rendered = clip.status === "rendered";
   const busy = clip.status === "rendering";
   const exportClip = async () => { await api.renderClip(clip.id); toast("Exporting clip…", "info"); onChange(); };
@@ -1353,7 +1359,7 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
           {tool === "voice" && <Teleprompter words={activeScene ? wordsInRange(doc.words, activeScene.start, activeScene.end) : doc.words} time={time} maxWords={doc.style.max_words} />}
           <div className="play-row">
             <button className="primary round" onClick={togglePlay}>{playing ? "❚❚" : "▶"}</button>
-            <span className="timecode">{fmt(time - doc.start)} / {fmt(doc.end - doc.start)}</span>
+            <span className="timecode">{fmt(effPos)} / {fmt(effLen)}{removedTotal > 0 ? ` (−${fmt(removedTotal)} cut)` : ""}</span>
             <span className="ar-badge">9:16</span>
           </div>
           {busy && <div className="muted" style={{ fontSize: 12.5 }}>⏳ {clip.stage || "Working"}… (first export downloads the full video)</div>}
@@ -1389,7 +1395,15 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
                   </label>
                 </>
               ) : (
-                <SubtitleWordEditor words={doc.words} time={time} onSeek={seek} onChange={(w) => { setManualWords(true); set({ words: w }); }} />
+                <>
+                  {words.length > 0 && (
+                    <button className="sm" style={{ marginBottom: 8 }} onClick={resyncCaptions}
+                      title="Replace the captions with the transcript text for the current trimmed section">
+                      ↻ Match captions to this part
+                    </button>
+                  )}
+                  <SubtitleWordEditor words={doc.words} time={time} onSeek={seek} onChange={(w) => { setManualWords(true); set({ words: w }); }} />
+                </>
               )}
             </div>
           )}

@@ -180,9 +180,13 @@ Plain-language UI: a ticket = "video", a beat = "scene", an outlier = an "idea".
   previously anchored to a ~15s margin around the clip, which made the rest of the source unreachable.
   Tools: **Trim** · **Cut** · **Reframe** · **Subtitles** · **Voice** (Text/B-roll/Music/Transitions/
   AI Hook = coming soon).
-  - **Cut** = remove a middle chunk (red bands on the timeline; preview skips them; export via
-    `render_clip_segments`). **Captions resync** to the transcript when you trim to a new section
-    (until you hand-edit words).
+  - **Cut** = remove a middle chunk (red bands on the timeline; preview **and manual scrub** skip
+    them — `seek()` jumps past a cut; the timecode shows the post-cut length `eff / total (−Xs cut)`;
+    export via `render_clip_segments`).
+  - **Captions STAY** when you trim or cut — editing the clip range never silently replaces your
+    captions (the old auto-resync wiped them, which is what Dennis hit). To instead pull the
+    transcript text for the current section, use **"↻ Match captions to this part"** (Subtitles →
+    Edit words; shown only when a transcript exists). `manualWords` still seeds on first mount only.
   - **Voice** — two modes:
     - **Reel clips (have scene markers): per-scene.** `SceneVoicePanel` — ◀ Scene N/M ▶ selector,
       a **karaoke `Teleprompter`** scoped to the scene, a **reading-speed** control (0.5/0.75/1×, slows
