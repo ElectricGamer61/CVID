@@ -1228,13 +1228,21 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
         const lr = loopRangeRef.current;
         if (lr) {
           // Recording: loop within the range so you can keep reading — and skip over
-          // any cut ranges so you record against the SAME video the export produces
-          // (a removed middle no longer plays back during recording).
+          // any cut ranges so you record against the SAME video the export produces.
           if (v.currentTime >= lr.e || v.currentTime < lr.s - 0.05) v.currentTime = lr.s;
-          else { for (const [a, b] of doc.cuts) { if (v.currentTime >= a && v.currentTime < b) { v.currentTime = b; break; } } }
+          else {
+            for (const [a, b] of doc.cuts) {
+              if (v.currentTime >= a && v.currentTime < b) {
+                // Land safely PAST the cut (the +0.12 clears frame-snap so we don't
+                // re-seek into it every frame); if the cut runs to the end, loop instead.
+                v.currentTime = b >= lr.e - 0.05 ? lr.s : Math.min(b + 0.12, lr.e);
+                break;
+              }
+            }
+          }
         } else {
           if (v.currentTime >= doc.end) v.currentTime = doc.start;
-          for (const [a, b] of doc.cuts) { if (v.currentTime >= a && v.currentTime < b) { v.currentTime = b; break; } }
+          for (const [a, b] of doc.cuts) { if (v.currentTime >= a && v.currentTime < b) { v.currentTime = Math.min(b + 0.12, doc.end); break; } }
           // Keep a saved voiceover aligned to the clip's local time (preview only).
           const au = audioRef.current;
           if (au && voUrl) { const want = v.currentTime - doc.start; if (Math.abs(au.currentTime - want) > 0.25) au.currentTime = Math.max(0, want); }
