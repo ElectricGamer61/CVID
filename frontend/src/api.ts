@@ -138,7 +138,7 @@ export interface TopVideo {
 export interface PlatMetrics { views: number; follows: number; saves: number; sends: number }
 export interface VideoPerf {
   video_kind: "clip" | "reel"; video_id: number; is_reel: boolean;
-  title: string; hook: string;
+  title: string; hook: string; brand: string;
   platforms: Partial<Record<"tt" | "ig" | "yt", PlatMetrics>>;
   totals: PlatMetrics; score: number;
 }
@@ -324,7 +324,7 @@ export const api = {
 
   // --- Insights (Signal Reader) ---
   getInsights: (): Promise<InsightsData> => req("/api/insights"),
-  logPerf: (body: { video_kind: "clip" | "reel"; video_id: number; platform: string; views: number; follows: number; saves: number; sends: number }): Promise<{ ok: boolean }> =>
+  logPerf: (body: { video_kind: "clip" | "reel"; video_id: number; platform: string; brand?: string; views: number; follows: number; saves: number; sends: number }): Promise<{ ok: boolean }> =>
     req("/api/perf", jsonInit("POST", body)),
   syncSheet: (): Promise<{ ok: boolean; pushed: number }> =>
     req("/api/perf/sync-sheet", { method: "POST" }),

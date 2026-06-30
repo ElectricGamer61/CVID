@@ -129,6 +129,7 @@ class LogPerf(BaseModel):
     video_id: Optional[int] = None         # Clip.id or Ticket.id
     ticket_id: Optional[int] = None        # legacy alias (treated as a reel)
     platform: str = ""                     # tt | ig | yt
+    brand: Optional[str] = None            # chosen on the logger; persisted; "" = blank, None = leave as-is
     views: int = 0
     follows: int = 0
     saves: int = 0
@@ -659,18 +660,22 @@ _PLATFORM_FULL = {"tt": "TikTok", "ig": "Instagram", "yt": "YouTube"}
 
 
 def _video_brand(s, kind: str, vid: int) -> str:
-    """Resolve a video's brand (the cowork engine needs it for per-brand Growth Logs).
-    Reel → its Ticket.brand; clip → the ticket linked to the clip's project; else default."""
+    """Resolve a video's brand for performance attribution (the cowork engine needs it for
+    per-brand Growth Logs). Reel → its Ticket.brand; clip → its stored brand (chosen on the
+    Results logger), else the brand of a ticket linked to the clip's project. NEVER falls back
+    to a default — returns "" when unknown, so an unlinked/long-form clip logs BLANK instead
+    of being silently mislabeled as NoCrapDiet."""
     from sqlmodel import select
     if kind == "reel":
         t = s.get(Ticket, vid)
-        return (t.brand if (t and t.brand) else None) or "NoCrapDiet"
+        return (t.brand if (t and t.brand) else "") or ""
     c = s.get(Clip, vid)
-    if c is not None:
-        t = s.exec(select(Ticket).where(Ticket.project_id == c.project_id)).first()
-        if t and t.brand:
-            return t.brand
-    return "NoCrapDiet"
+    if c is None:
+        return ""
+    if c.brand:
+        return c.brand
+    t = s.exec(select(Ticket).where(Ticket.project_id == c.project_id)).first()
+    return (t.brand if (t and t.brand) else "") or ""
 
 
 def _perf_sheet_row(s, kind: str, vid: int, platform: str, m: dict, when=None) -> dict:
@@ -709,10 +714,16 @@ def log_perf(body: LogPerf):
             t.stage = "posted"
             if not t.posted_at:
                 t.posted_at = datetime.utcnow()
+            # Persist the brand chosen on the logger (blank allowed; None = leave as-is).
+            if body.brand is not None:
+                t.brand = body.brand
             s.add(t); angle = t.angle
         else:  # clip
-            if not s.get(Clip, vid):
+            c = s.get(Clip, vid)
+            if not c:
                 raise HTTPException(404, "clip not found")
+            if body.brand is not None:
+                c.brand = body.brand; s.add(c)
         # Upsert: one row per (video, platform) — re-logging UPDATES the latest numbers
         # for that platform (so the same reel tracked on TikTok/IG/YouTube stays 3 rows,
         # each editable), instead of stacking duplicate rows that double-count.
@@ -811,7 +822,8 @@ def insights():
                     for kk in tot:
                         tot[kk] += d[kk]
             videos.append({"video_kind": kind, "video_id": vid, "is_reel": is_reel,
-                           "title": lbl["title"], "hook": lbl["hook"], "platforms": plats,
+                           "title": lbl["title"], "hook": lbl["hook"],
+                           "brand": _video_brand(s, kind, vid), "platforms": plats,
                            "totals": tot, "score": tot["saves"] + tot["follows"]})
         videos.sort(key=lambda v: (v["score"], v["is_reel"]), reverse=True)
 

@@ -942,9 +942,13 @@ function VideoTracker({ videos, onLogged }: { videos: VideoPerf[]; onLogged: () 
   );
 }
 
+const BRANDS = ["NoCrapDiet", "SemSeo", "Real Dennis", "Missedyu"];
+
 function PlatformEditor({ video, onLogged }: { video: VideoPerf; onLogged: () => void }) {
   const zero = { views: 0, follows: 0, saves: 0, sends: 0 };
   const [m, setM] = useState({ tt: video.platforms.tt ?? zero, ig: video.platforms.ig ?? zero, yt: video.platforms.yt ?? zero });
+  // Pre-fill the brand ONLY if it resolved to a known brand; otherwise leave blank — never guess.
+  const [brand, setBrand] = useState(BRANDS.includes(video.brand) ? video.brand : "");
   const [busy, setBusy] = useState(false);
   const toast = useToast();
   const set = (pf: "tt" | "ig" | "yt", k: keyof typeof zero, val: number) =>
@@ -957,7 +961,8 @@ function PlatformEditor({ video, onLogged }: { video: VideoPerf; onLogged: () =>
       for (const pf of order) {
         const d = m[pf];
         if (d.views || d.follows || d.saves || d.sends) {
-          await api.logPerf({ video_kind: video.video_kind, video_id: video.video_id, platform: pf, ...d });
+          // brand is always sent (the dropdown value, blank if unset) so column C is never a guess.
+          await api.logPerf({ video_kind: video.video_kind, video_id: video.video_id, platform: pf, brand, ...d });
           any = true;
         }
       }
@@ -979,6 +984,12 @@ function PlatformEditor({ video, onLogged }: { video: VideoPerf; onLogged: () =>
       <div className="muted" style={{ fontSize: 12.5, marginBottom: 8 }}>
         Enter each platform's numbers for <b>“{video.hook || video.title}”</b> — leave a platform at 0 if you didn't post there. Re-saving updates it.
       </div>
+      <label className="plat-brand">Brand
+        <select value={brand} onChange={(e) => setBrand(e.target.value)}>
+          <option value="">— select brand —</option>
+          {BRANDS.map((b) => <option key={b} value={b}>{b}</option>)}
+        </select>
+      </label>
       {platRow("tt", "🎵 TikTok")}
       {platRow("ig", "📸 Instagram")}
       {platRow("yt", "▶ YouTube")}

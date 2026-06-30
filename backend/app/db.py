@@ -78,6 +78,9 @@ class Clip(SQLModel, table=True):
     scene_vo_json: Optional[str] = None
     # User-assigned Downloads folder (drag-to-move). None -> grouped under the project.
     folder: Optional[str] = None
+    # Brand for performance/Growth-Log attribution, chosen on the Results logger. None ->
+    # not set yet (resolve from a linked ticket, else blank — NEVER a silent default).
+    brand: Optional[str] = None
 
 
 # --------------------------------------------------------------------------- #
@@ -218,7 +221,7 @@ def _migrate() -> None:
                  "markers_json": "TEXT", "voiceover_path": "TEXT", "scene_vo_json": "TEXT",
                  "stage": "TEXT DEFAULT ''", "hook": "TEXT DEFAULT ''",
                  "resolution": f"TEXT DEFAULT '{settings.DEFAULT_RESOLUTION}'",
-                 "folder": "TEXT"},
+                 "folder": "TEXT", "brand": "TEXT"},
         "project": {"transcribe_backend": "TEXT DEFAULT 'local'",
                     "mode": "TEXT DEFAULT 'moments'", "folder": "TEXT"},
         "ticket": {"folder": "TEXT", "post_meta": "TEXT", "ai_generated": "INTEGER DEFAULT 0"},

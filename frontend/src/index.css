@@ -590,6 +590,8 @@ button.primary.danger-solid:hover { background: #db3a48; border-color: #db3a48; 
 .vid-row.sel { background: var(--surface-2); box-shadow: inset 3px 0 0 var(--primary); }
 .vid-search { padding: 6px 10px; border: 1px solid var(--border-2); border-radius: 8px; background: var(--surface-2); font: inherit; font-size: 13px; width: 160px; }
 .plat-editor { margin-top: 12px; padding: 12px 14px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-sm); }
+.plat-brand { display: inline-flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--muted); margin-bottom: 10px; }
+.plat-brand select { padding: 7px 9px; border: 1px solid var(--border-2); border-radius: 8px; background: var(--surface); font: inherit; font-size: 13px; min-width: 180px; }
 .plat-edit-row { display: flex; align-items: flex-end; gap: 10px; flex-wrap: wrap; padding: 6px 0; }
 .plat-edit-name { width: 120px; font-weight: 700; font-size: 13px; flex: none; }
 .plat-in { display: flex; flex-direction: column; font-size: 11px; color: var(--muted); gap: 3px; text-transform: capitalize; }
