@@ -115,21 +115,20 @@ session, review + commit each**. Build nothing ahead.
 - Add a **"Friday batch"** view: videos now 7+ days old, ready to log together.
 - Saves often missing from APIs → MANUAL saves entry in the Perf editor (fallback).
 
-### P6 — Publish — **FULL REBUILD (separate session)**; older Upload-Post version is being replaced
-Current P6 = single provider hard-wired to Upload-Post (`pipeline/poster.py`), copy from the
-legacy `Ticket.captions`, no abstraction / no Postiz / no per-ticket TikTok mode / no analytics.
-Rebuild:
-- **Publisher INTERFACE** so providers swap without a rewrite. Two adapters: **Postiz** (default,
-  self-hosted Docker, own dashboard + API) and **Upload-Post** (fallback — refactor today's
-  `poster.py` into this adapter).
-- Push finished reel + `Ticket.post_meta` to a running, account-connected Postiz via its API;
-  surface post status on the ticket (stay on the Cvideo board). Postiz dashboard stays available.
-- **Per-ticket TikTok mode:** default (original audio) → auto-post; **"add trending audio" flag
-  ON** → do NOT auto-post TikTok, route to draft / "finish in TikTok app". IG Reels + YT Shorts
-  always auto-post. Verify Postiz TikTok draft mode; else flag the ticket + skip TikTok auto-post.
-- Post copy reads from `Ticket.post_meta`.
-- Process: first explain what current P6 does, rebuild, then **test ONE real post end-to-end
-  before commit.**
+### P6 — Publish — **POSTIZ CUT (decided 2026-06-28); Upload-Post is the publisher**
+Postiz was trialled (self-hosted Docker) and **dropped** — it only worked for YouTube; Instagram is
+permanently blocked (Dennis's Facebook is disabled → no Meta dev app) and TikTok can't post from
+localhost (public-HTTPS media + TikTok audit required). Postiz was never in Cvideo code, only a plan,
+so nothing was removed. Current P6 (`pipeline/poster.py`) already calls **Upload-Post** — the audited
+broker that sidesteps every per-platform dev-app/OAuth wall. Keep it. Remaining polish (no full
+rebuild):
+- Keep the thin **publisher interface** shape; adapters = **Upload-Post** (the real one) + **manual**.
+  No Postiz adapter.
+- Post copy reads from `Ticket.post_meta` (migrate off the deprecated `Ticket.captions`).
+- **Per-ticket TikTok mode:** default (original audio) → auto-post; **"add trending audio" flag ON**
+  → don't auto-post TikTok, route to draft / "finish in TikTok app". IG + YT auto-post.
+- Process: **test ONE real post end-to-end before commit** (needs Dennis's Upload-Post API key).
+- Why Postiz is out: see the `cvideo-postiz-licensing` + `dennis-facebook-banned` memories.
 
 ### Measure (stats back)
 - Pull metrics back through the same publisher adapter (Postiz/Upload-Post analytics) into `Perf`

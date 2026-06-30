@@ -25,6 +25,17 @@ class Project(SQLModel, table=True):
     progress: int = 0                 # 0-100
     error: Optional[str] = None
     duration: float = 0.0
+    # User-assigned Home folder (drag-to-move). None -> loose, except mode="caption"
+    # projects which fall into the virtual "Reels" folder by default.
+    folder: Optional[str] = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class Folder(SQLModel, table=True):
+    """A user-made Home folder. Persists even while empty (membership lives on
+    Project.folder by name); the auto "Reels" folder is virtual and has no row."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    name: str
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
@@ -113,6 +124,9 @@ class Ticket(SQLModel, table=True):
     posted_at: Optional[datetime] = None
     # User-assigned Downloads folder (drag-to-move). None -> grouped under the brand.
     folder: Optional[str] = None
+    # True when the script was written by the app's AI (Script Factory) — drives the reel's
+    # quality score floor (AI scripts always rate 90+).
+    ai_generated: bool = False
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
@@ -135,9 +149,14 @@ class Beat(SQLModel, table=True):
 
 
 class Perf(SQLModel, table=True):
-    """One row per platform per posted ticket (MEASURE)."""
+    """One row per platform per posted VIDEO (MEASURE). A video is the actual exported
+    asset you post — a rendered Clip ("clip") or an assembled ticket reel ("reel") — keyed
+    by (video_kind, video_id), matching /api/exports. `ticket_id` is legacy/nullable (kept
+    for the old ticket-based rows, backfilled to video_kind="reel")."""
     id: Optional[int] = Field(default=None, primary_key=True)
-    ticket_id: int = Field(index=True, foreign_key="ticket.id")
+    ticket_id: Optional[int] = Field(default=None, index=True)   # legacy; reels also set video_id
+    video_kind: Optional[str] = None   # "clip" | "reel"
+    video_id: Optional[int] = None     # Clip.id or Ticket.id
     platform: str = ""                 # tt | ig | yt
     views: int = 0
     follows: int = 0
@@ -161,7 +180,33 @@ _engine = create_engine(f"sqlite:///{settings.DB_PATH}", echo=False,
 def init_db() -> None:
     SQLModel.metadata.create_all(_engine)
     _migrate()
+    _migrate_perf_videos()
     _backfill_post_meta()
+
+
+def _migrate_perf_videos() -> None:
+    """One-time: make Perf video-aware. The old table had a NOT NULL `ticket_id` (so it
+    could only log against tickets). Rebuild it with a nullable `ticket_id` + `video_kind`/
+    `video_id`, and backfill every legacy row as a reel (video_kind='reel', video_id=ticket_id).
+    Idempotent: skips once `video_kind` exists."""
+    from sqlalchemy import text
+    with _engine.connect() as conn:
+        cols = {r[1] for r in conn.execute(text("PRAGMA table_info(perf)"))}
+        if not cols or "video_kind" in cols:
+            return  # fresh table already has the new shape, or nothing to migrate
+        conn.execute(text(
+            "CREATE TABLE perf_new (id INTEGER PRIMARY KEY, ticket_id INTEGER, "
+            "video_kind TEXT, video_id INTEGER, platform VARCHAR NOT NULL DEFAULT '', "
+            "views INTEGER NOT NULL DEFAULT 0, follows INTEGER NOT NULL DEFAULT 0, "
+            "saves INTEGER NOT NULL DEFAULT 0, sends INTEGER NOT NULL DEFAULT 0, "
+            "captured_at DATETIME NOT NULL)"))
+        conn.execute(text(
+            "INSERT INTO perf_new (id, ticket_id, video_kind, video_id, platform, views, "
+            "follows, saves, sends, captured_at) SELECT id, ticket_id, 'reel', ticket_id, "
+            "platform, views, follows, saves, sends, captured_at FROM perf"))
+        conn.execute(text("DROP TABLE perf"))
+        conn.execute(text("ALTER TABLE perf_new RENAME TO perf"))
+        conn.commit()
 
 
 def _migrate() -> None:
@@ -175,8 +220,8 @@ def _migrate() -> None:
                  "resolution": f"TEXT DEFAULT '{settings.DEFAULT_RESOLUTION}'",
                  "folder": "TEXT"},
         "project": {"transcribe_backend": "TEXT DEFAULT 'local'",
-                    "mode": "TEXT DEFAULT 'moments'"},
-        "ticket": {"folder": "TEXT", "post_meta": "TEXT"},
+                    "mode": "TEXT DEFAULT 'moments'", "folder": "TEXT"},
+        "ticket": {"folder": "TEXT", "post_meta": "TEXT", "ai_generated": "INTEGER DEFAULT 0"},
         "beat": {"caption_timings": "TEXT"},
     }
     with _engine.connect() as conn:

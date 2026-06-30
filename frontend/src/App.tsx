@@ -1,9 +1,10 @@
 import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
-import { api, Beat, Clip, ExportItem, InsightsData, Outlier, Presets, Project, QueueData, QueueTicket, Ticket } from "./api";
+import { api, Beat, Clip, ExportItem, Folder, InsightsData, Outlier, Presets, Project, QueueData, QueueTicket, Ticket } from "./api";
 import { CaptionOverlay } from "./CaptionOverlay";
 import { CaptionStyle, FALLBACK_PRESETS, groupLines, Word, wordsInRange } from "./captionStyles";
 import { Sidebar } from "./Sidebar";
 import { useToast } from "./Toast";
+import { useConfirm, usePrompt } from "./Dialog";
 import { useRecorder } from "./useRecorder";
 import { VideoModal } from "./VideoModal";
 import { exportDirSupported, getExportDir, pickExportDir } from "./exportDir";
@@ -16,7 +17,7 @@ type Route =
   | { name: "insights" }
   | { name: "library" }
   | { name: "project"; pid: number }
-  | { name: "editor"; pid: number; cid: number; from?: "board" | "project" };
+  | { name: "editor"; pid: number; cid: number; from?: "board" | "project" | "home" };
 
 export default function App() {
   const [presets, setPresets] = useState<Presets | null>(null);
@@ -31,7 +32,7 @@ export default function App() {
   const goInsights = () => setRoute({ name: "insights" });
   const goLibrary = () => setRoute({ name: "library" });
 
-  const NAMED: Record<string, string> = { board: "Create videos", intake: "Outliers", queue: "Schedule", insights: "Results", library: "Downloads" };
+  const NAMED: Record<string, string> = { board: "Create videos", intake: "Ideas", queue: "Schedule", insights: "Results", library: "Downloads" };
   const crumbLabel = NAMED[route.name] ?? null;
   const sbView = (["board", "intake", "queue", "insights", "library"].includes(route.name) ? route.name : "home") as any;
 
@@ -58,11 +59,13 @@ export default function App() {
         {route.name === "home" && <Home presets={presets} onOpen={(pid) => setRoute({ name: "project", pid })} />}
         {route.name === "project" && (
           <MomentsGrid pid={route.pid} onName={setProjName}
-            onEdit={(cid) => setRoute({ name: "editor", pid: route.pid, cid })} onBack={goHome} />
+            onEdit={(cid) => setRoute({ name: "editor", pid: route.pid, cid })}
+            onEditReel={(cid) => setRoute({ name: "editor", pid: route.pid, cid, from: "home" })}
+            onBack={goHome} />
         )}
         {route.name === "editor" && (
           <EditorPage pid={route.pid} cid={route.cid} presets={presets} onName={setProjName}
-            onBack={() => setRoute(route.from === "board" ? { name: "board" } : { name: "project", pid: route.pid })} />
+            onBack={() => setRoute(route.from === "board" ? { name: "board" } : route.from === "home" ? { name: "home" } : { name: "project", pid: route.pid })} />
         )}
       </main>
     </div>
@@ -100,19 +103,21 @@ function Board({ presets, onOpenEditor }: { presets: Presets | null; onOpenEdito
   const [openId, setOpenId] = useState<number | null>(null);
   const [showNew, setShowNew] = useState(false);
   const toast = useToast();
+  const confirm = useConfirm();
 
-  const refresh = () => api.listTickets().then(setTickets);
+  const refresh = () => api.listTickets().then(setTickets).catch(() => {});
   useEffect(() => { refresh(); const t = setInterval(refresh, 4000); return () => clearInterval(t); }, []);
 
   const move = async (t: Ticket, dir: 1 | -1) => {
     const j = phaseOf(t.stage) + dir;
     if (j < 0 || j >= PHASES.length) return;
-    await api.patchTicket(t.id, { stage: PHASES[j].stages[0] }); refresh();
+    try { await api.patchTicket(t.id, { stage: PHASES[j].stages[0] }); refresh(); }
+    catch (e: any) { toast(`Couldn't move it: ${e?.message || e}`, "err"); }
   };
   const del = async (t: Ticket) => {
-    if (!confirm(`Delete this ticket${t.angle ? ` (${t.angle})` : ""}?`)) return;
-    await api.deleteTicket(t.id); if (openId === t.id) setOpenId(null);
-    toast("Ticket deleted", "ok"); refresh();
+    if (!await confirm({ title: "Delete this video?", body: t.angle ? `“${t.angle}” and its scenes will be removed.` : "Its scenes will be removed.", confirmLabel: "Delete", danger: true })) return;
+    try { await api.deleteTicket(t.id); if (openId === t.id) setOpenId(null); toast("Video deleted", "ok"); refresh(); }
+    catch (e: any) { toast(`Delete failed: ${e?.message || e}`, "err"); }
   };
 
   return (
@@ -246,7 +251,8 @@ function NewTicketModal({ presets, onClose, onCreated }: { presets: Presets | nu
 function TicketDetail({ tid, presets, onClose, onChanged, onOpenEditor }: { tid: number; presets: Presets | null; onClose: () => void; onChanged: () => void; onOpenEditor: (pid: number, cid: number) => void }) {
   const [data, setData] = useState<{ ticket: Ticket; beats: Beat[] } | null>(null);
   const toast = useToast();
-  const load = () => api.getTicket(tid).then(setData);
+  const confirm = useConfirm();
+  const load = () => api.getTicket(tid).then(setData).catch(() => {});
   useEffect(() => { load(); }, [tid]);
 
   const patchT = async (body: Partial<Ticket>) => { await api.patchTicket(tid, body); load(); onChanged(); };
@@ -277,7 +283,7 @@ function TicketDetail({ tid, presets, onClose, onChanged, onOpenEditor }: { tid:
   const [hooks, setHooks] = useState<string[] | null>(null);
   const [aiBusy, setAiBusy] = useState<"" | "script" | "hook">("");
   const runScript = async () => {
-    if (data && data.beats.length && !confirm("Replace all beats with an AI-generated script?")) return;
+    if (data && data.beats.length && !await confirm({ title: "Rewrite the whole script?", body: "AI will replace all current scenes with a fresh script.", confirmLabel: "Rewrite" })) return;
     setAiBusy("script");
     try { const r = await api.scriptFactory(tid); toast(`Script: ${r.beats.length} beats`, "ok"); setData(r); onChanged(); }
     catch (e: any) { toast(`Script Factory failed: ${e?.message || e}`, "err"); } finally { setAiBusy(""); }
@@ -480,7 +486,7 @@ function Intake({ onSpun }: { onSpun: () => void }) {
   const [f, setF] = useState({ url: "", hook: "", why_popped: "", angle: "", caption: "" });
   const [busy, setBusy] = useState(false);
   const toast = useToast();
-  const refresh = () => api.listOutliers().then(setOutliers);
+  const refresh = () => api.listOutliers().then(setOutliers).catch(() => {});
   useEffect(() => { refresh(); }, []);
 
   const add = async () => {
@@ -659,13 +665,15 @@ function DownloadFolder({ group, subs, onPreview, onDownload, onMove, onRename }
 
 function NewFolderDrop({ onMove }: { onMove: (kind: string, id: number, folder: string) => void }) {
   const [over, setOver] = useState(false);
+  const prompt = usePrompt();
   const onDrop = (e: React.DragEvent) => {
     e.preventDefault(); setOver(false);
-    try {
-      const d = JSON.parse(e.dataTransfer.getData("text/plain"));
-      const name = window.prompt("New folder name")?.trim();
-      if (d && name) onMove(d.kind, d.id, name);
-    } catch { /* not our payload */ }
+    let d: any;
+    try { d = JSON.parse(e.dataTransfer.getData("text/plain")); } catch { return; }
+    if (!d) return;
+    prompt({ title: "New folder", placeholder: "Folder name", confirmLabel: "Create" }).then((name) => {
+      if (name) onMove(d.kind, d.id, name);
+    });
   };
   return (
     <div className={"dl-newfolder" + (over ? " drop-over" : "")}
@@ -694,7 +702,7 @@ function fmtWhen(iso?: string | null): string {
 
 function Queue() {
   const [data, setData] = useState<QueueData | null>(null);
-  const refresh = () => api.getQueue().then(setData);
+  const refresh = () => api.getQueue().then(setData).catch(() => {});
   useEffect(() => { refresh(); }, []);
 
   return (
@@ -803,10 +811,27 @@ function PostedRow({ t }: { t: QueueTicket }) {
 }
 
 /* ------------------------------ Insights ------------------------------- */
+// Push all performance to the Google Sheet (the bridge to the cowork content engine).
+function SyncSheetButton() {
+  const [busy, setBusy] = useState(false);
+  const toast = useToast();
+  const sync = async () => {
+    setBusy(true);
+    try { const r = await api.syncSheet(); toast(`Synced ${r.pushed} video${r.pushed === 1 ? "" : "s"} to your Google Sheet 📊`, "ok"); }
+    catch (e: any) { toast(`${e?.message || e}`, "err"); } finally { setBusy(false); }
+  };
+  return (
+    <button className="sm" onClick={sync} disabled={busy}
+      title="Push all performance data to your Google Sheet (feeds your cowork content engine)">
+      {busy ? "Syncing…" : "📊 Sync to Google Sheet"}
+    </button>
+  );
+}
+
 function Insights() {
   const [data, setData] = useState<InsightsData | null>(null);
-  const [tickets, setTickets] = useState<Ticket[]>([]);
-  const refresh = () => { api.getInsights().then(setData); api.listTickets().then(setTickets); };
+  const [videos, setVideos] = useState<ExportItem[]>([]);   // the real exported videos you can log on
+  const refresh = () => { api.getInsights().then(setData).catch(() => {}); api.listExports().then(setVideos).catch(() => {}); };
   useEffect(() => { refresh(); }, []);
 
   const k = data?.kpis;
@@ -815,7 +840,13 @@ function Insights() {
   );
   return (
     <div className="page">
-      <div className="page-head"><h2>Results</h2><span className="muted">What's working — ranked by saves + follows, the numbers that matter</span></div>
+      <div className="page-head">
+        <h2>Results</h2>
+        <div className="row" style={{ gap: 12 }}>
+          <span className="muted">What's working — ranked by saves + follows</span>
+          <SyncSheetButton />
+        </div>
+      </div>
       <div className="kpi-row">
         {kpi("Videos", k?.tickets ?? 0)}{kpi("Posted", k?.posted ?? 0)}
         {kpi("Follows", k?.follows ?? 0, true)}{kpi("Saves", k?.saves ?? 0, true)}
@@ -824,7 +855,7 @@ function Insights() {
 
       {data && data.trend.length > 0 && <TrendChart trend={data.trend} />}
 
-      <PerfLogger tickets={tickets} onLogged={refresh} />
+      <PerfLogger videos={videos} onLogged={refresh} />
 
       {data && data.by_platform.length > 0 && (
         <div style={{ marginTop: 8 }}>
@@ -848,10 +879,16 @@ function Insights() {
           )}
         </div>
         <div>
-          <h3 className="ins-h">Best videos</h3>
-          {!data || data.top.length === 0 ? <div className="muted">Nothing logged yet.</div> : (
-            <table className="ins-table"><thead><tr><th>#</th><th>Idea</th><th>Saves+Follows</th></tr></thead>
-              <tbody>{data.top.map((t, i) => <tr key={t.ticket_id}><td>{i + 1}</td><td>{t.angle || `Video ${t.ticket_id}`}</td><td><b>{t.score}</b></td></tr>)}</tbody>
+          <h3 className="ins-h">Best videos <span className="muted">(saves + follows)</span></h3>
+          {!data || data.top.length === 0 ? <div className="muted">Nothing logged yet — add how a video did above.</div> : (
+            <table className="ins-table"><thead><tr><th>#</th><th>Video</th><th>Saves+Follows</th></tr></thead>
+              <tbody>{data.top.map((t, i) => (
+                <tr key={`${t.video_kind}-${t.video_id}`}>
+                  <td>{i + 1}</td>
+                  <td><span className={"exp-kind-tag " + t.video_kind}>{t.video_kind === "reel" ? "reel" : "clip"}</span> {t.hook || t.title}</td>
+                  <td><b>{t.score}</b></td>
+                </tr>
+              ))}</tbody>
             </table>
           )}
         </div>
@@ -877,48 +914,117 @@ function TrendChart({ trend }: { trend: InsightsData["trend"] }) {
   );
 }
 
-function PerfLogger({ tickets, onLogged }: { tickets: Ticket[]; onLogged: () => void }) {
-  const [tid, setTid] = useState<number | "">("");
+function PerfLogger({ videos, onLogged }: { videos: ExportItem[]; onLogged: () => void }) {
+  const [sel, setSel] = useState("");                  // "kind:id" of the chosen video
   const [platform, setPlatform] = useState("tt");
   const [f, setF] = useState({ views: 0, follows: 0, saves: 0, sends: 0 });
   const [busy, setBusy] = useState(false);
   const toast = useToast();
   const num = (k: keyof typeof f) => (e: ChangeEvent<HTMLInputElement>) => setF({ ...f, [k]: parseInt(e.target.value || "0", 10) || 0 });
+  const chosen = videos.find((v) => `${v.kind}:${v.id}` === sel);
   const log = async () => {
-    if (tid === "") { toast("Pick a ticket", "err"); return; }
+    if (!chosen) { toast("Pick a video first", "err"); return; }
     setBusy(true);
-    try { await api.logPerf({ ticket_id: tid as number, platform, ...f }); toast("Performance logged", "ok"); setF({ views: 0, follows: 0, saves: 0, sends: 0 }); onLogged(); }
-    catch (e: any) { toast(`Failed: ${e?.message || e}`, "err"); } finally { setBusy(false); }
+    try {
+      await api.logPerf({ video_kind: chosen.kind, video_id: chosen.id, platform, ...f });
+      toast("Saved how it did 📈", "ok"); setF({ views: 0, follows: 0, saves: 0, sends: 0 }); setSel(""); onLogged();
+    } catch (e: any) { toast(`Failed: ${e?.message || e}`, "err"); } finally { setBusy(false); }
   };
   return (
     <div className="perf-log">
       <h3 className="ins-h">Add how a video did</h3>
-      <div className="perf-row">
-        <select value={tid} onChange={(e) => setTid(e.target.value ? parseInt(e.target.value, 10) : "")}>
-          <option value="">Pick a video…</option>
-          {tickets.map((t) => <option key={t.id} value={t.id}>{t.angle || `Video ${t.id}`}</option>)}
-        </select>
-        <select value={platform} onChange={(e) => setPlatform(e.target.value)}><option value="tt">TikTok</option><option value="ig">Instagram</option><option value="yt">YouTube</option></select>
-        <label>Views<input type="number" value={f.views} onChange={num("views")} /></label>
-        <label>Follows<input type="number" value={f.follows} onChange={num("follows")} /></label>
-        <label>Saves<input type="number" value={f.saves} onChange={num("saves")} /></label>
-        <label>Shares<input type="number" value={f.sends} onChange={num("sends")} /></label>
-        <button className="primary" onClick={log} disabled={busy}>{busy ? "…" : "Save"}</button>
-      </div>
+      {videos.length === 0 ? (
+        <div className="muted">No finished videos yet — make and export one, then log how it performed here.</div>
+      ) : (
+        <div className="perf-row">
+          <select value={sel} onChange={(e) => setSel(e.target.value)} style={{ minWidth: 240, maxWidth: 360 }}>
+            <option value="">Pick a video…</option>
+            {videos.map((v) => (
+              <option key={`${v.kind}-${v.id}`} value={`${v.kind}:${v.id}`}>
+                {(v.kind === "reel" ? "🎬 " : "✂ ") + (v.hook || v.title)}
+              </option>
+            ))}
+          </select>
+          <select value={platform} onChange={(e) => setPlatform(e.target.value)}><option value="tt">TikTok</option><option value="ig">Instagram</option><option value="yt">YouTube</option></select>
+          <label>Views<input type="number" value={f.views} onChange={num("views")} /></label>
+          <label>Follows<input type="number" value={f.follows} onChange={num("follows")} /></label>
+          <label>Saves<input type="number" value={f.saves} onChange={num("saves")} /></label>
+          <label>Shares<input type="number" value={f.sends} onChange={num("sends")} /></label>
+          <button className="primary" onClick={log} disabled={busy}>{busy ? "…" : "Save"}</button>
+        </div>
+      )}
+      {chosen && <div className="muted" style={{ marginTop: 8, fontSize: 12.5 }}>Logging for: <b>{chosen.kind === "reel" ? "Reel" : "Clip"}</b> — “{chosen.hook || chosen.title}”</div>}
     </div>
   );
 }
 
 /* ------------------------------- Home ---------------------------------- */
+// A project's Home folder: its own `folder`, else caption reels auto-fall into "Reels".
+const REELS = "Reels";
+const folderOf = (p: Project): string | null => p.folder || (p.mode === "caption" ? REELS : null);
+
 function Home({ presets, onOpen }: { presets: Presets | null; onOpen: (id: number) => void }) {
   const [projects, setProjects] = useState<Project[] | null>(null);
+  const [folders, setFolders] = useState<Folder[]>([]);
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const toast = useToast();
-  const refresh = () => api.listProjects().then(setProjects);
+  const confirm = useConfirm();
+  const prompt = usePrompt();
+  const refresh = () => {
+    api.listProjects().then(setProjects).catch(() => {});
+    api.listFolders().then(setFolders).catch(() => {});
+  };
   useEffect(() => { refresh(); const t = setInterval(refresh, 2500); return () => clearInterval(t); }, []);
 
   const del = async (p: Project) => {
-    if (!confirm(`Delete "${p.name}"? This removes its files.`)) return;
-    await api.deleteProject(p.id); toast("Project deleted", "ok"); refresh();
+    if (!await confirm({ title: "Delete this project?", body: `“${p.name}” and all its files will be removed.`, confirmLabel: "Delete", danger: true })) return;
+    try { await api.deleteProject(p.id); toast("Project deleted", "ok"); refresh(); }
+    catch (e: any) { toast(`Delete failed: ${e?.message || e}`, "err"); }
+  };
+  const move = async (pid: number, folder: string) => {
+    try { await api.patchProject(pid, { folder }); refresh(); }
+    catch (e: any) { toast(`Move failed: ${e?.message || e}`, "err"); }
+  };
+  const rename = async (p: Project, name: string) => {
+    try { await api.patchProject(p.id, { name }); refresh(); }
+    catch (e: any) { toast(`Rename failed: ${e?.message || e}`, "err"); }
+  };
+  const newFolder = async (pid?: number) => {
+    const name = (await prompt({ title: "New folder", placeholder: "Folder name", confirmLabel: "Create" }))?.trim();
+    if (!name) return;
+    try { await api.createFolder(name); if (pid != null) await api.patchProject(pid, { folder: name }); refresh(); toast(`Folder “${name}” created`, "ok"); }
+    catch (e: any) { toast(`Failed: ${e?.message || e}`, "err"); }
+  };
+  const renameFolder = async (f: Folder) => {
+    const name = (await prompt({ title: "Rename folder", defaultValue: f.name, confirmLabel: "Rename" }))?.trim();
+    if (!name || name === f.name) return;
+    try { await api.renameFolder(f.id, name); refresh(); }
+    catch (e: any) { toast(`Rename failed: ${e?.message || e}`, "err"); }
+  };
+  const deleteFolder = async (f: Folder) => {
+    if (!await confirm({ title: `Delete folder “${f.name}”?`, body: "The projects inside move back out — they aren't deleted.", confirmLabel: "Delete folder", danger: true })) return;
+    try { await api.deleteFolder(f.id); refresh(); toast("Folder deleted", "ok"); }
+    catch (e: any) { toast(`Failed: ${e?.message || e}`, "err"); }
+  };
+  const toggle = (name: string) => setExpanded((s) => { const n = new Set(s); n.has(name) ? n.delete(name) : n.add(name); return n; });
+
+  // Group projects: loose cards + folder buckets (Reels virtual + user folders, even empty).
+  const loose: Project[] = [];
+  const buckets = new Map<string, Project[]>();
+  for (const p of projects ?? []) {
+    const f = folderOf(p);
+    if (f == null) loose.push(p);
+    else (buckets.get(f) ?? buckets.set(f, []).get(f)!).push(p);
+  }
+  for (const uf of folders) if (!buckets.has(uf.name)) buckets.set(uf.name, []);
+  const idByName = new Map(folders.map((f) => [f.name, f.id]));
+  const folderNames = [REELS, ...[...buckets.keys()].filter((n) => n !== REELS).sort((a, b) => a.localeCompare(b))]
+    .filter((n) => buckets.has(n));
+
+  // Dropping a card on the open grid (not on a folder/tile) → pull it out of any folder.
+  const gridDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    try { const d = JSON.parse(e.dataTransfer.getData("text/plain")); if (d?.id != null) move(d.id, ""); } catch { /* */ }
   };
 
   return (
@@ -936,23 +1042,112 @@ function Home({ presets, onOpen }: { presets: Presets | null; onOpen: (id: numbe
           <div>Paste a YouTube link or upload a video above to get your first clips.</div>
         </div>
       ) : (
-        <div className="proj-grid">{projects.map((p) => <ProjectCard key={p.id} p={p} onOpen={onOpen} onDelete={del} />)}</div>
+        <div className="proj-grid" onDragOver={(e) => e.preventDefault()} onDrop={gridDrop}>
+          {loose.map((p) => <ProjectCard key={p.id} p={p} onOpen={onOpen} onDelete={del} onRename={rename} />)}
+          {folderNames.map((name) => (
+            <FolderCard key={name} name={name} fid={idByName.get(name)} members={buckets.get(name)!}
+              expanded={expanded.has(name)} onToggle={() => toggle(name)} onOpen={onOpen} onDeleteProject={del}
+              onRenameProject={rename} onDropProject={(pid) => move(pid, name)}
+              onRenameFolder={renameFolder} onDeleteFolder={deleteFolder} />
+          ))}
+          <NewFolderTile onCreate={() => newFolder()} onDropProject={(pid) => newFolder(pid)} />
+        </div>
       )}
     </div>
   );
 }
 
-function ProjectCard({ p, onOpen, onDelete }: { p: Project; onOpen: (id: number) => void; onDelete: (p: Project) => void }) {
-  const [imgOk, setImgOk] = useState(true);
-  const ready = p.status === "ready";
+function FolderCard({ name, fid, members, expanded, onToggle, onOpen, onDeleteProject, onRenameProject, onDropProject, onRenameFolder, onDeleteFolder }: {
+  name: string; fid?: number; members: Project[]; expanded: boolean; onToggle: () => void;
+  onOpen: (id: number) => void; onDeleteProject: (p: Project) => void; onRenameProject: (p: Project, n: string) => void;
+  onDropProject: (pid: number) => void; onRenameFolder: (f: Folder) => void; onDeleteFolder: (f: Folder) => void;
+}) {
+  const [over, setOver] = useState(false);
+  const folder: Folder | null = fid != null ? { id: fid, name } : null;   // null = virtual Reels (not editable)
+  const onDrop = (e: React.DragEvent) => {
+    e.preventDefault(); e.stopPropagation(); setOver(false);
+    try { const d = JSON.parse(e.dataTransfer.getData("text/plain")); if (d?.id != null) onDropProject(d.id); } catch { /* */ }
+  };
+  const dnd = {
+    onDragOver: (e: React.DragEvent) => { e.preventDefault(); setOver(true); },
+    onDragLeave: (e: React.DragEvent) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setOver(false); },
+    onDrop,
+  };
+  if (!expanded) {
+    return (
+      <div className={"proj-card folder-card" + (over ? " drop-over" : "")} onClick={onToggle} {...dnd} title="Open folder">
+        <div className="proj-thumb folder-thumb">
+          <span className="folder-emoji">📁</span>
+          <span className="folder-count">{members.length}</span>
+        </div>
+        <div className="proj-body">
+          <div className="name">{name}</div>
+          <div className="proj-foot">
+            <span className="muted tkt-open">▸ Open folder</span>
+            {folder && (
+              <div className="proj-actions" onClick={(e) => e.stopPropagation()}>
+                <button className="sm" title="Rename folder" onClick={() => onRenameFolder(folder)}>✏️</button>
+                <button className="sm danger" title="Delete folder" onClick={() => onDeleteFolder(folder)}>🗑</button>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
   return (
-    <div className="proj-card" onClick={() => ready && onOpen(p.id)}>
+    <div className={"folder-expanded" + (over ? " drop-over" : "")} style={{ gridColumn: "1 / -1" }} {...dnd}>
+      <div className="folder-exp-head">
+        <button className="dl-head-main" onClick={onToggle}>
+          <span className="dl-caret">▾</span><span className="folder-emoji sm">📁</span>
+          <span className="dl-folder-name">{name}</span><span className="board-count">{members.length}</span>
+        </button>
+        {folder && (<>
+          <button className="dl-rename-btn" title="Rename folder" onClick={() => onRenameFolder(folder)}>✏️</button>
+          <button className="dl-rename-btn" title="Delete folder" onClick={() => onDeleteFolder(folder)}>🗑</button>
+        </>)}
+      </div>
+      {members.length === 0
+        ? <div className="cv-lane-empty">Empty — drag a project here to add it.</div>
+        : <div className="proj-grid">{members.map((p) => <ProjectCard key={p.id} p={p} onOpen={onOpen} onDelete={onDeleteProject} onRename={onRenameProject} />)}</div>}
+    </div>
+  );
+}
+
+function NewFolderTile({ onCreate, onDropProject }: { onCreate: () => void; onDropProject: (pid: number) => void }) {
+  const [over, setOver] = useState(false);
+  return (
+    <div className={"proj-card folder-card newfolder-card" + (over ? " drop-over" : "")} onClick={onCreate} title="Make a new folder"
+      onDragOver={(e) => { e.preventDefault(); setOver(true); }} onDragLeave={() => setOver(false)}
+      onDrop={(e) => { e.preventDefault(); e.stopPropagation(); setOver(false); try { const d = JSON.parse(e.dataTransfer.getData("text/plain")); if (d?.id != null) onDropProject(d.id); } catch { /* */ } }}>
+      <div className="proj-thumb folder-thumb new"><span className="folder-emoji">＋</span></div>
+      <div className="proj-body"><div className="name">New folder</div><div className="muted" style={{ fontSize: 12 }}>Click, or drop a project in</div></div>
+    </div>
+  );
+}
+
+function ProjectCard({ p, onOpen, onDelete, onRename }: { p: Project; onOpen: (id: number) => void; onDelete: (p: Project) => void; onRename?: (p: Project, name: string) => void }) {
+  const [imgOk, setImgOk] = useState(true);
+  const [editing, setEditing] = useState(false);
+  const [nm, setNm] = useState(p.name);
+  const ready = p.status === "ready";
+  const finishRename = () => { setEditing(false); const v = nm.trim(); if (v && v !== p.name) onRename?.(p, v); };
+  return (
+    <div className="proj-card" draggable={!editing}
+      onDragStart={(e) => { e.dataTransfer.setData("text/plain", JSON.stringify({ id: p.id })); e.dataTransfer.effectAllowed = "move"; }}
+      onClick={() => !editing && ready && onOpen(p.id)}>
       <div className="proj-thumb">
-        {ready && imgOk ? <img src={api.projectThumbUrl(p.id)} alt="" onError={() => setImgOk(false)} loading="lazy" />
+        {ready && imgOk ? <img src={api.projectThumbUrl(p.id)} alt="" onError={() => setImgOk(false)} loading="lazy" draggable={false} />
           : <div className="ph" style={{ fontSize: 30 }}>{p.status === "error" ? "!" : "▦"}</div>}
       </div>
       <div className="proj-body">
-        <div className="name">{p.name}</div>
+        {editing ? (
+          <input className="proj-rename" autoFocus value={nm} onClick={(e) => e.stopPropagation()}
+            onChange={(e) => setNm(e.target.value)} onBlur={finishRename}
+            onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); else if (e.key === "Escape") { setNm(p.name); setEditing(false); } }} />
+        ) : (
+          <div className="name" title="Double-click to rename" onDoubleClick={(e) => { e.stopPropagation(); setNm(p.name); setEditing(true); }}>{p.name}</div>
+        )}
         <div className="proj-tags"><span className="tag">{p.brain}</span><span className="tag">{p.aspect}</span><span className="tag">{p.caption_preset}</span></div>
         {!ready && p.status !== "error" && (
           <div><div className="muted" style={{ marginBottom: 5, fontSize: 12.5 }}>{p.stage || p.status}…</div>
@@ -962,6 +1157,7 @@ function ProjectCard({ p, onOpen, onDelete }: { p: Project; onOpen: (id: number)
           {ready ? <span className="badge ready">✓ ready</span> : p.status === "error" ? <span className="badge error">error</span> : <span className="badge busy">working</span>}
           <div className="proj-actions" onClick={(e) => e.stopPropagation()}>
             {ready && <button className="sm" onClick={() => onOpen(p.id)}>Open</button>}
+            {onRename && <button className="sm" title="Rename" onClick={() => { setNm(p.name); setEditing(true); }}>✏️</button>}
             <button className="sm danger" title="Delete" onClick={() => onDelete(p)}>🗑</button>
           </div>
         </div>
@@ -1036,29 +1232,32 @@ function NewProject({ presets, onCreated }: { presets: Presets | null; onCreated
 }
 
 /* ---------------------------- Moments grid ----------------------------- */
-// Projects whose editor we've already auto-opened (caption mode) — prevents a
-// back-navigation loop.
-const autoOpenedPids = new Set<number>();
-function MomentsGrid({ pid, onName, onEdit, onBack }: {
-  pid: number; onName: (s: string) => void; onEdit: (cid: number) => void; onBack: () => void;
+function MomentsGrid({ pid, onName, onEdit, onEditReel, onBack }: {
+  pid: number; onName: (s: string) => void; onEdit: (cid: number) => void; onEditReel?: (cid: number) => void; onBack: () => void;
 }) {
   const [project, setProject] = useState<Project | null>(null);
   const [clips, setClips] = useState<Clip[]>([]);
   const toast = useToast();
-  const refresh = () => api.getProject(pid).then((d) => { setProject(d.project); setClips(d.clips); onName(d.project.name); });
+  const confirm = useConfirm();
+  const refresh = () => api.getProject(pid).then((d) => { setProject(d.project); setClips(d.clips); onName(d.project.name); }).catch(() => {});
   useEffect(() => { refresh(); const t = setInterval(refresh, 3000); return () => clearInterval(t); }, [pid]);
 
-  // Caption mode = one full-length clip → drop the user straight into the editor, but
-  // only ONCE per project (a module-level guard) so backing out doesn't re-loop.
+  // A reel (caption mode) is a single video, not a project of clips — open it straight in
+  // the editor every time, with Back → Home (a per-mount guard avoids re-firing; Back
+  // goes Home so there's no project↔editor loop).
+  const opened = useRef(false);
   useEffect(() => {
-    if (!autoOpenedPids.has(pid) && project?.mode === "caption" && project.status === "ready" && clips.length >= 1) {
-      autoOpenedPids.add(pid);
-      onEdit(clips[0].id);
+    if (!opened.current && project?.mode === "caption" && project.status === "ready" && clips.length >= 1) {
+      opened.current = true;
+      (onEditReel ?? onEdit)(clips[0].id);
     }
   }, [project, clips]);
 
   const sorted = [...clips].sort((a, b) => b.score - a.score);
-  const act = async (fn: () => Promise<any>, msg: string) => { await fn(); toast(msg, "ok"); refresh(); };
+  const act = async (fn: () => Promise<any>, msg: string) => {
+    try { await fn(); toast(msg, "ok"); refresh(); }
+    catch (e: any) { toast(`Failed: ${e?.message || e}`, "err"); }
+  };
 
   return (
     <div className="page">
@@ -1072,7 +1271,7 @@ function MomentsGrid({ pid, onName, onEdit, onBack }: {
           {sorted.map((c) => (
             <MomentCard key={c.id} clip={c} onEdit={() => onEdit(c.id)}
               onRender={() => act(() => api.renderClip(c.id), "Exporting…")}
-              onDelete={() => confirm(`Delete "${c.title}"?`) && act(() => api.deleteClip(c.id), "Clip deleted")} />
+              onDelete={async () => { if (await confirm({ title: "Delete this clip?", body: c.title ? `“${c.title}”` : undefined, confirmLabel: "Delete", danger: true })) act(() => api.deleteClip(c.id), "Clip deleted"); }} />
           ))}
         </div>
       )}
@@ -1178,9 +1377,9 @@ function EditorPage({ pid, cid, presets, onName, onBack }: {
   const refresh = () => api.getProject(pid).then((d) => {
     setProject(d.project); onName(d.project.name);
     setClip(d.clips.find((c) => c.id === cid) || null);
-  });
+  }).catch(() => {});
   useEffect(() => {
-    refresh(); api.getWords(pid).then((d) => setWords(d.words));
+    refresh(); api.getWords(pid).then((d) => setWords(d.words)).catch(() => {});
     const t = setInterval(refresh, 3000); return () => clearInterval(t);
   }, [pid, cid]);
 
@@ -1241,7 +1440,8 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
   const [sceneVos, setSceneVos] = useState<(string | null)[]>(() => jsonOr(clip.scene_vo_json, [] as (string | null)[]));
   const [voBust, setVoBust] = useState(0);   // cache-buster for scene VO audio after re-record
   const [previewMode, setPreviewMode] = useState<"off" | "scene" | "reel">("off");
-  const loopRangeRef = useRef<{ s: number; e: number } | null>(null);
+  const loopRangeRef = useRef<{ s: number; e: number; rec?: boolean } | null>(null);
+  const recordEndRef = useRef<(() => void) | null>(null);   // fired when a recording take reaches the clip end
   const previewTimer = useRef<number | undefined>(undefined);
   const previewChain = useRef(false);
   const activeScene = hasScenes ? markers[Math.min(sceneIdx, markers.length - 1)] : null;
@@ -1287,15 +1487,24 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
       const v = videoRef.current;
       if (v) {
         const lr = loopRangeRef.current;
-        if (lr) {
-          // Recording: loop within the range so you can keep reading — and skip over
-          // any cut ranges so you record against the SAME video the export produces.
+        if (lr && lr.rec) {
+          // RECORDING: roll once from the trim start to the clip end, then STOP (don't
+          // loop) — the take ends exactly when the clip does. Skip cut ranges so the take
+          // lines up with the exported video.
+          for (const [a, b] of doc.cuts) {
+            if (v.currentTime >= a && v.currentTime < b) { v.currentTime = b + 0.12; break; }
+          }
+          if (v.currentTime >= lr.e) {
+            v.pause();
+            const cb = recordEndRef.current; recordEndRef.current = null;
+            cb?.();                          // auto-stop: hand off to the panel's Stop flow
+          }
+        } else if (lr) {
+          // Scene PREVIEW: loop within the scene while its voice plays once (skip cuts).
           if (v.currentTime >= lr.e || v.currentTime < lr.s - 0.05) v.currentTime = lr.s;
           else {
             for (const [a, b] of doc.cuts) {
               if (v.currentTime >= a && v.currentTime < b) {
-                // Land safely PAST the cut (the +0.12 clears frame-snap so we don't
-                // re-seek into it every frame); if the cut runs to the end, loop instead.
                 v.currentTime = b >= lr.e - 0.05 ? lr.s : Math.min(b + 0.12, lr.e);
                 break;
               }
@@ -1327,6 +1536,18 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
   const onLoaded = () => { if (videoRef.current) videoRef.current.currentTime = doc.start; };
   const togglePlay = () => {
     const v = videoRef.current; if (!v) return;
+    // A reel with recorded scene voices: the main Play plays the WHOLE thing WITH the
+    // voices (so you don't have to hit a separate "play with voice" button).
+    if (hasScenes && sceneVos.some(Boolean)) {
+      if (previewMode !== "off" || playing) stopPreview();
+      else {
+        // start from the scene under the PLAYHEAD, not always scene 0
+        let i = 0;
+        for (let k = markers.length - 1; k >= 0; k--) { if (time >= markers[k].start - 0.05) { i = k; break; } }
+        playReel(i);
+      }
+      return;
+    }
     const au = audioRef.current;
     if (playing) { v.pause(); au?.pause(); setPlaying(false); }
     else {
@@ -1336,6 +1557,20 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
       v.play(); setPlaying(true);
     }
   };
+  // Spacebar = play/pause, like every video editor — but never while the user is
+  // typing in a field (title, caption words, number inputs). A ref keeps the
+  // listener pointed at the latest togglePlay without re-binding every render.
+  const togglePlayRef = useRef(togglePlay); togglePlayRef.current = togglePlay;
+  useEffect(() => {
+    const isTyping = (t: EventTarget | null) => {
+      const el = t as HTMLElement | null;
+      return !!el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable);
+    };
+    const h = (e: KeyboardEvent) => {
+      if (e.code === "Space" && !isTyping(e.target)) { e.preventDefault(); togglePlayRef.current(); }
+    };
+    window.addEventListener("keydown", h); return () => window.removeEventListener("keydown", h);
+  }, []);
   const seek = (t: number) => {
     // Skip into a removed (cut) chunk — jump past it so cuts behave as deleted.
     for (const [a, b] of doc.cuts) { if (t >= a && t < b) { t = b; break; } }
@@ -1343,19 +1578,30 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
   };
   // Recording: roll the video over a range (a scene, or the whole clip) — muted, at
   // the chosen reading rate — so the teleprompter scrolls while you read.
-  const startRecordPlayback = (range?: { s: number; e: number }) => {
+  const startRecordPlayback = (range?: { s: number; e: number }, onEnd?: () => void) => {
     const v = videoRef.current; if (!v) return;
     // stop any preview that's running
     previewChain.current = false; window.clearTimeout(previewTimer.current);
     const a = audioRef.current; if (a) { a.pause(); a.onended = null; } setPreviewMode("off");
     const r = range ?? { s: doc.start, e: doc.end };
-    loopRangeRef.current = r;
-    v.currentTime = r.s; v.muted = true; v.playbackRate = readRate; v.play().catch(() => {});
-    setPlaying(true); setRecording(true);
+    loopRangeRef.current = { s: r.s, e: r.e, rec: true };   // rec → stop at end, don't loop
+    recordEndRef.current = onEnd ?? null;
+    v.muted = true; v.playbackRate = readRate;
+    // Seek to the trim point and ONLY start rolling once the seek has actually
+    // landed — otherwise play() begins from the old position (often the untrimmed
+    // front) and the take captures the trimmed-away part before jumping to r.s.
+    const roll = () => { v.play().catch(() => {}); setPlaying(true); setRecording(true); };
+    if (Math.abs(v.currentTime - r.s) < 0.05) { roll(); return; }
+    let done = false;
+    const onSeeked = () => { if (done) return; done = true; v.removeEventListener("seeked", onSeeked); roll(); };
+    v.addEventListener("seeked", onSeeked);
+    v.currentTime = r.s;
+    // Fallback: if the browser never fires 'seeked' (cached/instant), roll anyway.
+    window.setTimeout(onSeeked, 500);
   };
   const stopRecordPlayback = () => {
     const v = videoRef.current; if (v) { v.pause(); v.playbackRate = 1; }
-    loopRangeRef.current = null; setPlaying(false); setRecording(false);
+    loopRangeRef.current = null; recordEndRef.current = null; setPlaying(false); setRecording(false);
   };
   // ---- Scene preview engine: play a scene (or the whole reel) with the recorded
   // voice over each scene's video. The video loops within a scene while its voice
@@ -1385,7 +1631,7 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
     }
   };
   const playScene = (i: number) => { previewChain.current = false; setPreviewMode("scene"); runScene(i); };
-  const playReel = () => { previewChain.current = true; setPreviewMode("reel"); runScene(0); };
+  const playReel = (startIdx = 0) => { previewChain.current = true; setPreviewMode("reel"); runScene(startIdx); };
   const selectScene = (i: number) => { if (previewMode !== "off") stopPreview(); const j = Math.max(0, Math.min(i, markers.length - 1)); setSceneIdx(j); if (markers[j]) seek(markers[j].start); };
   const choosePreset = (name: string) => set({ preset: name, style: presetMap[name] ?? FALLBACK_PRESETS.capcut });
   const doAutoCenter = async () => { setAutoBusy(true); try { const r = await api.autoCenter(clip.id); set({ center: r.center }); toast("Centered on the speaker", "ok"); } catch { toast("Auto-center failed", "err"); } finally { setAutoBusy(false); } };
@@ -1404,7 +1650,15 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
 
   const rendered = clip.status === "rendered";
   const busy = clip.status === "rendering";
-  const exportClip = async () => { await api.renderClip(clip.id); toast("Exporting clip…", "info"); onChange(); };
+  // Instant feedback: disable Export the moment it's clicked, rather than waiting up
+  // to 3s for the status poll to report "rendering" (which let a double-click fire two renders).
+  const [exporting, setExporting] = useState(false);
+  useEffect(() => { if (clip.status === "rendering" || clip.status === "rendered" || clip.status === "error") setExporting(false); }, [clip.status]);
+  const exportClip = async () => {
+    setExporting(true);
+    try { await api.renderClip(clip.id); toast("Exporting clip…", "info"); onChange(); }
+    catch (e: any) { setExporting(false); toast(`Export failed: ${e?.message || e}`, "err"); }
+  };
 
   return (
     <div className="ed2">
@@ -1415,7 +1669,7 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
           <button className="icon-btn" disabled={!canUndo} onClick={undo} title="Undo (Ctrl+Z)">↶</button>
           <button className="icon-btn" disabled={!canRedo} onClick={redo} title="Redo (Ctrl+Shift+Z)">↷</button>
           <span className="save-ind">{saveState === "saving" ? "Saving…" : saveState === "saved" ? "✓ Saved" : ""}</span>
-          <button className="primary" onClick={exportClip} disabled={busy}>{busy ? (clip.stage || "Rendering…") : rendered ? "Re-export" : "Export"}</button>
+          <button className="primary" onClick={exportClip} disabled={busy || exporting}>{busy ? (clip.stage || "Rendering…") : exporting ? "Starting…" : rendered ? "Re-export" : "Export"}</button>
           {rendered && <button className="icon-btn" title="Download" onClick={() => downloadClip(clip.id, doc.title, toast)}>⬇</button>}
         </div>
       </div>
@@ -1431,7 +1685,10 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
         </div>
 
         <div className="ed2-stage">
-          <div className={"phone" + (tool === "reframe" ? " reframing" : "")} ref={boxRef} onPointerDown={onPreviewDown}>
+          <div className={"phone" + (tool === "reframe" ? " reframing" : "")} ref={boxRef} onPointerDown={onPreviewDown}
+            style={tool === "reframe" ? undefined : { cursor: "pointer" }}
+            onClick={() => { if (tool !== "reframe") togglePlay(); }}
+            title={tool === "reframe" ? undefined : "Click or press Space to play / pause"}>
             <video ref={videoRef} src={api.sourceUrl(pid)} onLoadedMetadata={onLoaded} style={{ objectPosition: `${doc.center * 100}% 50%` }} playsInline />
             <audio ref={audioRef} src={hasScenes ? undefined : (voUrl ?? undefined)} preload="auto" />
             <CaptionOverlay words={editedWords} time={srcToEdited(time, segments)} style={doc.style} containerHeight={boxH} />
@@ -1663,17 +1920,19 @@ function Teleprompter({ words, time, maxWords }: { words: Word[]; time: number; 
   );
 }
 
-function VoicePanel({ cid, voUrl, onChanged, toast, onRecordStart, onRecordStop }: { cid: number; voUrl: string | null; onChanged: (u: string | null) => void; toast: Notify; onRecordStart: () => void; onRecordStop: () => void }) {
+function VoicePanel({ cid, voUrl, onChanged, toast, onRecordStart, onRecordStop }: { cid: number; voUrl: string | null; onChanged: (u: string | null) => void; toast: Notify; onRecordStart: (range?: { s: number; e: number }, onEnd?: () => void) => void; onRecordStop: () => void }) {
   const { recording, error, start, stop } = useRecorder();
   const [pending, setPending] = useState<{ blob: Blob; url: string } | null>(null);
   const [busy, setBusy] = useState(false);
 
-  const onRecord = async () => { onRecordStart(); const ok = await start(); if (!ok) onRecordStop(); };  // roll video+teleprompter, then mic
   const onStop = async () => {
     const blob = await stop();
     onRecordStop();                                                  // pause the video
     if (blob) setPending({ blob, url: URL.createObjectURL(blob) });
   };
+  // Start the mic FIRST, then roll video+teleprompter from the trim start so the take
+  // is captured from the trim point in sync; auto-stops (onStop) at clip end.
+  const onRecord = async () => { const ok = await start(); if (!ok) { onRecordStop(); return; } onRecordStart(undefined, onStop); };
   const save = async () => {
     if (!pending) return; setBusy(true);
     try {
@@ -1725,7 +1984,7 @@ function VoicePanel({ cid, voUrl, onChanged, toast, onRecordStart, onRecordStop 
 function SceneVoicePanel({ cid, markers, sceneIdx, onSelectScene, sceneVos, setSceneVos, readRate, setReadRate, activeScene, onRecordStart, onRecordStop, previewMode, onPlayScene, onPlayReel, onStopPreview, onChanged, toast }: {
   cid: number; markers: { start: number; end: number; label: string }[]; sceneIdx: number; onSelectScene: (i: number) => void;
   sceneVos: (string | null)[]; setSceneVos: (v: (string | null)[]) => void; readRate: number; setReadRate: (r: number) => void;
-  activeScene: { start: number; end: number; label: string }; onRecordStart: (r?: { s: number; e: number }) => void; onRecordStop: () => void;
+  activeScene: { start: number; end: number; label: string }; onRecordStart: (r?: { s: number; e: number }, onEnd?: () => void) => void; onRecordStop: () => void;
   previewMode: "off" | "scene" | "reel"; onPlayScene: (i: number) => void; onPlayReel: () => void; onStopPreview: () => void;
   onChanged: () => void; toast: Notify;
 }) {
@@ -1735,8 +1994,10 @@ function SceneVoicePanel({ cid, markers, sceneIdx, onSelectScene, sceneVos, setS
   const hasVoice = !!sceneVos[sceneIdx];
   const doneCount = sceneVos.filter(Boolean).length;
 
-  const onRecord = async () => { if (previewMode !== "off") onStopPreview(); onRecordStart({ s: activeScene.start, e: activeScene.end }); const ok = await start(); if (!ok) onRecordStop(); };
   const onStop = async () => { const blob = await stop(); onRecordStop(); if (blob) setPending({ blob, url: URL.createObjectURL(blob) }); };
+  // Record this scene from its start; mic first, then roll so capture starts in sync;
+  // auto-stops (onStop) when the scene ends.
+  const onRecord = async () => { if (previewMode !== "off") onStopPreview(); const ok = await start(); if (!ok) { onRecordStop(); return; } onRecordStart({ s: activeScene.start, e: activeScene.end }, onStop); };
   const save = async () => {
     if (!pending) return; setBusy(true);
     try { const r = await api.uploadSceneVoiceover(cid, sceneIdx, pending.blob); URL.revokeObjectURL(pending.url); setPending(null); setSceneVos(r.scene_vos); onChanged(); toast(`Scene ${sceneIdx + 1} voice saved`, "ok"); }

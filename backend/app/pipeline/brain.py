@@ -16,6 +16,7 @@ import re
 from typing import Optional
 
 import settings
+from .. import learn
 
 
 # --------------------------------------------------------------------------- #
@@ -217,7 +218,7 @@ class OllamaScorer(ScorerBackend):
         import ollama
 
         client = ollama.Client(host=settings.OLLAMA_HOST)
-        prompt = _PROMPT.format(
+        prompt = learn.winners_prompt_block() + _PROMPT.format(
             n=n, mins=int(settings.MIN_CLIP_SEC), maxs=int(settings.MAX_CLIP_SEC),
             transcript=build_timed_transcript(words),
         )
@@ -241,7 +242,7 @@ class GeminiScorer(ScorerBackend):
             raise RuntimeError("GEMINI_API_KEY not set")
         genai.configure(api_key=settings.GEMINI_API_KEY)
         model = genai.GenerativeModel(settings.GEMINI_MODEL)
-        prompt = _PROMPT.format(
+        prompt = learn.winners_prompt_block() + _PROMPT.format(
             n=n, mins=int(settings.MIN_CLIP_SEC), maxs=int(settings.MAX_CLIP_SEC),
             transcript=build_timed_transcript(words),
         )

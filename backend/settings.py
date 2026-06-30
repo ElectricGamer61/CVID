@@ -51,6 +51,11 @@ UPLOAD_POST_TIMEZONE = os.getenv("UPLOAD_POST_TIMEZONE", "UTC")
 # Platforms we can target (matches the per-platform caption keys tt/ig/yt).
 PLATFORMS = ["tt", "ig", "yt"]
 
+# Google Sheet webhook (Apps Script web-app URL). When set, Cvideo POSTs each logged
+# performance row to it so the sheet in your Drive stays current (→ cowork engine).
+# Empty = no-op (perf logging stays fully local). See app/sheets.py.
+PERF_SHEET_WEBHOOK_URL = os.getenv("PERF_SHEET_WEBHOOK_URL", "")
+
 # --- Clip generation defaults ------------------------------------------------
 TARGET_CLIP_COUNT = int(os.getenv("CVIDEO_TARGET_CLIPS", "6"))
 MIN_CLIP_SEC = float(os.getenv("CVIDEO_MIN_CLIP", "15"))

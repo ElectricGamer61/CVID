@@ -15,8 +15,8 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 import settings
-from . import ai, intake
-from .db import Angle, Beat, Clip, Outlier, Perf, Project, Ticket, get_session, init_db
+from . import ai, intake, sheets
+from .db import Angle, Beat, Clip, Folder, Outlier, Perf, Project, Ticket, get_session, init_db
 from .jobs import get_words, submit_analyze
 from .pipeline import captions as caps
 from .pipeline import ingest, reframe, render
@@ -125,7 +125,9 @@ class AIBrief(BaseModel):
 
 
 class LogPerf(BaseModel):
-    ticket_id: int
+    video_kind: Optional[str] = None       # "clip" | "reel" (the real exported video)
+    video_id: Optional[int] = None         # Clip.id or Ticket.id
+    ticket_id: Optional[int] = None        # legacy alias (treated as a reel)
     platform: str = ""                     # tt | ig | yt
     views: int = 0
     follows: int = 0
@@ -214,6 +216,89 @@ def get_project(pid: int):
 @app.get("/api/projects/{pid}/words")
 def project_words(pid: int):
     return {"words": get_words(pid)}
+
+
+class PatchProject(BaseModel):
+    name: Optional[str] = None
+    folder: Optional[str] = None       # "" / null -> loose (no folder)
+
+
+@app.patch("/api/projects/{pid}")
+def patch_project(pid: int, body: PatchProject):
+    """Rename a project and/or move it into a Home folder (drag-to-move)."""
+    with get_session() as s:
+        p = s.get(Project, pid)
+        if not p:
+            raise HTTPException(404, "project not found")
+        if body.name is not None:
+            p.name = body.name.strip() or p.name
+        if body.folder is not None:
+            p.folder = body.folder.strip() or None
+        s.add(p); s.commit(); s.refresh(p)
+        return _proj_dict(p)
+
+
+# --------------------------------------------------------------------------- #
+# Home folders — group project cards on the Home grid. Membership lives on
+# Project.folder (by name); a Folder row lets a folder persist while empty.
+# The auto "Reels" folder is virtual (derived from mode=caption) — no row.
+# --------------------------------------------------------------------------- #
+class FolderBody(BaseModel):
+    name: str
+
+
+@app.get("/api/folders")
+def list_folders():
+    from sqlmodel import select
+    with get_session() as s:
+        rows = s.exec(select(Folder).order_by(Folder.name)).all()
+        return [{"id": f.id, "name": f.name} for f in rows]
+
+
+@app.post("/api/folders")
+def create_folder(body: FolderBody):
+    from sqlmodel import select
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(400, "folder name required")
+    with get_session() as s:
+        existing = s.exec(select(Folder).where(Folder.name == name)).first()
+        if existing:
+            return {"id": existing.id, "name": existing.name}
+        f = Folder(name=name)
+        s.add(f); s.commit(); s.refresh(f)
+        return {"id": f.id, "name": f.name}
+
+
+@app.patch("/api/folders/{fid}")
+def rename_folder(fid: int, body: FolderBody):
+    from sqlmodel import select
+    new = body.name.strip()
+    if not new:
+        raise HTTPException(400, "folder name required")
+    with get_session() as s:
+        f = s.get(Folder, fid)
+        if not f:
+            raise HTTPException(404, "folder not found")
+        old = f.name
+        f.name = new
+        for p in s.exec(select(Project).where(Project.folder == old)).all():
+            p.folder = new; s.add(p)        # re-tag members so they follow the rename
+        s.add(f); s.commit()
+        return {"id": f.id, "name": f.name}
+
+
+@app.delete("/api/folders/{fid}")
+def delete_folder(fid: int):
+    from sqlmodel import select
+    with get_session() as s:
+        f = s.get(Folder, fid)
+        if not f:
+            raise HTTPException(404, "folder not found")
+        for p in s.exec(select(Project).where(Project.folder == f.name)).all():
+            p.folder = None; s.add(p)       # members fall back to loose / virtual Reels
+        s.delete(f); s.commit()
+        return {"deleted": fid}
 
 
 # --------------------------------------------------------------------------- #
@@ -316,6 +401,7 @@ def script_factory(tid: int, body: AIBrief):
             t.hook_text = result["hook"]
         if result["beats"]:
             t.stage = "scripted"
+        t.ai_generated = True          # the app wrote this script → reel rates 90+
         s.add(t)
         _replace_beats(s, tid, result["beats"])
         s.commit(); s.refresh(t)
@@ -552,37 +638,135 @@ def _recompute_angle(s, angle_name: str) -> None:
     s.add(a)
 
 
+def _video_label(s, kind: str, vid: int) -> dict:
+    """Resolve a (kind, id) video to its fields — hook is the learnable signal; angle/
+    caption_preset/score round out the row pushed to the Google Sheet."""
+    if kind == "clip":
+        c = s.get(Clip, vid)
+        return {"video_kind": "clip", "video_id": vid,
+                "hook": (c.hook if c else "") or "",
+                "title": (c.title if c else "") or f"Clip {vid}",
+                "angle": "", "caption_preset": (c.caption_preset if c else "") or "",
+                "score": round(c.score) if (c and c.score) else 0}
+    t = s.get(Ticket, vid)
+    return {"video_kind": "reel", "video_id": vid,
+            "hook": (t.hook_text if t else "") or "",
+            "title": (t.hook_text or t.angle if t else "") or f"Reel {vid}",
+            "angle": (t.angle if t else "") or "", "caption_preset": "", "score": 0}
+
+
+_PLATFORM_FULL = {"tt": "TikTok", "ig": "Instagram", "yt": "YouTube"}
+
+
+def _video_brand(s, kind: str, vid: int) -> str:
+    """Resolve a video's brand (the cowork engine needs it for per-brand Growth Logs).
+    Reel → its Ticket.brand; clip → the ticket linked to the clip's project; else default."""
+    from sqlmodel import select
+    if kind == "reel":
+        t = s.get(Ticket, vid)
+        return (t.brand if (t and t.brand) else None) or "NoCrapDiet"
+    c = s.get(Clip, vid)
+    if c is not None:
+        t = s.exec(select(Ticket).where(Ticket.project_id == c.project_id)).first()
+        if t and t.brand:
+            return t.brand
+    return "NoCrapDiet"
+
+
+def _perf_sheet_row(s, kind: str, vid: int, platform: str, m: dict, when=None) -> dict:
+    """One Google-Sheet row matching the cowork engine's A–M contract. Cvideo fills what it
+    knows (brand/hook/angle/caption_style/metrics); journey_stage + hook_trigger are left
+    blank for the weekly run to infer. NO score — the Sheet computes that."""
+    from datetime import datetime
+    lbl = _video_label(s, kind, vid)
+    return {"post_id": f"{kind}_{vid}",
+            "date": (when or datetime.utcnow()).date().isoformat(),
+            "brand": _video_brand(s, kind, vid),
+            "platform": _PLATFORM_FULL.get(platform, platform),
+            "journey_stage": "",
+            "hook": lbl["hook"] or lbl["title"],
+            "hook_trigger": "",
+            "angle": lbl["angle"],
+            "caption_style": lbl["caption_preset"],
+            "views": m.get("views", 0), "follows": m.get("follows", 0),
+            "saves": m.get("saves", 0), "sends": m.get("sends", 0)}
+
+
 @app.post("/api/perf")
 def log_perf(body: LogPerf):
     from datetime import datetime
+    # Accept the new (video_kind, video_id) or the legacy ticket_id (== a reel).
+    kind = body.video_kind or ("reel" if body.ticket_id else None)
+    vid = body.video_id or body.ticket_id
+    if kind not in ("clip", "reel") or not vid:
+        raise HTTPException(400, "pick a video to log against")
     with get_session() as s:
-        t = s.get(Ticket, body.ticket_id)
-        if not t:
-            raise HTTPException(404, "ticket not found")
-        s.add(Perf(**body.model_dump()))
-        t.stage = "posted"
-        if not t.posted_at:
-            t.posted_at = datetime.utcnow()
-        s.add(t)
+        angle = None
+        if kind == "reel":
+            t = s.get(Ticket, vid)
+            if not t:
+                raise HTTPException(404, "reel not found")
+            t.stage = "posted"
+            if not t.posted_at:
+                t.posted_at = datetime.utcnow()
+            s.add(t); angle = t.angle
+        else:  # clip
+            if not s.get(Clip, vid):
+                raise HTTPException(404, "clip not found")
+        s.add(Perf(video_kind=kind, video_id=vid,
+                   ticket_id=(vid if kind == "reel" else None),
+                   platform=body.platform, views=body.views, follows=body.follows,
+                   saves=body.saves, sends=body.sends))
         s.commit()
-        _recompute_angle(s, t.angle)
-        s.commit()
+        if angle:
+            _recompute_angle(s, angle); s.commit()
+        row = _perf_sheet_row(s, kind, vid, body.platform, body.model_dump())
+    # Best-effort, non-blocking: append this row to the Google Sheet (→ cowork engine).
+    _render_pool.submit(sheets.push_perf_rows, [row])
     return {"ok": True}
+
+
+@app.post("/api/perf/sync-sheet")
+def sync_sheet():
+    """Backfill: push ALL logged performance to the Google Sheet at once."""
+    from sqlmodel import select
+    if not sheets.is_live():
+        raise HTTPException(400, "No Google Sheet connected yet — add PERF_SHEET_WEBHOOK_URL to "
+                                 "backend/.env (the Apps Script web-app URL) and restart.")
+    with get_session() as s:
+        rows = []
+        for p in s.exec(select(Perf).order_by(Perf.captured_at)).all():
+            vid = p.video_id if p.video_id is not None else p.ticket_id
+            if vid is None:
+                continue
+            rows.append(_perf_sheet_row(s, p.video_kind or "reel", vid, p.platform,
+                        {"views": p.views, "follows": p.follows, "saves": p.saves, "sends": p.sends},
+                        when=p.captured_at))
+    res = sheets.push_perf_rows(rows)
+    if res.get("error"):
+        raise HTTPException(502, f"Sheet push failed: {res['error']}")
+    return {"ok": True, "pushed": res.get("pushed", 0)}
 
 
 @app.get("/api/insights")
 def insights():
     from sqlmodel import select
+    from collections import defaultdict
     with get_session() as s:
         tickets = s.exec(select(Ticket)).all()
         perfs = s.exec(select(Perf)).all()
         angles = s.exec(select(Angle).order_by(Angle.avg_score.desc())).all()
-    from collections import defaultdict
-    tmap = {t.id: t for t in tickets}
-    by_ticket: dict[int, int] = {}
-    for p in perfs:
-        by_ticket[p.ticket_id] = by_ticket.get(p.ticket_id, 0) + p.saves + p.follows
-    top = sorted(by_ticket.items(), key=lambda kv: kv[1], reverse=True)[:8]
+
+        # Top VIDEOS by saves+follows (the needle) — keyed on the real exported asset
+        # (clip/reel), so a long-form clip you posted ranks the same as a native reel.
+        by_video: dict[tuple, int] = defaultdict(int)
+        for p in perfs:
+            vid = p.video_id if p.video_id is not None else p.ticket_id
+            if vid is None:
+                continue
+            by_video[(p.video_kind or "reel", vid)] += p.saves + p.follows
+        top_keys = sorted(by_video.items(), key=lambda kv: kv[1], reverse=True)[:8]
+        top = [{**_video_label(s, k[0], k[1]), "score": sc} for k, sc in top_keys]
 
     # Per-platform breakdown (which channel is actually working).
     _plat: dict[str, dict] = defaultdict(
@@ -609,15 +793,14 @@ def insights():
 
     return {
         "kpis": {
-            "tickets": len(tickets),
+            "tickets": len(by_video) or len(tickets),   # # of videos you're tracking
             "posted": len([t for t in tickets if t.stage == "posted"]),
             "views": sum(p.views for p in perfs),
             "follows": sum(p.follows for p in perfs),
             "saves": sum(p.saves for p in perfs),
             "sends": sum(p.sends for p in perfs),
         },
-        "top": [{"ticket_id": tid, "angle": (tmap[tid].angle if tid in tmap else ""),
-                 "score": sc} for tid, sc in top],
+        "top": top,
         "angles": [a.model_dump() for a in angles],
         "by_platform": by_platform,
         "trend": trend,
@@ -868,6 +1051,19 @@ def ticket_thumb(tid: int):
     return FileResponse(str(thumb), media_type="image/jpeg")
 
 
+def _score_reel(beats: list[dict], hook: str, ai_generated: bool) -> int:
+    """A reel's quality score (0-100), derived from its SCRIPT. App-written (AI) scripts
+    always rate **90+** (never below 90); pasted scripts get a content heuristic
+    (hook present + how developed it is + proof beats)."""
+    n = len(beats or [])
+    proof = sum(1 for b in (beats or []) if b.get("is_proof_beat"))
+    has_hook = bool((hook or "").strip()) or (n > 0 and bool((beats[0].get("spoken_line") or "").strip()))
+    if ai_generated:
+        return min(98, 90 + (n % 5) + min(proof, 3))                 # 90-98
+    base = 72 + min(n, 8) + min(proof * 2, 6) + (6 if has_hook else 0)
+    return int(min(96, max(60, base)))                               # pasted: 60-96
+
+
 @app.post("/api/tickets/{tid}/build-edit")
 def build_edit(tid: int):
     """Stitch a native reel's scenes into ONE video and open it in the clip editor.
@@ -878,10 +1074,13 @@ def build_edit(tid: int):
         t = s.get(Ticket, tid)
         if not t:
             raise HTTPException(404, "ticket not found")
-        if not s.exec(select(Beat).where(Beat.ticket_id == tid)).first():
+        beats = [b.model_dump() for b in s.exec(
+            select(Beat).where(Beat.ticket_id == tid).order_by(Beat.order_index)).all()]
+        if not beats:
             raise HTTPException(400, "this video has no scenes yet")
         title = t.angle or f"Reel {tid}"
         existing_pid = t.project_id
+        reel_score = _score_reel(beats, t.hook_text, bool(t.ai_generated))
     with get_session() as s:
         proj = s.get(Project, existing_pid) if existing_pid else None
         if not proj:
@@ -903,6 +1102,7 @@ def build_edit(tid: int):
         clip = s.exec(select(Clip).where(Clip.project_id == pid)).first() or Clip(project_id=pid, idx=0)
         clip.start, clip.end, clip.title = 0.0, result["duration"], title
         clip.aspect, clip.caption_preset = "9:16", "capcut"
+        clip.score = reel_score                       # rate the reel from its script
         clip.markers_json = json.dumps(result["scenes"])
         clip.status, clip.words_json, clip.cuts_json = "suggested", None, None
         s.add(clip); s.commit(); s.refresh(clip); cid = clip.id

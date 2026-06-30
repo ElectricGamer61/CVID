@@ -55,7 +55,7 @@ export function Sidebar({ view, onHome, onBoard, onIntake, onQueue, onInsights, 
       </button>
       <nav className="nav">
         {item("home", "Home", view === "home", onHome)}
-        {item("intake", "Outliers", view === "intake", onIntake)}
+        {item("intake", "Ideas", view === "intake", onIntake)}
         {item("board", "Create videos", view === "board", onBoard)}
         {item("queue", "Schedule", view === "queue", onQueue)}
         {item("insights", "Results", view === "insights", onInsights)}

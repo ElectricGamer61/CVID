@@ -248,13 +248,14 @@ Plain-language UI: a ticket = "video", a beat = "scene", an outlier = an "idea".
   **Schedule** screen: practice/almost-live/live banner, ready cards (datetime + platform pick →
   Schedule or Post-now), the queue (status + Remove), recently-posted. Verified: dry-run flow green +
   real request validated against the live endpoint (bogus key → 401, proves request shape). All P1–P6 done.
-- **P6 REBUILD PLANNED (next major phase)** — replace the single Upload-Post provider with a
-  **publisher interface** (Postiz default + Upload-Post fallback), copy from `Ticket.post_meta`,
-  per-ticket TikTok trending-audio mode, push reel→Postiz + status on the ticket. Full spec in
-  `.claude/commands/goal.md` ("REVISED ROADMAP"). **Prereq = self-host Postiz** (Docker, connect
-  socials, get Public API key); checklist in the `cvideo-next-steps` memory. Postiz self-host API
-  base = `http://localhost:4007/public/v1`, auth header `Authorization: <key>`, `POST /upload` then
-  `POST /posts`.
+- **P6 PUBLISHER — Postiz CUT (decided 2026-06-28).** Postiz was trialled (self-hosted Docker) and
+  dropped: it only worked for YouTube; Instagram is permanently blocked (disabled Facebook → no Meta
+  dev app) and TikTok can't post from localhost (needs public-HTTPS media + a TikTok audit). It was
+  never written into Cvideo code — only ever a roadmap plan — so nothing was removed. **Publisher
+  layer stays a thin interface with two real adapters: Upload-Post (`pipeline/poster.py`, the audited
+  broker that dodges the Meta/TikTok dev-app pain) + manual.** Remaining P6 polish = wire post copy
+  from `Ticket.post_meta` + per-ticket TikTok trending-audio mode. See the `cvideo-postiz-licensing`
+  + `dennis-facebook-banned` memories for the full why.
 - **Metrics — Results upgraded** (2026-06-27): `/api/insights` adds `by_platform` + `trend`; the
   Results screen now shows a **Momentum** day-by-day bar chart + a **By platform** breakdown table.
   Still manual entry — **auto-pull stats** remains the next refinement.

@@ -16,6 +16,12 @@ export interface Project {
   progress: number;
   error?: string;
   duration: number;
+  folder?: string | null;   // Home folder (drag-to-move); null = loose / virtual "Reels"
+}
+
+export interface Folder {
+  id: number;
+  name: string;
 }
 
 export interface Clip {
@@ -126,9 +132,12 @@ export interface PlatformStat {
 export interface TrendPoint {
   date: string; views: number; follows: number; saves: number; sends: number; score: number;
 }
+export interface TopVideo {
+  video_kind: "clip" | "reel"; video_id: number; title: string; hook: string; score: number;
+}
 export interface InsightsData {
   kpis: { tickets: number; posted: number; views: number; follows: number; saves: number; sends: number };
-  top: { ticket_id: number; angle: string; score: number }[];
+  top: TopVideo[];
   angles: { angle: string; outlier_id: number | null; posts_count: number; avg_score: number }[];
   by_platform: PlatformStat[];
   trend: TrendPoint[];
@@ -166,16 +175,47 @@ export interface ExportItem {
 
 const J = { "Content-Type": "application/json" };
 
+/* Single place that turns a fetch into typed JSON — and, crucially, throws a clean
+   Error carrying the backend's `detail` when the response isn't OK. Every call below
+   routes through this, so a failed action surfaces as one readable toast instead of
+   silently "succeeding" or blowing up later with "cannot read properties of undefined". */
+async function req<T>(input: string, init?: RequestInit): Promise<T> {
+  let r: Response;
+  try {
+    r = await fetch(input, init);
+  } catch {
+    throw new Error("Can't reach the app — is the server running?");
+  }
+  if (!r.ok) {
+    let detail = "";
+    try { detail = (await r.json())?.detail ?? ""; } catch { /* non-JSON error body */ }
+    throw new Error(detail || `Request failed (${r.status})`);
+  }
+  if (r.status === 204) return undefined as T;
+  return r.json() as Promise<T>;
+}
+const jsonInit = (method: string, body?: unknown): RequestInit =>
+  ({ method, headers: J, body: body === undefined ? undefined : JSON.stringify(body) });
+
 export const api = {
-  presets: (): Promise<Presets> => fetch("/api/presets").then((r) => r.json()),
-  listProjects: (): Promise<Project[]> =>
-    fetch("/api/projects").then((r) => r.json()),
+  presets: (): Promise<Presets> => req("/api/presets"),
+  listProjects: (): Promise<Project[]> => req("/api/projects"),
   getProject: (id: number): Promise<{ project: Project; clips: Clip[] }> =>
-    fetch(`/api/projects/${id}`).then((r) => r.json()),
+    req(`/api/projects/${id}`),
   getWords: (id: number): Promise<{ words: Word[] }> =>
-    fetch(`/api/projects/${id}/words`).then((r) => r.json()),
+    req(`/api/projects/${id}/words`),
   deleteProject: (id: number): Promise<{ deleted: number }> =>
-    fetch(`/api/projects/${id}`, { method: "DELETE" }).then((r) => r.json()),
+    req(`/api/projects/${id}`, { method: "DELETE" }),
+  patchProject: (id: number, body: { name?: string; folder?: string | null }): Promise<Project> =>
+    req(`/api/projects/${id}`, jsonInit("PATCH", body)),
+  // --- Home folders ---
+  listFolders: (): Promise<Folder[]> => req("/api/folders"),
+  createFolder: (name: string): Promise<Folder> =>
+    req("/api/folders", jsonInit("POST", { name })),
+  renameFolder: (id: number, name: string): Promise<Folder> =>
+    req(`/api/folders/${id}`, jsonInit("PATCH", { name })),
+  deleteFolder: (id: number): Promise<{ deleted: number }> =>
+    req(`/api/folders/${id}`, { method: "DELETE" }),
   createFromUrl: (body: {
     name: string;
     source_url: string;
@@ -185,117 +225,108 @@ export const api = {
     caption_preset: string;
     mode: string;
   }): Promise<{ id: number }> =>
-    fetch("/api/projects", {
-      method: "POST",
-      headers: J,
-      body: JSON.stringify(body),
-    }).then((r) => r.json()),
+    req("/api/projects", jsonInit("POST", body)),
   createFromUpload: (form: FormData): Promise<{ id: number }> =>
-    fetch("/api/projects/upload", { method: "POST", body: form }).then((r) =>
-      r.json()
-    ),
+    req("/api/projects/upload", { method: "POST", body: form }),
   patchClip: (
     cid: number,
     body: Partial<Clip> & { style?: CaptionStyle; words?: Word[]; cuts?: number[][] }
   ): Promise<Clip> =>
-    fetch(`/api/clips/${cid}`, {
-      method: "PATCH",
-      headers: J,
-      body: JSON.stringify(body),
-    }).then((r) => r.json()),
+    req(`/api/clips/${cid}`, jsonInit("PATCH", body)),
   renderClip: (cid: number): Promise<{ status: string }> =>
-    fetch(`/api/clips/${cid}/render`, { method: "POST" }).then((r) => r.json()),
+    req(`/api/clips/${cid}/render`, { method: "POST" }),
   deleteClip: (cid: number): Promise<{ deleted: number }> =>
-    fetch(`/api/clips/${cid}`, { method: "DELETE" }).then((r) => r.json()),
+    req(`/api/clips/${cid}`, { method: "DELETE" }),
   // --- Tickets / pipeline ---
-  listTickets: (): Promise<Ticket[]> => fetch("/api/tickets").then((r) => r.json()),
-  getTicket: (tid: number): Promise<TicketWithBeats> =>
-    fetch(`/api/tickets/${tid}`).then((r) => r.json()),
+  listTickets: (): Promise<Ticket[]> => req("/api/tickets"),
+  getTicket: (tid: number): Promise<TicketWithBeats> => req(`/api/tickets/${tid}`),
   createTicket: (body: NewTicketBody): Promise<TicketWithBeats> =>
-    fetch("/api/tickets", { method: "POST", headers: J, body: JSON.stringify(body) }).then((r) => r.json()),
+    req("/api/tickets", jsonInit("POST", body)),
   createTicketFromScript: (body: NewTicketBody): Promise<TicketWithBeats> =>
-    fetch("/api/tickets/from-script", { method: "POST", headers: J, body: JSON.stringify(body) }).then((r) => r.json()),
+    req("/api/tickets/from-script", jsonInit("POST", body)),
   importScript: (tid: number, script: string): Promise<TicketWithBeats> =>
-    fetch(`/api/tickets/${tid}/import-script`, { method: "POST", headers: J, body: JSON.stringify({ script }) }).then((r) => r.json()),
+    req(`/api/tickets/${tid}/import-script`, jsonInit("POST", { script })),
   patchTicket: (tid: number, body: Partial<Ticket>): Promise<Ticket> =>
-    fetch(`/api/tickets/${tid}`, { method: "PATCH", headers: J, body: JSON.stringify(body) }).then((r) => r.json()),
+    req(`/api/tickets/${tid}`, jsonInit("PATCH", body)),
   deleteTicket: (tid: number): Promise<{ deleted: number }> =>
-    fetch(`/api/tickets/${tid}`, { method: "DELETE" }).then((r) => r.json()),
+    req(`/api/tickets/${tid}`, { method: "DELETE" }),
   patchBeat: (bid: number, body: Partial<Beat>): Promise<Beat> =>
-    fetch(`/api/beats/${bid}`, { method: "PATCH", headers: J, body: JSON.stringify(body) }).then((r) => r.json()),
+    req(`/api/beats/${bid}`, jsonInit("PATCH", body)),
   addBeat: (tid: number): Promise<Beat> =>
-    fetch(`/api/tickets/${tid}/beats`, { method: "POST" }).then((r) => r.json()),
+    req(`/api/tickets/${tid}/beats`, { method: "POST" }),
   deleteBeat: (bid: number): Promise<{ deleted: number }> =>
-    fetch(`/api/beats/${bid}`, { method: "DELETE" }).then((r) => r.json()),
+    req(`/api/beats/${bid}`, { method: "DELETE" }),
   reorderBeats: (tid: number, ids: number[]): Promise<{ beats: Beat[] }> =>
-    fetch(`/api/tickets/${tid}/beats/reorder`, { method: "POST", headers: J, body: JSON.stringify({ ids }) }).then((r) => r.json()),
+    req(`/api/tickets/${tid}/beats/reorder`, jsonInit("POST", { ids })),
 
   uploadBeatClip: (bid: number, file: File): Promise<{ clip_path: string }> => {
     const fd = new FormData(); fd.append("file", file);
-    return fetch(`/api/beats/${bid}/clip`, { method: "POST", body: fd }).then((r) => r.json());
+    return req(`/api/beats/${bid}/clip`, { method: "POST", body: fd });
   },
   uploadBeatVoiceover: (bid: number, file: File): Promise<{ voiceover_path: string }> => {
     const fd = new FormData(); fd.append("file", file);
-    return fetch(`/api/beats/${bid}/voiceover`, { method: "POST", body: fd }).then((r) => r.json());
+    return req(`/api/beats/${bid}/voiceover`, { method: "POST", body: fd });
   },
   assembleTicket: (tid: number): Promise<{ status: string }> =>
-    fetch(`/api/tickets/${tid}/assemble`, { method: "POST" }).then(async (r) => { if (!r.ok) throw new Error((await r.json()).detail || r.status); return r.json(); }),
+    req(`/api/tickets/${tid}/assemble`, { method: "POST" }),
   assembleStatus: (tid: number): Promise<{ state: string; stage: string; error: string | null }> =>
-    fetch(`/api/tickets/${tid}/assemble-status`).then((r) => r.json()),
+    req(`/api/tickets/${tid}/assemble-status`),
   useClip: (tid: number, cid: number): Promise<Ticket> =>
-    fetch(`/api/tickets/${tid}/use-clip/${cid}`, { method: "POST" }).then((r) => r.json()),
+    req(`/api/tickets/${tid}/use-clip/${cid}`, { method: "POST" }),
   ticketDownloadUrl: (tid: number) => `/api/tickets/${tid}/download`,
   ticketThumbUrl: (tid: number) => `/api/tickets/${tid}/thumb`,
   buildEdit: (tid: number): Promise<{ pid: number; cid: number }> =>
-    fetch(`/api/tickets/${tid}/build-edit`, { method: "POST" }).then(async (r) => { if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.status); return r.json(); }),
+    req(`/api/tickets/${tid}/build-edit`, { method: "POST" }),
 
   // Clip voiceover (recorded/uploaded in the editor)
   uploadClipVoiceover: (cid: number, file: Blob): Promise<{ voiceover_path: string }> => {
     const fd = new FormData(); fd.append("file", file, "voiceover.webm");
-    return fetch(`/api/clips/${cid}/voiceover`, { method: "POST", body: fd }).then((r) => r.json());
+    return req(`/api/clips/${cid}/voiceover`, { method: "POST", body: fd });
   },
   deleteClipVoiceover: (cid: number): Promise<{ ok: boolean }> =>
-    fetch(`/api/clips/${cid}/voiceover`, { method: "DELETE" }).then((r) => r.json()),
+    req(`/api/clips/${cid}/voiceover`, { method: "DELETE" }),
   clipVoiceoverUrl: (cid: number) => `/api/clips/${cid}/voiceover-file`,
 
   // Per-scene voiceover (reel clips)
   uploadSceneVoiceover: (cid: number, idx: number, file: Blob): Promise<{ voiceover_path: string; scene_vos: (string | null)[] }> => {
     const fd = new FormData(); fd.append("file", file, "voiceover.webm");
-    return fetch(`/api/clips/${cid}/scene-voiceover/${idx}`, { method: "POST", body: fd }).then((r) => r.json());
+    return req(`/api/clips/${cid}/scene-voiceover/${idx}`, { method: "POST", body: fd });
   },
   deleteSceneVoiceover: (cid: number, idx: number): Promise<{ ok: boolean }> =>
-    fetch(`/api/clips/${cid}/scene-voiceover/${idx}`, { method: "DELETE" }).then((r) => r.json()),
+    req(`/api/clips/${cid}/scene-voiceover/${idx}`, { method: "DELETE" }),
   sceneVoiceoverUrl: (cid: number, idx: number) => `/api/clips/${cid}/scene-voiceover/${idx}`,
 
   scriptFactory: (tid: number, brief = ""): Promise<TicketWithBeats> =>
-    fetch(`/api/tickets/${tid}/script-factory`, { method: "POST", headers: J, body: JSON.stringify({ brief }) }).then((r) => r.json()),
+    req(`/api/tickets/${tid}/script-factory`, jsonInit("POST", { brief })),
   hookForge: (tid: number, brief = ""): Promise<{ hooks: string[] }> =>
-    fetch(`/api/tickets/${tid}/hook-forge`, { method: "POST", headers: J, body: JSON.stringify({ brief }) }).then((r) => r.json()),
+    req(`/api/tickets/${tid}/hook-forge`, jsonInit("POST", { brief })),
 
   // --- Outliers (swipe file) ---
-  listOutliers: (): Promise<Outlier[]> => fetch("/api/outliers").then((r) => r.json()),
+  listOutliers: (): Promise<Outlier[]> => req("/api/outliers"),
   createOutlier: (body: Partial<Outlier>): Promise<Outlier> =>
-    fetch("/api/outliers", { method: "POST", headers: J, body: JSON.stringify(body) }).then((r) => r.json()),
+    req("/api/outliers", jsonInit("POST", body)),
   deleteOutlier: (oid: number): Promise<{ deleted: number }> =>
-    fetch(`/api/outliers/${oid}`, { method: "DELETE" }).then((r) => r.json()),
+    req(`/api/outliers/${oid}`, { method: "DELETE" }),
   ticketFromOutlier: (oid: number): Promise<TicketWithBeats> =>
-    fetch(`/api/tickets/from-outlier/${oid}`, { method: "POST" }).then((r) => r.json()),
+    req(`/api/tickets/from-outlier/${oid}`, { method: "POST" }),
 
-  listExports: (): Promise<ExportItem[]> => fetch("/api/exports").then((r) => r.json()),
+  listExports: (): Promise<ExportItem[]> => req("/api/exports"),
   setExportFolder: (kind: "clip" | "reel", id: number, folder: string): Promise<{ ok: boolean; folder: string | null }> =>
-    fetch(`/api/exports/${kind}/${id}/folder`, { method: "PATCH", headers: J, body: JSON.stringify({ folder }) }).then((r) => r.json()),
+    req(`/api/exports/${kind}/${id}/folder`, jsonInit("PATCH", { folder })),
 
   // --- Insights (Signal Reader) ---
-  getInsights: (): Promise<InsightsData> => fetch("/api/insights").then((r) => r.json()),
-  logPerf: (body: { ticket_id: number; platform: string; views: number; follows: number; saves: number; sends: number }): Promise<{ ok: boolean }> =>
-    fetch("/api/perf", { method: "POST", headers: J, body: JSON.stringify(body) }).then((r) => r.json()),
+  getInsights: (): Promise<InsightsData> => req("/api/insights"),
+  logPerf: (body: { video_kind: "clip" | "reel"; video_id: number; platform: string; views: number; follows: number; saves: number; sends: number }): Promise<{ ok: boolean }> =>
+    req("/api/perf", jsonInit("POST", body)),
+  syncSheet: (): Promise<{ ok: boolean; pushed: number }> =>
+    req("/api/perf/sync-sheet", { method: "POST" }),
 
   // --- Scheduling / posting (P6) ---
-  getQueue: (): Promise<QueueData> => fetch("/api/queue").then((r) => r.json()),
+  getQueue: (): Promise<QueueData> => req("/api/queue"),
   scheduleTicket: (tid: number, body: { scheduled_at: string | null; platforms?: string[]; captions?: Record<string, string> }): Promise<Ticket> =>
-    fetch(`/api/tickets/${tid}/schedule`, { method: "POST", headers: J, body: JSON.stringify(body) }).then(async (r) => { if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.status); return r.json(); }),
+    req(`/api/tickets/${tid}/schedule`, jsonInit("POST", body)),
   postTicket: (tid: number, body: { platforms?: string[]; caption?: string; scheduled_at?: string } = {}): Promise<PostResult> =>
-    fetch(`/api/tickets/${tid}/post`, { method: "POST", headers: J, body: JSON.stringify(body) }).then(async (r) => { if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.status); return r.json(); }),
+    req(`/api/tickets/${tid}/post`, jsonInit("POST", body)),
 
   sourceUrl: (pid: number) => `/api/projects/${pid}/source`,
   previewUrl: (cid: number) => `/api/clips/${cid}/preview`,
