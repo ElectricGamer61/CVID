@@ -1756,7 +1756,7 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
           <button className="icon-btn" onClick={() => setZoom((z) => Math.min(maxZoom, +(z + 0.5).toFixed(1)))} title="Zoom in">＋</button>
         </div>
         <FilmstripTimeline pid={pid} winStart={win.s} winEnd={win.e} start={doc.start} end={doc.end} time={time} zoom={zoom} cuts={doc.cuts} markers={markers}
-          onStart={(t) => set({ start: t })} onEnd={(t) => set({ end: t })} onScrub={seek} />
+          onStart={(t) => set({ start: snapTrim(words, t, false) })} onEnd={(t) => set({ end: snapTrim(words, t, true) })} onScrub={seek} />
       </div>
     </div>
   );
@@ -1765,6 +1765,18 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
 /* ---------------- wayin-style clip editor helpers ---------------- */
 type EditDoc = { start: number; end: number; preset: string; style: CaptionStyle; words: Word[]; center: number; resolution: string; title: string; cuts: [number, number][] };
 type Seg = [number, number];
+
+/* Keep a trim handle off the MIDDLE of a spoken word so trimming never chops a
+   word's audio (with its caption left dangling). If the dropped time lands inside a
+   word, the end handle snaps to that word's END (keep the whole word) and the start
+   handle to its START (begin on the whole word). In the silence between words we
+   leave the time untouched so fine placement still works. */
+function snapTrim(words: Word[], t: number, isEnd: boolean): number {
+  for (const w of words) {
+    if (t > w.start && t < w.end) return isEnd ? w.end : w.start;
+  }
+  return t;
+}
 
 /* The kept pieces of [start,end] after removing `cuts` — mirrors backend
    render.kept_segments. These are the "clips" the CapCut-style timeline shows. */

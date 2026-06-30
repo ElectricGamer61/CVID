@@ -97,10 +97,16 @@ def _normalize(clips: list[dict], words: list[dict]) -> list[dict]:
         end = _snap_sentence(end, words, True) or _snap(end, words, True)
         start = max(vid_start, start)
         end = min(vid_end, end)
+        # Enforce length, but ALWAYS re-snap the new end to a sentence/word boundary so
+        # a length-clamped clip never lands mid-word — which would chop the last word's
+        # audio while its caption still renders ("clip too short, words cut off").
         if end - start < settings.MIN_CLIP_SEC:
-            end = min(vid_end, start + settings.MIN_CLIP_SEC)
+            target = min(vid_end, start + settings.MIN_CLIP_SEC)
+            end = _snap_sentence(target, words, True) or _snap(target, words, True)
         if end - start > settings.MAX_CLIP_SEC:
-            end = start + settings.MAX_CLIP_SEC
+            target = start + settings.MAX_CLIP_SEC
+            end = _snap_sentence(target, words, True) or _snap(target, words, True)
+        end = min(vid_end, end)
         if end - start < 3:
             continue
         cleaned.append({
