@@ -135,9 +135,17 @@ export interface TrendPoint {
 export interface TopVideo {
   video_kind: "clip" | "reel"; video_id: number; title: string; hook: string; score: number;
 }
+export interface PlatMetrics { views: number; follows: number; saves: number; sends: number }
+export interface VideoPerf {
+  video_kind: "clip" | "reel"; video_id: number; is_reel: boolean;
+  title: string; hook: string;
+  platforms: Partial<Record<"tt" | "ig" | "yt", PlatMetrics>>;
+  totals: PlatMetrics; score: number;
+}
 export interface InsightsData {
   kpis: { tickets: number; posted: number; views: number; follows: number; saves: number; sends: number };
   top: TopVideo[];
+  videos: VideoPerf[];
   angles: { angle: string; outlier_id: number | null; posts_count: number; avg_score: number }[];
   by_platform: PlatformStat[];
   trend: TrendPoint[];

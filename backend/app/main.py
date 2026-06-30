@@ -713,10 +713,21 @@ def log_perf(body: LogPerf):
         else:  # clip
             if not s.get(Clip, vid):
                 raise HTTPException(404, "clip not found")
-        s.add(Perf(video_kind=kind, video_id=vid,
-                   ticket_id=(vid if kind == "reel" else None),
-                   platform=body.platform, views=body.views, follows=body.follows,
-                   saves=body.saves, sends=body.sends))
+        # Upsert: one row per (video, platform) — re-logging UPDATES the latest numbers
+        # for that platform (so the same reel tracked on TikTok/IG/YouTube stays 3 rows,
+        # each editable), instead of stacking duplicate rows that double-count.
+        from sqlmodel import select as _select
+        existing = s.exec(_select(Perf).where(
+            Perf.video_kind == kind, Perf.video_id == vid, Perf.platform == body.platform)).first()
+        if existing:
+            existing.views, existing.follows = body.views, body.follows
+            existing.saves, existing.sends = body.saves, body.sends
+            existing.captured_at = datetime.utcnow(); s.add(existing)
+        else:
+            s.add(Perf(video_kind=kind, video_id=vid,
+                       ticket_id=(vid if kind == "reel" else None),
+                       platform=body.platform, views=body.views, follows=body.follows,
+                       saves=body.saves, sends=body.sends))
         s.commit()
         if angle:
             _recompute_angle(s, angle); s.commit()
@@ -768,6 +779,42 @@ def insights():
         top_keys = sorted(by_video.items(), key=lambda kv: kv[1], reverse=True)[:8]
         top = [{**_video_label(s, k[0], k[1]), "score": sc} for k, sc in top_keys]
 
+        # Per-VIDEO, per-PLATFORM tracking: every exported reel/clip with its TikTok /
+        # Instagram / YouTube numbers side by side, so you can pick a reel and see + edit
+        # all three channels at once.
+        pvp: dict[tuple, dict] = {}
+        for p in perfs:
+            v = p.video_id if p.video_id is not None else p.ticket_id
+            if v is None:
+                continue
+            cur = pvp.get((p.video_kind or "reel", v, p.platform or "?"),
+                          {"views": 0, "follows": 0, "saves": 0, "sends": 0})
+            cur = {"views": cur["views"] + p.views, "follows": cur["follows"] + p.follows,
+                   "saves": cur["saves"] + p.saves, "sends": cur["sends"] + p.sends}
+            pvp[(p.video_kind or "reel", v, p.platform or "?")] = cur
+        # Track every reel (any Clip with scene markers) + every rendered clip + assembled
+        # ticket-reels — so all your reels show up here, not just the ones already exported.
+        exported: list[tuple] = []   # (kind, id, is_reel)
+        for c in s.exec(select(Clip)).all():
+            if c.status == "rendered" or c.markers_json:
+                exported.append(("clip", c.id, bool(c.markers_json)))
+        for t in s.exec(select(Ticket).where(Ticket.clip_url.is_not(None))).all():
+            exported.append(("reel", t.id, True))
+        videos = []
+        for kind, vid, is_reel in exported:
+            lbl = _video_label(s, kind, vid)
+            plats, tot = {}, {"views": 0, "follows": 0, "saves": 0, "sends": 0}
+            for pf in ("tt", "ig", "yt"):
+                d = pvp.get((kind, vid, pf))
+                if d:
+                    plats[pf] = d
+                    for kk in tot:
+                        tot[kk] += d[kk]
+            videos.append({"video_kind": kind, "video_id": vid, "is_reel": is_reel,
+                           "title": lbl["title"], "hook": lbl["hook"], "platforms": plats,
+                           "totals": tot, "score": tot["saves"] + tot["follows"]})
+        videos.sort(key=lambda v: (v["score"], v["is_reel"]), reverse=True)
+
     # Per-platform breakdown (which channel is actually working).
     _plat: dict[str, dict] = defaultdict(
         lambda: {"views": 0, "follows": 0, "saves": 0, "sends": 0, "posts": 0})
@@ -801,6 +848,7 @@ def insights():
             "sends": sum(p.sends for p in perfs),
         },
         "top": top,
+        "videos": videos,
         "angles": [a.model_dump() for a in angles],
         "by_platform": by_platform,
         "trend": trend,

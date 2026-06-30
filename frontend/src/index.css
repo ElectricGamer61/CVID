@@ -583,6 +583,18 @@ button.primary.danger-solid:hover { background: #db3a48; border-color: #db3a48; 
 .ins-table tr:last-child td { border-bottom: none; }
 .plat-table th, .plat-table td { font-variant-numeric: tabular-nums; }
 
+/* Per-video tracker table */
+.vid-table td, .vid-table th { font-variant-numeric: tabular-nums; }
+.vid-row { cursor: pointer; transition: background var(--ease); }
+.vid-row:hover { background: var(--surface-2); }
+.vid-row.sel { background: var(--surface-2); box-shadow: inset 3px 0 0 var(--primary); }
+.vid-search { padding: 6px 10px; border: 1px solid var(--border-2); border-radius: 8px; background: var(--surface-2); font: inherit; font-size: 13px; width: 160px; }
+.plat-editor { margin-top: 12px; padding: 12px 14px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-sm); }
+.plat-edit-row { display: flex; align-items: flex-end; gap: 10px; flex-wrap: wrap; padding: 6px 0; }
+.plat-edit-name { width: 120px; font-weight: 700; font-size: 13px; flex: none; }
+.plat-in { display: flex; flex-direction: column; font-size: 11px; color: var(--muted); gap: 3px; text-transform: capitalize; }
+.plat-in input { width: 84px; padding: 6px 8px; border: 1px solid var(--border-2); border-radius: 8px; background: var(--surface); font: inherit; font-size: 13px; }
+
 /* metrics — trend chart */
 .trend { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r); padding: 14px 16px; box-shadow: var(--shadow-sm); margin-bottom: 22px; }
 .trend-bars { display: flex; align-items: flex-end; gap: 8px; height: 120px; padding-top: 6px; }

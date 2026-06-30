@@ -1,5 +1,5 @@
 import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
-import { api, Beat, Clip, ExportItem, Folder, InsightsData, Outlier, Presets, Project, QueueData, QueueTicket, Ticket } from "./api";
+import { api, Beat, Clip, ExportItem, Folder, InsightsData, Outlier, Presets, Project, QueueData, QueueTicket, Ticket, VideoPerf } from "./api";
 import { CaptionOverlay } from "./CaptionOverlay";
 import { CaptionStyle, FALLBACK_PRESETS, groupLines, Word, wordsInRange } from "./captionStyles";
 import { Sidebar } from "./Sidebar";
@@ -830,8 +830,7 @@ function SyncSheetButton() {
 
 function Insights() {
   const [data, setData] = useState<InsightsData | null>(null);
-  const [videos, setVideos] = useState<ExportItem[]>([]);   // the real exported videos you can log on
-  const refresh = () => { api.getInsights().then(setData).catch(() => {}); api.listExports().then(setVideos).catch(() => {}); };
+  const refresh = () => api.getInsights().then(setData).catch(() => {});
   useEffect(() => { refresh(); }, []);
 
   const k = data?.kpis;
@@ -855,7 +854,7 @@ function Insights() {
 
       {data && data.trend.length > 0 && <TrendChart trend={data.trend} />}
 
-      <PerfLogger videos={videos} onLogged={refresh} />
+      <VideoTracker videos={data?.videos ?? []} onLogged={refresh} />
 
       {data && data.by_platform.length > 0 && (
         <div style={{ marginTop: 8 }}>
@@ -869,30 +868,14 @@ function Insights() {
         </div>
       )}
 
-      <div className="ins-cols">
-        <div>
+      {data && data.angles.length > 0 && (
+        <div style={{ marginTop: 8 }}>
           <h3 className="ins-h">Best ideas <span className="muted">(by saves + follows)</span></h3>
-          {!data || data.angles.length === 0 ? <div className="muted">Nothing here yet — add how a video did below.</div> : (
-            <table className="ins-table"><thead><tr><th>Idea</th><th>Posts</th><th>Avg score</th></tr></thead>
-              <tbody>{data.angles.map((a) => <tr key={a.angle}><td>{a.angle}</td><td>{a.posts_count}</td><td><b>{a.avg_score}</b></td></tr>)}</tbody>
-            </table>
-          )}
+          <table className="ins-table"><thead><tr><th>Idea</th><th>Posts</th><th>Avg score</th></tr></thead>
+            <tbody>{data.angles.map((a) => <tr key={a.angle}><td>{a.angle}</td><td>{a.posts_count}</td><td><b>{a.avg_score}</b></td></tr>)}</tbody>
+          </table>
         </div>
-        <div>
-          <h3 className="ins-h">Best videos <span className="muted">(saves + follows)</span></h3>
-          {!data || data.top.length === 0 ? <div className="muted">Nothing logged yet — add how a video did above.</div> : (
-            <table className="ins-table"><thead><tr><th>#</th><th>Video</th><th>Saves+Follows</th></tr></thead>
-              <tbody>{data.top.map((t, i) => (
-                <tr key={`${t.video_kind}-${t.video_id}`}>
-                  <td>{i + 1}</td>
-                  <td><span className={"exp-kind-tag " + t.video_kind}>{t.video_kind === "reel" ? "reel" : "clip"}</span> {t.hook || t.title}</td>
-                  <td><b>{t.score}</b></td>
-                </tr>
-              ))}</tbody>
-            </table>
-          )}
-        </div>
-      </div>
+      )}
     </div>
   );
 }
@@ -914,46 +897,92 @@ function TrendChart({ trend }: { trend: InsightsData["trend"] }) {
   );
 }
 
-function PerfLogger({ videos, onLogged }: { videos: ExportItem[]; onLogged: () => void }) {
-  const [sel, setSel] = useState("");                  // "kind:id" of the chosen video
-  const [platform, setPlatform] = useState("tt");
-  const [f, setF] = useState({ views: 0, follows: 0, saves: 0, sends: 0 });
-  const [busy, setBusy] = useState(false);
-  const toast = useToast();
-  const num = (k: keyof typeof f) => (e: ChangeEvent<HTMLInputElement>) => setF({ ...f, [k]: parseInt(e.target.value || "0", 10) || 0 });
-  const chosen = videos.find((v) => `${v.kind}:${v.id}` === sel);
-  const log = async () => {
-    if (!chosen) { toast("Pick a video first", "err"); return; }
-    setBusy(true);
-    try {
-      await api.logPerf({ video_kind: chosen.kind, video_id: chosen.id, platform, ...f });
-      toast("Saved how it did 📈", "ok"); setF({ views: 0, follows: 0, saves: 0, sends: 0 }); setSel(""); onLogged();
-    } catch (e: any) { toast(`Failed: ${e?.message || e}`, "err"); } finally { setBusy(false); }
+/* Per-video, per-platform tracker: every reel/clip in one table with its TikTok /
+   Instagram / YouTube numbers; pick one to enter or update all three at once. */
+function VideoTracker({ videos, onLogged }: { videos: VideoPerf[]; onLogged: () => void }) {
+  const [sel, setSel] = useState<string>("");
+  const [q, setQ] = useState("");
+  const chosen = videos.find((v) => `${v.video_kind}:${v.video_id}` === sel);
+  const shown = q.trim()
+    ? videos.filter((v) => (v.hook || v.title).toLowerCase().includes(q.trim().toLowerCase()))
+    : videos;
+  const cell = (v: VideoPerf, pf: "tt" | "ig" | "yt") => {
+    const d = v.platforms[pf];
+    return d
+      ? <span title={`${d.views} views · ${d.follows} follows · ${d.saves} saves · ${d.sends} shares`}>{d.views}<span className="muted"> views</span> · {d.saves + d.follows}<span className="muted"> s+f</span></span>
+      : <span className="muted">—</span>;
   };
   return (
     <div className="perf-log">
-      <h3 className="ins-h">Add how a video did</h3>
+      <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+        <h3 className="ins-h" style={{ margin: 0 }}>Your videos <span className="muted">(track each across TikTok · Instagram · YouTube)</span></h3>
+        {videos.length > 6 && <input className="vid-search" placeholder="Search…" value={q} onChange={(e) => setQ(e.target.value)} />}
+      </div>
       {videos.length === 0 ? (
-        <div className="muted">No finished videos yet — make and export one, then log how it performed here.</div>
+        <div className="muted">No reels or clips yet — make one, then track how it does on each platform here.</div>
       ) : (
-        <div className="perf-row">
-          <select value={sel} onChange={(e) => setSel(e.target.value)} style={{ minWidth: 240, maxWidth: 360 }}>
-            <option value="">Pick a video…</option>
-            {videos.map((v) => (
-              <option key={`${v.kind}-${v.id}`} value={`${v.kind}:${v.id}`}>
-                {(v.kind === "reel" ? "🎬 " : "✂ ") + (v.hook || v.title)}
-              </option>
-            ))}
-          </select>
-          <select value={platform} onChange={(e) => setPlatform(e.target.value)}><option value="tt">TikTok</option><option value="ig">Instagram</option><option value="yt">YouTube</option></select>
-          <label>Views<input type="number" value={f.views} onChange={num("views")} /></label>
-          <label>Follows<input type="number" value={f.follows} onChange={num("follows")} /></label>
-          <label>Saves<input type="number" value={f.saves} onChange={num("saves")} /></label>
-          <label>Shares<input type="number" value={f.sends} onChange={num("sends")} /></label>
-          <button className="primary" onClick={log} disabled={busy}>{busy ? "…" : "Save"}</button>
-        </div>
+        <table className="ins-table vid-table">
+          <thead><tr><th>Video</th><th>🎵 TikTok</th><th>📸 Instagram</th><th>▶ YouTube</th><th>Saves+Follows</th><th></th></tr></thead>
+          <tbody>{shown.map((v) => {
+            const key = `${v.video_kind}:${v.video_id}`;
+            const open = sel === key;
+            return (
+              <tr key={key} className={"vid-row" + (open ? " sel" : "")} onClick={() => setSel(open ? "" : key)}>
+                <td><span className={"exp-kind-tag " + (v.is_reel ? "reel" : "clip")}>{v.is_reel ? "reel" : "clip"}</span> {v.hook || v.title}</td>
+                <td>{cell(v, "tt")}</td><td>{cell(v, "ig")}</td><td>{cell(v, "yt")}</td>
+                <td><b>{v.score}</b></td>
+                <td><button className="sm" onClick={(e) => { e.stopPropagation(); setSel(open ? "" : key); }}>{open ? "Close" : "Track"}</button></td>
+              </tr>
+            );
+          })}</tbody>
+        </table>
       )}
-      {chosen && <div className="muted" style={{ marginTop: 8, fontSize: 12.5 }}>Logging for: <b>{chosen.kind === "reel" ? "Reel" : "Clip"}</b> — “{chosen.hook || chosen.title}”</div>}
+      {chosen && <PlatformEditor key={sel} video={chosen} onLogged={onLogged} />}
+    </div>
+  );
+}
+
+function PlatformEditor({ video, onLogged }: { video: VideoPerf; onLogged: () => void }) {
+  const zero = { views: 0, follows: 0, saves: 0, sends: 0 };
+  const [m, setM] = useState({ tt: video.platforms.tt ?? zero, ig: video.platforms.ig ?? zero, yt: video.platforms.yt ?? zero });
+  const [busy, setBusy] = useState(false);
+  const toast = useToast();
+  const set = (pf: "tt" | "ig" | "yt", k: keyof typeof zero, val: number) =>
+    setM((prev) => ({ ...prev, [pf]: { ...prev[pf], [k]: val } }));
+  const save = async () => {
+    setBusy(true);
+    try {
+      const order: ("tt" | "ig" | "yt")[] = ["tt", "ig", "yt"];
+      let any = false;
+      for (const pf of order) {
+        const d = m[pf];
+        if (d.views || d.follows || d.saves || d.sends) {
+          await api.logPerf({ video_kind: video.video_kind, video_id: video.video_id, platform: pf, ...d });
+          any = true;
+        }
+      }
+      if (!any) { toast("Enter at least one number", "err"); setBusy(false); return; }
+      toast("Saved how it did 📈", "ok"); onLogged();
+    } catch (e: any) { toast(`Failed: ${e?.message || e}`, "err"); } finally { setBusy(false); }
+  };
+  const platRow = (pf: "tt" | "ig" | "yt", label: string) => (
+    <div className="plat-edit-row">
+      <div className="plat-edit-name">{label}</div>
+      {(["views", "follows", "saves", "sends"] as const).map((k) => (
+        <label key={k} className="plat-in">{k === "sends" ? "shares" : k}
+          <input type="number" value={m[pf][k]} onChange={(e) => set(pf, k, parseInt(e.target.value || "0", 10) || 0)} /></label>
+      ))}
+    </div>
+  );
+  return (
+    <div className="plat-editor">
+      <div className="muted" style={{ fontSize: 12.5, marginBottom: 8 }}>
+        Enter each platform's numbers for <b>“{video.hook || video.title}”</b> — leave a platform at 0 if you didn't post there. Re-saving updates it.
+      </div>
+      {platRow("tt", "🎵 TikTok")}
+      {platRow("ig", "📸 Instagram")}
+      {platRow("yt", "▶ YouTube")}
+      <button className="primary" onClick={save} disabled={busy} style={{ marginTop: 10 }}>{busy ? "Saving…" : "Save all platforms"}</button>
     </div>
   );
 }
