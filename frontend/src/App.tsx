@@ -1475,28 +1475,29 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
   // section's words aren't shown/read as if the section were still there.
   const keptWords = useMemo(() => doc.words.filter((w) => segments.some(([a, b]) => w.end > a && w.start < b)), [doc.words, segments]);
 
-  // The editable clip "blocks" shown on the timeline = kept segments + any transient
-  // splits. Stitched reels (markers) are read-only here so the two models don't fight.
-  const blocks = useMemo(() => applySplits(segments, splitMarks), [segments, splitMarks]);
   // The first frame that survives trimming/cuts — where the clip (and any recording)
   // should actually begin, even if a leading part was cut away.
   const clipStart = useMemo(() => (segments.length ? segments[0][0] : doc.start), [segments, doc.start]);
-  const clipsLocked = hasScenes;
+  // For a stitched reel, each SCENE is its own editable clip on the timeline — split the
+  // kept video at every scene boundary so you see (and trim/cut) 3 clips, not one. Scene
+  // boundaries come from the persistent markers, so the per-scene blocks always reappear.
+  const sceneBounds = useMemo(() => hasScenes
+    ? markers.slice(1).map((m) => m.start).filter((s) => s > clipStart + 0.05 && s < doc.end - 0.05)
+    : [], [hasScenes, markers, clipStart, doc.end]);
+  const blocks = useMemo(() => applySplits(segments, [...splitMarks, ...sceneBounds]), [segments, splitMarks, sceneBounds]);
+  const allowAdd = !hasScenes;   // can't drop an external clip into a stitched reel
   // Every block mutation funnels through set(docFromClips()) so doc.start/end/cuts
   // stays canonical (preview, thumbnails, autosave, undo/redo, render all unchanged).
   const commitClips = (next: Seg[]) => set(docFromClips(next));
   const onTrimClip = (i: number, edge: "start" | "end", t: number) => {
-    if (clipsLocked) return;
     commitClips(trimClip(blocks, i, edge, snapTrim(words, t, edge === "end"), win.s, win.e));
   };
   const onDeleteClip = (i: number) => {
-    if (clipsLocked) return;
     commitClips(deleteClip(blocks, i)); setSelClip(null); setSplitMarks([]);
   };
-  const onAddClip = (a: number, b: number) => { if (!clipsLocked) commitClips(addClip(blocks, a, b, win.s, win.e)); };
+  const onAddClip = (a: number, b: number) => { if (allowAdd) commitClips(addClip(blocks, a, b, win.s, win.e)); };
   const addClipAtPlayhead = () => onAddClip(time, Math.min(time + 3, win.e));
   const splitAtPlayhead = () => {
-    if (clipsLocked) return;
     const i = blocks.findIndex(([a, b]) => time > a && time < b);
     if (i >= 0 && splitClip(blocks, i, time) !== blocks) setSplitMarks((m) => [...m, time]);
   };
@@ -1763,7 +1764,7 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
         <div className="ed2-panel">
           {tool === "clips" && <ClipsPanel blocks={blocks} selected={selClip} onSelect={setSelClip} onTrim={onTrimClip}
             onDelete={onDeleteClip} onAdd={addClipAtPlayhead} onSplit={splitAtPlayhead} time={time} onSeek={seek}
-            onMatchCaptions={matchCaptionsToClips} readOnly={clipsLocked} />}
+            onMatchCaptions={matchCaptionsToClips} allowAdd={allowAdd} isReel={hasScenes} />}
           {tool === "trim" && <TrimPanel doc={doc} set={set} max={win.e} />}
           {tool === "cut" && <CutPanel doc={doc} set={set} time={time} onSeek={seek} />}
           {tool === "voice" && (hasScenes
@@ -1815,7 +1816,7 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
           <button className="icon-btn" onClick={() => setZoom((z) => Math.min(maxZoom, +(z + 0.5).toFixed(1)))} title="Zoom in">＋</button>
         </div>
         <FilmstripTimeline pid={pid} winStart={win.s} winEnd={win.e} clips={blocks} selected={selClip} time={time} zoom={zoom} cuts={doc.cuts} markers={markers}
-          readOnly={clipsLocked} onSelectClip={setSelClip} onTrimClip={onTrimClip} onDeleteClip={onDeleteClip} onAddClip={onAddClip} onScrub={seek} />
+          allowAdd={allowAdd} onSelectClip={setSelClip} onTrimClip={onTrimClip} onDeleteClip={onDeleteClip} onAddClip={onAddClip} onScrub={seek} />
       </div>
     </div>
   );
@@ -1989,25 +1990,25 @@ function useHistory<T>(initial: T) {
 
 /* The "Clips" tool: lists every block as an editable clip — select, fine-tune in/out,
    delete, plus header actions to add a clip or split the one under the playhead. */
-function ClipsPanel({ blocks, selected, onSelect, onTrim, onDelete, onAdd, onSplit, time, onSeek, onMatchCaptions, readOnly }: {
+function ClipsPanel({ blocks, selected, onSelect, onTrim, onDelete, onAdd, onSplit, time, onSeek, onMatchCaptions, allowAdd, isReel }: {
   blocks: Seg[]; selected: number | null; onSelect: (i: number) => void;
   onTrim: (i: number, edge: "start" | "end", t: number) => void; onDelete: (i: number) => void;
   onAdd: () => void; onSplit: () => void; time: number; onSeek: (t: number) => void;
-  onMatchCaptions: () => void; readOnly?: boolean;
+  onMatchCaptions: () => void; allowAdd?: boolean; isReel?: boolean;
 }) {
   const total = blocks.reduce((s, [a, b]) => s + (b - a), 0);
   return (
     <div className="panel-body">
       <h3 className="panel-title">Clips</h3>
-      {readOnly
-        ? <div className="muted" style={{ fontSize: 12.5 }}>This is a stitched reel — edit its scenes in the <b>Voice</b> tool. Clip editing is disabled here so the two don't conflict.</div>
-        : <div className="muted" style={{ fontSize: 12.5 }}>Each block is a clip in your video. Trim its edges on the timeline, split at the playhead, add another part of the source, or delete it.</div>}
-      {!readOnly && (
-        <div className="row" style={{ gap: 8, marginTop: 10 }}>
-          <button className="primary" onClick={onAdd}>+ Add clip</button>
-          <button onClick={onSplit} title="Split the clip under the playhead into two">Split at playhead</button>
-        </div>
-      )}
+      <div className="muted" style={{ fontSize: 12.5 }}>
+        {isReel
+          ? <>Each block is one <b>scene</b> of your reel. Trim its edges on the timeline, split, or delete it — each scene is edited on its own.</>
+          : <>Each block is a clip in your video. Trim its edges on the timeline, split at the playhead, add another part of the source, or delete it.</>}
+      </div>
+      <div className="row" style={{ gap: 8, marginTop: 10 }}>
+        {allowAdd && <button className="primary" onClick={onAdd}>+ Add clip</button>}
+        <button onClick={onSplit} title="Split the clip under the playhead into two">Split at playhead</button>
+      </div>
       <div className="clip-list">
         {blocks.length === 0 && <div className="muted">No clips.</div>}
         {blocks.map(([a, b], i) => (
@@ -2017,22 +2018,18 @@ function ClipsPanel({ blocks, selected, onSelect, onTrim, onDelete, onAdd, onSpl
               <div className="clip-range">{fmt(a)} – {fmt(b)}</div>
               <div className="muted clip-len">{fmt(b - a)}</div>
             </div>
-            {!readOnly && (
-              <div className="clip-ops" onClick={(e) => e.stopPropagation()}>
-                <input className="clip-in" type="number" step={0.1} value={a.toFixed(2)} title="Clip start (seconds)"
-                  onChange={(e) => onTrim(i, "start", parseFloat(e.target.value) || 0)} />
-                <input className="clip-in" type="number" step={0.1} value={b.toFixed(2)} title="Clip end (seconds)"
-                  onChange={(e) => onTrim(i, "end", parseFloat(e.target.value) || 0)} />
-                <button className="sm danger" title="Delete this clip" disabled={blocks.length <= 1} onClick={() => onDelete(i)}>🗑</button>
-              </div>
-            )}
+            <div className="clip-ops" onClick={(e) => e.stopPropagation()}>
+              <input className="clip-in" type="number" step={0.1} value={a.toFixed(2)} title="Clip start (seconds)"
+                onChange={(e) => onTrim(i, "start", parseFloat(e.target.value) || 0)} />
+              <input className="clip-in" type="number" step={0.1} value={b.toFixed(2)} title="Clip end (seconds)"
+                onChange={(e) => onTrim(i, "end", parseFloat(e.target.value) || 0)} />
+              <button className="sm danger" title="Delete this clip" disabled={blocks.length <= 1} onClick={() => onDelete(i)}>🗑</button>
+            </div>
           </div>
         ))}
       </div>
-      {!readOnly && (
-        <button className="sm" style={{ marginTop: 10 }} onClick={onMatchCaptions}
-          title="Pull the transcript text for the current clips into the captions">↻ Match captions to these clips</button>
-      )}
+      <button className="sm" style={{ marginTop: 10 }} onClick={onMatchCaptions}
+        title="Pull the transcript text for the current clips into the captions">↻ Match captions to these clips</button>
       <div className="muted" style={{ fontSize: 12.5, marginTop: 10 }}>{blocks.length} clip{blocks.length === 1 ? "" : "s"} · <b>{fmt(total)}</b> total</div>
     </div>
   );
@@ -2300,9 +2297,9 @@ function SubtitleWordEditor({ words, time, onSeek, onChange }: { words: Word[]; 
    block body to scrub, click to select (then ✕ deletes it). Drag on the dim/unused
    area to rubber-band a NEW clip from that part of the source. Interior gaps (cuts)
    show as a subtle grey band; the playhead rides on top. */
-function FilmstripTimeline({ pid, winStart, winEnd, clips, selected, time, zoom, cuts, markers, readOnly, onSelectClip, onTrimClip, onDeleteClip, onAddClip, onScrub }: {
+function FilmstripTimeline({ pid, winStart, winEnd, clips, selected, time, zoom, cuts, markers, allowAdd, onSelectClip, onTrimClip, onDeleteClip, onAddClip, onScrub }: {
   pid: number; winStart: number; winEnd: number; clips: Seg[]; selected: number | null; time: number; zoom: number; cuts: [number, number][];
-  markers?: { start: number; end: number; label: string }[]; readOnly?: boolean;
+  markers?: { start: number; end: number; label: string }[]; allowAdd?: boolean;
   onSelectClip: (i: number) => void; onTrimClip: (i: number, edge: "start" | "end", t: number) => void;
   onDeleteClip: (i: number) => void; onAddClip: (a: number, b: number) => void; onScrub: (t: number) => void;
 }) {
@@ -2333,12 +2330,12 @@ function FilmstripTimeline({ pid, winStart, winEnd, clips, selected, time, zoom,
     const move = (ev: PointerEvent) => {
       const t = toTime(ev.clientX);
       if (Math.abs(ev.clientX - x0) > 4) moved = true;
-      if (moved && !readOnly) setBand([Math.min(t0, t), Math.max(t0, t)]);
+      if (moved && allowAdd) setBand([Math.min(t0, t), Math.max(t0, t)]);
     };
     const up = (ev: PointerEvent) => {
       window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up);
       setBand(null);
-      if (moved && !readOnly) { const t = toTime(ev.clientX); onAddClip(Math.min(t0, t), Math.max(t0, t)); }
+      if (moved && allowAdd) { const t = toTime(ev.clientX); onAddClip(Math.min(t0, t), Math.max(t0, t)); }
       else onScrub(t0);
     };
     window.addEventListener("pointermove", move); window.addEventListener("pointerup", up);
@@ -2359,18 +2356,16 @@ function FilmstripTimeline({ pid, winStart, winEnd, clips, selected, time, zoom,
             <div key={i} className="fs-cut" style={{ left: `${pct(a)}%`, width: `${Math.max(0, pct(b) - pct(a))}%` }} title="Removed — gap between clips" />
           ))}
           {clips.map(([a, b], i) => (
-            <div key={i} className={"fs-block" + (selected === i ? " sel" : "") + (readOnly ? " ro" : "")}
+            <div key={i} className={"fs-block" + (selected === i ? " sel" : "")}
               style={{ left: `${pct(a)}%`, width: `${Math.max(0, pct(b) - pct(a))}%` }}
               onPointerDown={dragBlock(i)} title={`Clip ${i + 1}: ${fmt(a)}–${fmt(b)}`}>
               <span className="fs-block-no">{i + 1}</span>
-              {!readOnly && <>
-                <div className="fs-handle l" onPointerDown={dragHandle(i, "start")} title="Trim this clip's start" />
-                <div className="fs-handle r" onPointerDown={dragHandle(i, "end")} title="Trim this clip's end" />
-                {selected === i && clips.length > 1 && (
-                  <button className="fs-del" title="Delete this clip" onPointerDown={(e) => e.stopPropagation()}
-                    onClick={(e) => { e.stopPropagation(); onDeleteClip(i); }}>×</button>
-                )}
-              </>}
+              <div className="fs-handle l" onPointerDown={dragHandle(i, "start")} title="Trim this clip's start" />
+              <div className="fs-handle r" onPointerDown={dragHandle(i, "end")} title="Trim this clip's end" />
+              {selected === i && clips.length > 1 && (
+                <button className="fs-del" title="Delete this clip" onPointerDown={(e) => e.stopPropagation()}
+                  onClick={(e) => { e.stopPropagation(); onDeleteClip(i); }}>×</button>
+              )}
             </div>
           ))}
           {band && <div className="fs-band" style={{ left: `${pct(band[0])}%`, width: `${Math.max(0, pct(band[1]) - pct(band[0]))}%` }} />}
@@ -2383,7 +2378,7 @@ function FilmstripTimeline({ pid, winStart, winEnd, clips, selected, time, zoom,
       <div className="timeline-labels">
         <span className="tag">{clips.length} clip{clips.length === 1 ? "" : "s"}</span>
         <span className="tag">{fmt(total)} total</span>
-        {!readOnly && <span className="tag muted">drag a clip edge to trim · drag empty space to add</span>}
+        <span className="tag muted">drag a clip edge to trim{allowAdd ? " · drag empty space to add" : ""}</span>
       </div>
     </div>
   );

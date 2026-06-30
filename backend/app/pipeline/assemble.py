@@ -202,6 +202,10 @@ def render_scene_reel(source: Path, out_path: Path, markers: list[dict],
     seg_files: list[Path] = []
     for i, m in enumerate(markers):
         s, e = float(m["start"]), float(m["end"])
+        # A scene whose whole range was cut away (e.g. the user deleted that clip) is
+        # dropped entirely — its voice goes with it.
+        if any(float(c[0]) <= s + 0.05 and float(c[1]) >= e - 0.05 for c in cuts):
+            continue
         # The kept pieces of this scene after removing cuts — the scene "as edited".
         scene_segs = kept_segments(s, e, cuts)
         vo = scene_vos[i] if i < len(scene_vos) else None
