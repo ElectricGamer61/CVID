@@ -15,7 +15,7 @@ import settings
 from .captions import _ts, write_ass
 from .ingest import probe_duration
 from .reframe import crop_filter, probe_size
-from .render import _escape_subtitles_path, _fonts_dir
+from .render import _escape_subtitles_path, _fonts_dir, kept_segments, remap_words_for_cuts
 
 W, H = settings.OUT_W, settings.OUT_H   # 1080 x 1920
 
@@ -187,12 +187,14 @@ def build_edit_video(ticket_id: int, project_dir: Path) -> dict:
 def render_scene_reel(source: Path, out_path: Path, markers: list[dict],
                       words: list[dict], scene_vos: list, preset_name: str,
                       style: dict | None = None,
-                      out_w: int = W, out_h: int = H) -> Path:
+                      out_w: int = W, out_h: int = H,
+                      cuts: list | None = None) -> Path:
     """Voice-first export of a stitched reel: re-time each scene to its own voiceover.
-    For each scene marker [s,e]: cut that range from `source`; if it has a VO, loop the
-    video to the VO duration with that scene's caption text even-split across the VO;
-    otherwise keep the natural range. Concat the scenes. Reuses `_even_split` + the
-    clip's caption preset/style."""
+    For each scene marker [s,e]: take the kept video of that range (with any `cuts`
+    REMOVED, not just greyed); if it has a VO, loop the video to the VO duration with
+    that scene's caption text even-split across the VO; otherwise keep the natural
+    (post-cut) length. Words inside a cut are dropped. Concat the scenes."""
+    cuts = cuts or []
     work = out_path.parent / f"_scenes_{out_path.stem}"
     shutil.rmtree(work, ignore_errors=True)
     work.mkdir(parents=True, exist_ok=True)
@@ -200,25 +202,39 @@ def render_scene_reel(source: Path, out_path: Path, markers: list[dict],
     seg_files: list[Path] = []
     for i, m in enumerate(markers):
         s, e = float(m["start"]), float(m["end"])
+        # The kept pieces of this scene after removing cuts — the scene "as edited".
+        scene_segs = kept_segments(s, e, cuts)
         vo = scene_vos[i] if i < len(scene_vos) else None
         has_vo = bool(vo and Path(vo).exists())
-        scene_words = [w for w in words if w["end"] > s and w["start"] < e]
+        # Only the words that survive the cuts (others are gone with the video).
+        scene_words = [w for w in words
+                       if any(w["end"] > a and w["start"] < b for a, b in scene_segs)]
 
+        # Build the scene's raw video from its kept pieces (cuts spliced out).
         raw = work / f"raw_{i:03d}.mp4"
-        proc = subprocess.run(
-            ["ffmpeg", "-y", "-ss", f"{s:.3f}", "-to", f"{e:.3f}", "-i", str(source),
-             "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-an", str(raw)],
-            capture_output=True, text=True)
+        if len(scene_segs) == 1:
+            a, b = scene_segs[0]
+            cut_cmd = ["ffmpeg", "-y", "-ss", f"{a:.3f}", "-to", f"{b:.3f}", "-i", str(source),
+                       "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-an", str(raw)]
+        else:
+            parts = [f"[0:v]trim={a:.3f}:{b:.3f},setpts=PTS-STARTPTS[v{j}];"
+                     for j, (a, b) in enumerate(scene_segs)]
+            concat_in = "".join(f"[v{j}]" for j in range(len(scene_segs)))
+            fc = "".join(parts) + f"{concat_in}concat=n={len(scene_segs)}:v=1:a=0[vout]"
+            cut_cmd = ["ffmpeg", "-y", "-i", str(source), "-filter_complex", fc, "-map", "[vout]",
+                       "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-an", str(raw)]
+        proc = subprocess.run(cut_cmd, capture_output=True, text=True)
         if proc.returncode != 0:
             raise RuntimeError(f"scene {i + 1} cut failed:\n{proc.stderr[-1200:]}")
 
+        kept_dur = sum(b - a for a, b in scene_segs)
         if has_vo:
-            dur = max(0.8, float(probe_duration(Path(vo)) or (e - s)))
+            dur = max(0.8, float(probe_duration(Path(vo)) or kept_dur))
             local_words = _even_split(" ".join(w["word"] for w in scene_words), dur)
         else:
-            dur = max(0.8, float(e - s))
-            local_words = [{"start": round(w["start"] - s, 2), "end": round(w["end"] - s, 2),
-                            "word": w["word"]} for w in scene_words]
+            dur = max(0.8, float(kept_dur))
+            # Re-time captions onto the post-cut (compressed) scene timeline.
+            local_words, _ = remap_words_for_cuts(scene_words, scene_segs)
 
         ass = work / f"seg_{i:03d}.ass"
         write_ass(local_words, 0.0, dur, preset_name, ass, overrides=style)

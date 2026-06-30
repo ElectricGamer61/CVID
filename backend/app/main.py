@@ -1196,8 +1196,23 @@ def _render_clip_job(cid: int):
         segments = render.kept_segments(start, end, cuts)
         if markers and any(scene_vos):
             # Per-scene voice-first reel: re-time each scene to its own recorded voice.
-            assemble.render_scene_reel(source, out, markers, words, scene_vos, preset,
-                                       style, out_w=out_w, out_h=out_h)
+            # Honor the trim: clamp every scene to [start,end], drop scenes trimmed away,
+            # keep scene_vos aligned — so a trimmed reel starts/ends where the user set it
+            # (a scene whose front was trimmed is recorded + rendered FROM the trim point).
+            cl_markers, cl_vos = [], []
+            for i, m in enumerate(markers):
+                ms, me = max(float(m["start"]), start), min(float(m["end"]), end)
+                if me - ms > 0.2:
+                    cl_markers.append({**m, "start": round(ms, 3), "end": round(me, 3)})
+                    cl_vos.append(scene_vos[i] if i < len(scene_vos) else None)
+            if cl_markers and any(cl_vos):
+                assemble.render_scene_reel(source, out, cl_markers, words, cl_vos, preset,
+                                           style, out_w=out_w, out_h=out_h, cuts=cuts)
+            else:
+                # Whole reel trimmed off its voiced scenes → plain trimmed-range render.
+                caps.write_ass(words, start, end, preset, ass, overrides=style)
+                render.render_clip(source, out, start, end, aspect, ass, center,
+                                   out_w=out_w, out_h=out_h, voiceover=vo_path)
         elif cuts and len(segments) != 1:
             # Middle parts removed → concat kept segments + retime captions.
             # ASS keeps the 1080×1920 PlayRes baseline; libass scales it to the frame.

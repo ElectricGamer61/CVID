@@ -1406,6 +1406,10 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
 
   const [tool, setTool] = useState<string>("subs");
   const [subsTab, setSubsTab] = useState<"style" | "edit">("style");
+  // Multi-clip timeline: which block is selected + transient split marks (a no-gap
+  // split that isn't stored in start/end/cuts — see applySplits).
+  const [selClip, setSelClip] = useState<number | null>(null);
+  const [splitMarks, setSplitMarks] = useState<number[]>([]);
   // Resync captions from the transcript when the clip range moves to a new section.
   // Saved words are respected on open; once the user hand-edits words this session,
   // we stop auto-resyncing so their edits aren't clobbered by a later trim.
@@ -1467,6 +1471,36 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
   // Captions retimed onto the edited (post-cut) timeline so the PREVIEW matches the
   // EXPORT exactly — captions always continue after a cut, never disappear.
   const editedWords = useMemo(() => remapWords(doc.words, segments), [doc.words, segments]);
+  // Words that survive cuts (still in kept video) — used by the teleprompter so a cut
+  // section's words aren't shown/read as if the section were still there.
+  const keptWords = useMemo(() => doc.words.filter((w) => segments.some(([a, b]) => w.end > a && w.start < b)), [doc.words, segments]);
+
+  // The editable clip "blocks" shown on the timeline = kept segments + any transient
+  // splits. Stitched reels (markers) are read-only here so the two models don't fight.
+  const blocks = useMemo(() => applySplits(segments, splitMarks), [segments, splitMarks]);
+  // The first frame that survives trimming/cuts — where the clip (and any recording)
+  // should actually begin, even if a leading part was cut away.
+  const clipStart = useMemo(() => (segments.length ? segments[0][0] : doc.start), [segments, doc.start]);
+  const clipsLocked = hasScenes;
+  // Every block mutation funnels through set(docFromClips()) so doc.start/end/cuts
+  // stays canonical (preview, thumbnails, autosave, undo/redo, render all unchanged).
+  const commitClips = (next: Seg[]) => set(docFromClips(next));
+  const onTrimClip = (i: number, edge: "start" | "end", t: number) => {
+    if (clipsLocked) return;
+    commitClips(trimClip(blocks, i, edge, snapTrim(words, t, edge === "end"), win.s, win.e));
+  };
+  const onDeleteClip = (i: number) => {
+    if (clipsLocked) return;
+    commitClips(deleteClip(blocks, i)); setSelClip(null); setSplitMarks([]);
+  };
+  const onAddClip = (a: number, b: number) => { if (!clipsLocked) commitClips(addClip(blocks, a, b, win.s, win.e)); };
+  const addClipAtPlayhead = () => onAddClip(time, Math.min(time + 3, win.e));
+  const splitAtPlayhead = () => {
+    if (clipsLocked) return;
+    const i = blocks.findIndex(([a, b]) => time > a && time < b);
+    if (i >= 0 && splitClip(blocks, i, time) !== blocks) setSplitMarks((m) => [...m, time]);
+  };
+  const matchCaptionsToClips = () => { if (words.length) { setManualWords(false); set({ words: blocks.flatMap(([a, b]) => wordsInRange(words, a, b)) }); } };
 
   // Autosave (debounced) whenever the doc changes.
   const firstRun = useRef(true);
@@ -1534,6 +1568,15 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
   }, [undo, redo]);
 
   const onLoaded = () => { if (videoRef.current) videoRef.current.currentTime = doc.start; };
+  // Keep the preview parked at the (possibly trimmed) clip start. When a trim moves
+  // the kept range and we're idle, re-seek so the visible frame — and the NEXT
+  // recording — begin at the trimmed start, not the old pre-trim position (otherwise
+  // the video sat on the untrimmed frame and the take jumped at record time).
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v || playing || recording) return;
+    if (v.currentTime < clipStart - 0.01 || v.currentTime > doc.end + 0.01) { v.currentTime = clipStart; setTime(clipStart); }
+  }, [clipStart, doc.end]);
   const togglePlay = () => {
     const v = videoRef.current; if (!v) return;
     // A reel with recorded scene voices: the main Play plays the WHOLE thing WITH the
@@ -1578,26 +1621,35 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
   };
   // Recording: roll the video over a range (a scene, or the whole clip) — muted, at
   // the chosen reading rate — so the teleprompter scrolls while you read.
-  const startRecordPlayback = (range?: { s: number; e: number }, onEnd?: () => void) => {
+  const startRecordPlayback = async (range?: { s: number; e: number }, onEnd?: () => void, startMic?: () => Promise<boolean>) => {
     const v = videoRef.current; if (!v) return;
     // stop any preview that's running
     previewChain.current = false; window.clearTimeout(previewTimer.current);
     const a = audioRef.current; if (a) { a.pause(); a.onended = null; } setPreviewMode("off");
-    const r = range ?? { s: doc.start, e: doc.end };
+    // Honor the trim. For a reel, a scene's range comes from the ORIGINAL markers, which
+    // ignore a trim — so clamp any range to the kept [clipStart, doc.end]. A scene that
+    // begins before the trimmed start now records FROM the trim, not the old scene start.
+    const r0 = range ?? { s: clipStart, e: doc.end };
+    const rs = Math.max(r0.s, clipStart), re = Math.min(r0.e, doc.end);
+    const r = re - rs > 0.1 ? { s: rs, e: re } : { s: clipStart, e: doc.end };
+    v.muted = true; v.playbackRate = readRate;
+    // 1) Park the video ON the trimmed clip start and WAIT for the seek to land FIRST,
+    //    so the visible frame is the trimmed start — not the old pre-trim frame the
+    //    video may have been sitting on while the mic spun up.
+    await new Promise<void>((res) => {
+      if (Math.abs(v.currentTime - r.s) < 0.05) return res();
+      let done = false;
+      const onSeeked = () => { if (done) return; done = true; v.removeEventListener("seeked", onSeeked); res(); };
+      v.addEventListener("seeked", onSeeked);
+      v.currentTime = r.s;
+      window.setTimeout(onSeeked, 600);   // fallback if 'seeked' never fires
+    });
+    // 2) Now spin up the mic — the video is already sitting on the right frame.
+    if (startMic) { const ok = await startMic(); if (!ok) { stopRecordPlayback(); return; } }
+    // 3) Roll: the take begins exactly at the trimmed start, in sync with the mic.
     loopRangeRef.current = { s: r.s, e: r.e, rec: true };   // rec → stop at end, don't loop
     recordEndRef.current = onEnd ?? null;
-    v.muted = true; v.playbackRate = readRate;
-    // Seek to the trim point and ONLY start rolling once the seek has actually
-    // landed — otherwise play() begins from the old position (often the untrimmed
-    // front) and the take captures the trimmed-away part before jumping to r.s.
-    const roll = () => { v.play().catch(() => {}); setPlaying(true); setRecording(true); };
-    if (Math.abs(v.currentTime - r.s) < 0.05) { roll(); return; }
-    let done = false;
-    const onSeeked = () => { if (done) return; done = true; v.removeEventListener("seeked", onSeeked); roll(); };
-    v.addEventListener("seeked", onSeeked);
-    v.currentTime = r.s;
-    // Fallback: if the browser never fires 'seeked' (cached/instant), roll anyway.
-    window.setTimeout(onSeeked, 500);
+    v.play().catch(() => {}); setPlaying(true); setRecording(true);
   };
   const stopRecordPlayback = () => {
     const v = videoRef.current; if (v) { v.pause(); v.playbackRate = 1; }
@@ -1614,25 +1666,29 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
     loopRangeRef.current = null; setPlaying(false); setPreviewMode("off");
   };
   const runScene = (i: number) => {
-    const sc = markers[i]; const v = videoRef.current; const a = audioRef.current;
-    if (!sc || !v) { stopPreview(); return; }
+    const m = markers[i]; const v = videoRef.current; const a = audioRef.current;
+    if (!m || !v) { stopPreview(); return; }
+    // Honor the trim: clamp the scene to the kept [clipStart, doc.end] so preview matches
+    // recording + export. A scene trimmed away is skipped.
+    const s = Math.max(m.start, clipStart), e = Math.min(m.end, doc.end);
+    const advance = () => { if (previewChain.current && i + 1 < markers.length) runScene(i + 1); else stopPreview(); };
+    if (e - s < 0.2) { advance(); return; }
     setSceneIdx(i);
-    loopRangeRef.current = { s: sc.start, e: sc.end };
-    v.currentTime = sc.start; v.muted = true; v.playbackRate = 1; v.play().catch(() => {});
+    loopRangeRef.current = { s, e };
+    v.currentTime = s; v.muted = true; v.playbackRate = 1; v.play().catch(() => {});
     setPlaying(true);
     window.clearTimeout(previewTimer.current);
-    const advance = () => { if (previewChain.current && i + 1 < markers.length) runScene(i + 1); else stopPreview(); };
     if (sceneVos[i] && a) {
       a.onended = advance; a.src = api.sceneVoiceoverUrl(clip.id, i) + "?v=" + voBust;
       a.currentTime = 0; a.play().catch(() => {});
     } else {
       if (a) a.onended = null;
-      previewTimer.current = window.setTimeout(advance, Math.max(400, (sc.end - sc.start) * 1000));
+      previewTimer.current = window.setTimeout(advance, Math.max(400, (e - s) * 1000));
     }
   };
   const playScene = (i: number) => { previewChain.current = false; setPreviewMode("scene"); runScene(i); };
   const playReel = (startIdx = 0) => { previewChain.current = true; setPreviewMode("reel"); runScene(startIdx); };
-  const selectScene = (i: number) => { if (previewMode !== "off") stopPreview(); const j = Math.max(0, Math.min(i, markers.length - 1)); setSceneIdx(j); if (markers[j]) seek(markers[j].start); };
+  const selectScene = (i: number) => { if (previewMode !== "off") stopPreview(); const j = Math.max(0, Math.min(i, markers.length - 1)); setSceneIdx(j); if (markers[j]) seek(Math.max(markers[j].start, clipStart)); };
   const choosePreset = (name: string) => set({ preset: name, style: presetMap[name] ?? FALLBACK_PRESETS.capcut });
   const doAutoCenter = async () => { setAutoBusy(true); try { const r = await api.autoCenter(clip.id); set({ center: r.center }); toast("Centered on the speaker", "ok"); } catch { toast("Auto-center failed", "err"); } finally { setAutoBusy(false); } };
   const onPreviewDown = (e: React.PointerEvent) => {
@@ -1694,7 +1750,7 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
             <CaptionOverlay words={editedWords} time={srcToEdited(time, segments)} style={doc.style} containerHeight={boxH} />
             {tool === "reframe" && <div className="reframe-guide" style={{ left: `${doc.center * 100}%` }} />}
           </div>
-          {tool === "voice" && <Teleprompter words={activeScene ? wordsInRange(doc.words, activeScene.start, activeScene.end) : doc.words} time={time} maxWords={doc.style.max_words} />}
+          {tool === "voice" && <Teleprompter words={activeScene ? wordsInRange(keptWords, Math.max(activeScene.start, clipStart), Math.min(activeScene.end, doc.end)) : keptWords} time={time} maxWords={doc.style.max_words} />}
           <div className="play-row">
             <button className="primary round" onClick={togglePlay}>{playing ? "❚❚" : "▶"}</button>
             <span className="timecode">{fmt(effPos)} / {fmt(effLen)}{removedTotal > 0 ? ` (−${fmt(removedTotal)} cut)` : ""}</span>
@@ -1705,6 +1761,9 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
         </div>
 
         <div className="ed2-panel">
+          {tool === "clips" && <ClipsPanel blocks={blocks} selected={selClip} onSelect={setSelClip} onTrim={onTrimClip}
+            onDelete={onDeleteClip} onAdd={addClipAtPlayhead} onSplit={splitAtPlayhead} time={time} onSeek={seek}
+            onMatchCaptions={matchCaptionsToClips} readOnly={clipsLocked} />}
           {tool === "trim" && <TrimPanel doc={doc} set={set} max={win.e} />}
           {tool === "cut" && <CutPanel doc={doc} set={set} time={time} onSeek={seek} />}
           {tool === "voice" && (hasScenes
@@ -1755,8 +1814,8 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
           <span className="muted" style={{ fontSize: 12 }}>{zoom}×</span>
           <button className="icon-btn" onClick={() => setZoom((z) => Math.min(maxZoom, +(z + 0.5).toFixed(1)))} title="Zoom in">＋</button>
         </div>
-        <FilmstripTimeline pid={pid} winStart={win.s} winEnd={win.e} start={doc.start} end={doc.end} time={time} zoom={zoom} cuts={doc.cuts} markers={markers}
-          onStart={(t) => set({ start: snapTrim(words, t, false) })} onEnd={(t) => set({ end: snapTrim(words, t, true) })} onScrub={seek} />
+        <FilmstripTimeline pid={pid} winStart={win.s} winEnd={win.e} clips={blocks} selected={selClip} time={time} zoom={zoom} cuts={doc.cuts} markers={markers}
+          readOnly={clipsLocked} onSelectClip={setSelClip} onTrimClip={onTrimClip} onDeleteClip={onDeleteClip} onAddClip={onAddClip} onScrub={seek} />
       </div>
     </div>
   );
@@ -1797,6 +1856,70 @@ function keptSegments(start: number, end: number, cuts: [number, number][]): Seg
   return segs.length ? segs : [[start, end]];
 }
 
+/* ---- Multi-clip timeline helpers ----
+   The edit is shown as an ordered list of source sub-ranges ("blocks"). Because the
+   blocks stay in source-time order and never overlap, the list is FULLY representable
+   by the doc's existing start/end/cuts (the gaps between blocks are the cuts), so the
+   preview, caption remap, thumbnails and backend concat render all keep working with
+   no backend change. (A future true multi-source timeline would persist a real
+   `clips_json` instead of round-tripping through start/end/cuts.) */
+const MIN_CLIP = 0.3;
+
+// Blocks -> the doc fields we store. Outer bounds become start/end; the gaps between
+// adjacent blocks become cuts. keptSegments(start,end,cuts) reproduces the blocks.
+function docFromClips(clips: Seg[]): { start: number; end: number; cuts: [number, number][] } {
+  const cl = [...clips].sort((a, b) => a[0] - b[0]);
+  const start = cl[0][0], end = cl[cl.length - 1][1];
+  const cuts: [number, number][] = [];
+  for (let i = 1; i < cl.length; i++) if (cl[i][0] > cl[i - 1][1] + 1e-4) cuts.push([cl[i - 1][1], cl[i][0]]);
+  return { start, end, cuts };
+}
+
+// Trim one block's edge without crossing its neighbours (order stays fixed).
+function trimClip(clips: Seg[], i: number, edge: "start" | "end", t: number, winStart: number, winEnd: number): Seg[] {
+  const out = clips.map((c) => [...c] as Seg);
+  if (!out[i]) return out;
+  const prevEnd = i > 0 ? out[i - 1][1] : winStart;
+  const nextStart = i < out.length - 1 ? out[i + 1][0] : winEnd;
+  if (edge === "start") out[i][0] = Math.max(prevEnd, Math.min(t, out[i][1] - MIN_CLIP));
+  else out[i][1] = Math.min(nextStart, Math.max(t, out[i][0] + MIN_CLIP));
+  return out;
+}
+
+function deleteClip(clips: Seg[], i: number): Seg[] {
+  return clips.length <= 1 ? clips : clips.filter((_, j) => j !== i);
+}
+
+// Split block i at time t into two blocks (both halves must be long enough).
+function splitClip(clips: Seg[], i: number, t: number): Seg[] {
+  const c = clips[i]; if (!c) return clips;
+  if (t - c[0] < MIN_CLIP || c[1] - t < MIN_CLIP) return clips;
+  return [...clips.slice(0, i), [c[0], t] as Seg, [t, c[1]] as Seg, ...clips.slice(i + 1)];
+}
+
+// Add a new block clamped to free space (never overlapping an existing block).
+function addClip(clips: Seg[], a: number, b: number, winStart: number, winEnd: number): Seg[] {
+  let lo = Math.max(winStart, Math.min(a, b));
+  let hi = Math.min(winEnd, Math.max(a, b));
+  const sorted = [...clips].sort((x, y) => x[0] - y[0]);
+  for (const [s, e] of sorted) if (lo >= s && lo < e) lo = e;        // start inside a block -> push past it
+  for (const [s] of sorted) if (s >= lo && s < hi) { hi = s; break; } // a block begins inside [lo,hi) -> stop before it
+  if (hi - lo < MIN_CLIP) return clips;
+  return [...clips, [lo, hi] as Seg].sort((x, y) => x[0] - y[0]);
+}
+
+// Re-apply transient split marks. A split with no gap can't be stored in
+// start/end/cuts (keptSegments re-merges it), so the DISPLAYED blocks add it back
+// from component state; a mark that no longer lands inside a block is simply ignored.
+function applySplits(blocks: Seg[], marks: number[]): Seg[] {
+  let out = blocks.map((c) => [...c] as Seg);
+  for (const m of marks) {
+    const i = out.findIndex(([a, b]) => m > a + 1e-4 && m < b - 1e-4);
+    if (i >= 0) out = [...out.slice(0, i), [out[i][0], m] as Seg, [m, out[i][1]] as Seg, ...out.slice(i + 1)];
+  }
+  return out.sort((x, y) => x[0] - y[0]);
+}
+
 /* source time -> edited (compressed) time. Used to retime captions for the preview
    overlay so they match the export (a source time inside a cut maps to the seam). */
 function srcToEdited(t: number, segs: Seg[]): number {
@@ -1827,6 +1950,7 @@ function remapWords(words: Word[], segs: Seg[]): Word[] {
 }
 
 const TOOLS: { id: string; label: string; icon: string; soon?: boolean }[] = [
+  { id: "clips", label: "Clips", icon: "▭" },
   { id: "trim", label: "Trim", icon: "✂" },
   { id: "cut", label: "Cut", icon: "⌦" },
   { id: "reframe", label: "Reframe", icon: "⛶" },
@@ -1861,6 +1985,57 @@ function useHistory<T>(initial: T) {
   const undo = () => setState((s) => (s.past.length ? { past: s.past.slice(0, -1), present: s.past[s.past.length - 1], future: [s.present, ...s.future] } : s));
   const redo = () => setState((s) => (s.future.length ? { past: [...s.past, s.present], present: s.future[0], future: s.future.slice(1) } : s));
   return { doc: state.present, set, undo, redo, canUndo: state.past.length > 0, canRedo: state.future.length > 0 };
+}
+
+/* The "Clips" tool: lists every block as an editable clip — select, fine-tune in/out,
+   delete, plus header actions to add a clip or split the one under the playhead. */
+function ClipsPanel({ blocks, selected, onSelect, onTrim, onDelete, onAdd, onSplit, time, onSeek, onMatchCaptions, readOnly }: {
+  blocks: Seg[]; selected: number | null; onSelect: (i: number) => void;
+  onTrim: (i: number, edge: "start" | "end", t: number) => void; onDelete: (i: number) => void;
+  onAdd: () => void; onSplit: () => void; time: number; onSeek: (t: number) => void;
+  onMatchCaptions: () => void; readOnly?: boolean;
+}) {
+  const total = blocks.reduce((s, [a, b]) => s + (b - a), 0);
+  return (
+    <div className="panel-body">
+      <h3 className="panel-title">Clips</h3>
+      {readOnly
+        ? <div className="muted" style={{ fontSize: 12.5 }}>This is a stitched reel — edit its scenes in the <b>Voice</b> tool. Clip editing is disabled here so the two don't conflict.</div>
+        : <div className="muted" style={{ fontSize: 12.5 }}>Each block is a clip in your video. Trim its edges on the timeline, split at the playhead, add another part of the source, or delete it.</div>}
+      {!readOnly && (
+        <div className="row" style={{ gap: 8, marginTop: 10 }}>
+          <button className="primary" onClick={onAdd}>+ Add clip</button>
+          <button onClick={onSplit} title="Split the clip under the playhead into two">Split at playhead</button>
+        </div>
+      )}
+      <div className="clip-list">
+        {blocks.length === 0 && <div className="muted">No clips.</div>}
+        {blocks.map(([a, b], i) => (
+          <div key={i} className={"clip-row" + (selected === i ? " sel" : "")} onClick={() => { onSelect(i); onSeek(a); }}>
+            <span className="clip-no">{i + 1}</span>
+            <div className="clip-meta">
+              <div className="clip-range">{fmt(a)} – {fmt(b)}</div>
+              <div className="muted clip-len">{fmt(b - a)}</div>
+            </div>
+            {!readOnly && (
+              <div className="clip-ops" onClick={(e) => e.stopPropagation()}>
+                <input className="clip-in" type="number" step={0.1} value={a.toFixed(2)} title="Clip start (seconds)"
+                  onChange={(e) => onTrim(i, "start", parseFloat(e.target.value) || 0)} />
+                <input className="clip-in" type="number" step={0.1} value={b.toFixed(2)} title="Clip end (seconds)"
+                  onChange={(e) => onTrim(i, "end", parseFloat(e.target.value) || 0)} />
+                <button className="sm danger" title="Delete this clip" disabled={blocks.length <= 1} onClick={() => onDelete(i)}>🗑</button>
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+      {!readOnly && (
+        <button className="sm" style={{ marginTop: 10 }} onClick={onMatchCaptions}
+          title="Pull the transcript text for the current clips into the captions">↻ Match captions to these clips</button>
+      )}
+      <div className="muted" style={{ fontSize: 12.5, marginTop: 10 }}>{blocks.length} clip{blocks.length === 1 ? "" : "s"} · <b>{fmt(total)}</b> total</div>
+    </div>
+  );
 }
 
 function TrimPanel({ doc, set, max }: { doc: EditDoc; set: (p: Partial<EditDoc>) => void; max: number }) {
@@ -1934,7 +2109,7 @@ function Teleprompter({ words, time, maxWords }: { words: Word[]; time: number; 
   );
 }
 
-function VoicePanel({ cid, voUrl, onChanged, toast, onRecordStart, onRecordStop }: { cid: number; voUrl: string | null; onChanged: (u: string | null) => void; toast: Notify; onRecordStart: (range?: { s: number; e: number }, onEnd?: () => void) => void; onRecordStop: () => void }) {
+function VoicePanel({ cid, voUrl, onChanged, toast, onRecordStart, onRecordStop }: { cid: number; voUrl: string | null; onChanged: (u: string | null) => void; toast: Notify; onRecordStart: (range?: { s: number; e: number }, onEnd?: () => void, startMic?: () => Promise<boolean>) => void; onRecordStop: () => void }) {
   const { recording, error, start, stop } = useRecorder();
   const [pending, setPending] = useState<{ blob: Blob; url: string } | null>(null);
   const [busy, setBusy] = useState(false);
@@ -1944,9 +2119,9 @@ function VoicePanel({ cid, voUrl, onChanged, toast, onRecordStart, onRecordStop 
     onRecordStop();                                                  // pause the video
     if (blob) setPending({ blob, url: URL.createObjectURL(blob) });
   };
-  // Start the mic FIRST, then roll video+teleprompter from the trim start so the take
-  // is captured from the trim point in sync; auto-stops (onStop) at clip end.
-  const onRecord = async () => { const ok = await start(); if (!ok) { onRecordStop(); return; } onRecordStart(undefined, onStop); };
+  // Park the video on the trimmed start, THEN start the mic, THEN roll — so the take
+  // begins exactly at the trim point (not the old frame); auto-stops (onStop) at clip end.
+  const onRecord = () => onRecordStart(undefined, onStop, start);
   const save = async () => {
     if (!pending) return; setBusy(true);
     try {
@@ -1998,7 +2173,7 @@ function VoicePanel({ cid, voUrl, onChanged, toast, onRecordStart, onRecordStop 
 function SceneVoicePanel({ cid, markers, sceneIdx, onSelectScene, sceneVos, setSceneVos, readRate, setReadRate, activeScene, onRecordStart, onRecordStop, previewMode, onPlayScene, onPlayReel, onStopPreview, onChanged, toast }: {
   cid: number; markers: { start: number; end: number; label: string }[]; sceneIdx: number; onSelectScene: (i: number) => void;
   sceneVos: (string | null)[]; setSceneVos: (v: (string | null)[]) => void; readRate: number; setReadRate: (r: number) => void;
-  activeScene: { start: number; end: number; label: string }; onRecordStart: (r?: { s: number; e: number }, onEnd?: () => void) => void; onRecordStop: () => void;
+  activeScene: { start: number; end: number; label: string }; onRecordStart: (r?: { s: number; e: number }, onEnd?: () => void, startMic?: () => Promise<boolean>) => void; onRecordStop: () => void;
   previewMode: "off" | "scene" | "reel"; onPlayScene: (i: number) => void; onPlayReel: () => void; onStopPreview: () => void;
   onChanged: () => void; toast: Notify;
 }) {
@@ -2009,9 +2184,9 @@ function SceneVoicePanel({ cid, markers, sceneIdx, onSelectScene, sceneVos, setS
   const doneCount = sceneVos.filter(Boolean).length;
 
   const onStop = async () => { const blob = await stop(); onRecordStop(); if (blob) setPending({ blob, url: URL.createObjectURL(blob) }); };
-  // Record this scene from its start; mic first, then roll so capture starts in sync;
-  // auto-stops (onStop) when the scene ends.
-  const onRecord = async () => { if (previewMode !== "off") onStopPreview(); const ok = await start(); if (!ok) { onRecordStop(); return; } onRecordStart({ s: activeScene.start, e: activeScene.end }, onStop); };
+  // Park the video on the scene start, then start the mic, then roll — capture begins
+  // exactly at the scene start; auto-stops (onStop) when the scene ends.
+  const onRecord = () => { if (previewMode !== "off") onStopPreview(); onRecordStart({ s: activeScene.start, e: activeScene.end }, onStop, start); };
   const save = async () => {
     if (!pending) return; setBusy(true);
     try { const r = await api.uploadSceneVoiceover(cid, sceneIdx, pending.blob); URL.revokeObjectURL(pending.url); setPending(null); setSceneVos(r.scene_vos); onChanged(); toast(`Scene ${sceneIdx + 1} voice saved`, "ok"); }
@@ -2120,56 +2295,95 @@ function SubtitleWordEditor({ words, time, onSeek, onChange }: { words: Word[]; 
   );
 }
 
-/* Continuous scrubbing timeline: one track of frames, dim outside the trim, a
-   movable playhead, and start/end trim handles. Drag ANYWHERE on the track to move
-   the playhead. Removed (cut) ranges show as a subtle grey band (the captions still
-   keep every word — only the video skips them). */
-function FilmstripTimeline({ pid, winStart, winEnd, start, end, time, zoom, cuts, markers, onStart, onEnd, onScrub }: {
-  pid: number; winStart: number; winEnd: number; start: number; end: number; time: number; zoom: number; cuts: [number, number][];
-  markers?: { start: number; end: number; label: string }[];
-  onStart: (t: number) => void; onEnd: (t: number) => void; onScrub: (t: number) => void;
+/* Multi-clip scrubbing timeline: one track of source frames with each kept clip
+   drawn as its own draggable BLOCK. Drag a block's edge to trim that clip, drag the
+   block body to scrub, click to select (then ✕ deletes it). Drag on the dim/unused
+   area to rubber-band a NEW clip from that part of the source. Interior gaps (cuts)
+   show as a subtle grey band; the playhead rides on top. */
+function FilmstripTimeline({ pid, winStart, winEnd, clips, selected, time, zoom, cuts, markers, readOnly, onSelectClip, onTrimClip, onDeleteClip, onAddClip, onScrub }: {
+  pid: number; winStart: number; winEnd: number; clips: Seg[]; selected: number | null; time: number; zoom: number; cuts: [number, number][];
+  markers?: { start: number; end: number; label: string }[]; readOnly?: boolean;
+  onSelectClip: (i: number) => void; onTrimClip: (i: number, edge: "start" | "end", t: number) => void;
+  onDeleteClip: (i: number) => void; onAddClip: (a: number, b: number) => void; onScrub: (t: number) => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
+  const [band, setBand] = useState<[number, number] | null>(null);
   const span = Math.max(0.1, winEnd - winStart);
   const pct = (t: number) => Math.max(0, Math.min(100, ((t - winStart) / span) * 100));
   const toTime = (clientX: number) => { const r = ref.current!.getBoundingClientRect(); const x = Math.min(Math.max(0, clientX - r.left), r.width); return winStart + (x / r.width) * span; };
-  const drag = (which: "start" | "end" | "scrub") => (e: React.PointerEvent) => {
-    e.preventDefault(); e.stopPropagation();
+  const cStart = clips.length ? clips[0][0] : winStart;
+  const cEnd = clips.length ? clips[clips.length - 1][1] : winEnd;
+
+  const dragHandle = (i: number, edge: "start" | "end") => (e: React.PointerEvent) => {
+    e.preventDefault(); e.stopPropagation(); onSelectClip(i);
+    const move = (ev: PointerEvent) => onTrimClip(i, edge, toTime(ev.clientX));
+    const up = () => { window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up); };
+    window.addEventListener("pointermove", move); window.addEventListener("pointerup", up);
+  };
+  const dragBlock = (i: number) => (e: React.PointerEvent) => {
+    e.preventDefault(); e.stopPropagation(); onSelectClip(i); onScrub(toTime(e.clientX));
+    const move = (ev: PointerEvent) => onScrub(toTime(ev.clientX));
+    const up = () => { window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up); };
+    window.addEventListener("pointermove", move); window.addEventListener("pointerup", up);
+  };
+  // Press on the dim/unused area: rubber-band a new clip, or just scrub on a click.
+  const dragTrack = (e: React.PointerEvent) => {
+    e.preventDefault();
+    const x0 = e.clientX, t0 = toTime(x0); let moved = false;
     const move = (ev: PointerEvent) => {
       const t = toTime(ev.clientX);
-      if (which === "start") onStart(Math.max(winStart, Math.min(t, end - 0.5)));
-      else if (which === "end") onEnd(Math.min(winEnd, Math.max(t, start + 0.5)));
-      else onScrub(Math.max(start, Math.min(end, t)));
+      if (Math.abs(ev.clientX - x0) > 4) moved = true;
+      if (moved && !readOnly) setBand([Math.min(t0, t), Math.max(t0, t)]);
     };
-    move(e.nativeEvent);
-    const up = () => { window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up); };
+    const up = (ev: PointerEvent) => {
+      window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up);
+      setBand(null);
+      if (moved && !readOnly) { const t = toTime(ev.clientX); onAddClip(Math.min(t0, t), Math.max(t0, t)); }
+      else onScrub(t0);
+    };
     window.addEventListener("pointermove", move); window.addEventListener("pointerup", up);
   };
   const n = Math.max(8, Math.round(10 * zoom));
   const frames = useMemo(() => Array.from({ length: n }, (_, i) => winStart + ((i + 0.5) / n) * span), [winStart, span, n]);
+  const total = clips.reduce((s, [a, b]) => s + (b - a), 0);
   return (
     <div className="fs-wrap">
       <div className="fs-scroll">
-        <div className="fs-track" ref={ref} onPointerDown={drag("scrub")} style={{ width: `${zoom * 100}%` }}>
+        <div className="fs-track" ref={ref} onPointerDown={dragTrack} style={{ width: `${zoom * 100}%` }}>
           <div className="fs-frames">{frames.map((t, i) => (
             <img key={i} src={api.frameUrl(pid, t)} alt="" draggable={false} onError={(e) => ((e.target as HTMLImageElement).style.opacity = "0")} />
           ))}</div>
-          <div className="fs-dim" style={{ left: 0, width: `${pct(start)}%` }} />
-          <div className="fs-dim" style={{ left: `${pct(end)}%`, right: 0 }} />
-          <div className="fs-range" style={{ left: `${pct(start)}%`, width: `${pct(end) - pct(start)}%` }} />
+          <div className="fs-dim" style={{ left: 0, width: `${pct(cStart)}%` }} />
+          <div className="fs-dim" style={{ left: `${pct(cEnd)}%`, right: 0 }} />
           {cuts.map(([a, b], i) => (
-            <div key={i} className="fs-cut" style={{ left: `${pct(a)}%`, width: `${Math.max(0, pct(b) - pct(a))}%` }} title="Removed from the video (captions keep flowing)" />
+            <div key={i} className="fs-cut" style={{ left: `${pct(a)}%`, width: `${Math.max(0, pct(b) - pct(a))}%` }} title="Removed — gap between clips" />
           ))}
+          {clips.map(([a, b], i) => (
+            <div key={i} className={"fs-block" + (selected === i ? " sel" : "") + (readOnly ? " ro" : "")}
+              style={{ left: `${pct(a)}%`, width: `${Math.max(0, pct(b) - pct(a))}%` }}
+              onPointerDown={dragBlock(i)} title={`Clip ${i + 1}: ${fmt(a)}–${fmt(b)}`}>
+              <span className="fs-block-no">{i + 1}</span>
+              {!readOnly && <>
+                <div className="fs-handle l" onPointerDown={dragHandle(i, "start")} title="Trim this clip's start" />
+                <div className="fs-handle r" onPointerDown={dragHandle(i, "end")} title="Trim this clip's end" />
+                {selected === i && clips.length > 1 && (
+                  <button className="fs-del" title="Delete this clip" onPointerDown={(e) => e.stopPropagation()}
+                    onClick={(e) => { e.stopPropagation(); onDeleteClip(i); }}>×</button>
+                )}
+              </>}
+            </div>
+          ))}
+          {band && <div className="fs-band" style={{ left: `${pct(band[0])}%`, width: `${Math.max(0, pct(band[1]) - pct(band[0]))}%` }} />}
           {(markers ?? []).map((m, i) => (
             i > 0 ? <div key={"mk" + i} className="fs-marker" style={{ left: `${pct(m.start)}%` }} title={`Scene ${i + 1}: ${m.label}`} /> : null
           ))}
-          <div className="fs-handle" style={{ left: `${pct(start)}%` }} onPointerDown={drag("start")} title="Drag to trim the start" />
-          <div className="fs-handle" style={{ left: `${pct(end)}%` }} onPointerDown={drag("end")} title="Drag to trim the end" />
           <div className="fs-playhead" style={{ left: `${pct(time)}%` }} />
         </div>
       </div>
       <div className="timeline-labels">
-        <span className="tag">start {fmt(start)}</span><span className="tag">{fmt(end - start)} clip</span><span className="tag">end {fmt(end)}</span>
+        <span className="tag">{clips.length} clip{clips.length === 1 ? "" : "s"}</span>
+        <span className="tag">{fmt(total)} total</span>
+        {!readOnly && <span className="tag muted">drag a clip edge to trim · drag empty space to add</span>}
       </div>
     </div>
   );

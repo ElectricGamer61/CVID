@@ -388,12 +388,31 @@ input[type=range] { width: 100%; accent-color: var(--primary); }
 .fs-dim { position: absolute; top: 0; bottom: 0; background: rgba(255,255,255,.62); pointer-events: none; }
 .fs-range { position: absolute; top: 0; bottom: 0; border: 2px solid var(--primary); border-radius: 8px; box-shadow: 0 0 0 9999px rgba(0,0,0,0); pointer-events: none; }
 .fs-cut { position: absolute; top: 0; bottom: 0; background: repeating-linear-gradient(45deg, rgba(60,65,80,.42), rgba(60,65,80,.42) 6px, rgba(60,65,80,.20) 6px, rgba(60,65,80,.20) 12px); border-left: 2px solid var(--muted-2); border-right: 2px solid var(--muted-2); pointer-events: none; }
-.fs-handle { position: absolute; top: -2px; width: 12px; height: 60px; margin-left: -6px; background: var(--primary); border-radius: 5px; cursor: ew-resize; box-shadow: var(--shadow); }
-.fs-handle::after { content: ''; position: absolute; left: 4px; top: 22px; width: 4px; height: 16px; border-left: 1px solid rgba(255,255,255,.6); border-right: 1px solid rgba(255,255,255,.6); }
-.fs-playhead { position: absolute; top: -2px; width: 2px; height: 60px; background: var(--blue); pointer-events: none; }
-.fs-marker { position: absolute; top: -2px; width: 0; height: 60px; border-left: 2px dashed var(--accent); pointer-events: none; }
+/* Each kept clip = a draggable block; its edges are the trim handles. */
+.fs-block { position: absolute; top: 0; bottom: 0; box-sizing: border-box; border: 2px solid var(--primary); border-radius: 8px; background: rgba(109,94,252,.08); cursor: grab; z-index: 2; }
+.fs-block.sel { background: rgba(109,94,252,.20); box-shadow: 0 0 0 2px var(--primary); z-index: 3; }
+.fs-block.ro { cursor: pointer; border-style: dashed; }
+.fs-block-no { position: absolute; top: 3px; left: 6px; font-size: 10px; font-weight: 800; color: #fff; background: var(--primary); border-radius: 4px; padding: 0 5px; pointer-events: none; }
+.fs-handle { position: absolute; top: -2px; bottom: -2px; width: 12px; background: var(--primary); border-radius: 5px; cursor: ew-resize; box-shadow: var(--shadow); z-index: 4; }
+.fs-handle.l { left: -6px; } .fs-handle.r { right: -6px; }
+.fs-handle::after { content: ''; position: absolute; left: 4px; top: 50%; transform: translateY(-50%); width: 4px; height: 16px; border-left: 1px solid rgba(255,255,255,.6); border-right: 1px solid rgba(255,255,255,.6); }
+.fs-del { position: absolute; top: -9px; right: -9px; width: 20px; height: 20px; padding: 0; border-radius: 50%; background: #e5484d; color: #fff; border: 2px solid var(--surface); font-size: 13px; line-height: 1; display: grid; place-items: center; cursor: pointer; z-index: 5; }
+.fs-band { position: absolute; top: 0; bottom: 0; border: 2px dashed var(--accent); background: rgba(245,166,35,.16); border-radius: 8px; pointer-events: none; z-index: 2; }
+.fs-playhead { position: absolute; top: -2px; width: 2px; height: 60px; background: var(--blue); pointer-events: none; z-index: 6; }
+.fs-marker { position: absolute; top: -2px; width: 0; height: 60px; border-left: 2px dashed var(--accent); pointer-events: none; z-index: 3; }
 /* a clearer, grabbable playhead knob */
 .fs-playhead::before { content: ''; position: absolute; top: -5px; left: -5px; width: 12px; height: 12px; border-radius: 50%; background: var(--blue); box-shadow: var(--shadow-sm); }
+
+/* Clips tool panel */
+.clip-list { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; max-height: 320px; overflow-y: auto; }
+.clip-row { display: flex; align-items: center; gap: 8px; padding: 6px 8px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-sm); cursor: pointer; }
+.clip-row.sel { border-color: var(--primary); box-shadow: 0 0 0 1px var(--primary); }
+.clip-no { flex: none; width: 20px; height: 20px; display: grid; place-items: center; font-size: 11px; font-weight: 800; color: #fff; background: var(--primary); border-radius: 5px; }
+.clip-meta { flex: 1 1 auto; min-width: 0; }
+.clip-range { font-size: 12.5px; font-weight: 600; color: var(--text); }
+.clip-len { font-size: 11px; }
+.clip-ops { flex: none; display: flex; align-items: center; gap: 4px; }
+.clip-in { width: 56px; padding: 3px 5px; font-size: 11.5px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-2); color: var(--text); }
 /* Karaoke teleprompter (voice tool) */
 .teleprompter { margin: 12px auto 0; max-width: 520px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r); padding: 16px 18px; box-shadow: var(--shadow-sm); text-align: center; }
 .teleprompter.empty { color: var(--muted-2); font-size: 13px; }
