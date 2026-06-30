@@ -1,62 +1,74 @@
-# Cvideo — Next-Session Handoff (as of 2026-06-30)
+# Cvideo — Next-Session Handoff (editor + reels + results)
 
-> Read this first, then `CONTEXT.md` (the source of truth) for how the app works.
-> **⚠️ EVERYTHING below is UNCOMMITTED on `main`.** Review + commit early (branch first).
+> Read this first, then `CONTEXT.md` (source of truth for how the app works).
+> Branch: `session/handoff-and-record-trim-fix`. All work below is **committed**.
 
-## What shipped this session (not yet committed)
-1. **Home folders.** Folder cards live in the project grid (📁 thumb), collapsible, drag a project in,
-   auto **"Reels"** folder for `mode=caption` reels, **+ New folder**, rename folders, inline rename +
-   ✏️ button on project cards. Reels **open the editor directly** (Back→Home), not the project page.
-2. **Results page fixed → video-aware.** Was ticket-only (couldn't see his reels). Now `Perf` keys on
-   `(video_kind, video_id)`; the picker lists real exported videos (`/api/exports`) with hooks; Best
-   videos ranks real videos by saves+follows.
-3. **Closed learning loop (the moat).** `backend/app/learn.py` (`winning_patterns`, `winners_prompt_block`)
-   → injected into `ai.py` (script/hook) and `pipeline/brain.py` (moment picking). Empty history = no-op.
-4. **Smoothness pass.** `api.ts` unified error handling (`req()` throws backend `detail`); new
-   `frontend/src/Dialog.tsx` styled confirm/prompt (replaces native `confirm`/`prompt`); sidebar
-   "Outliers"→"Ideas"; editor **Spacebar + click-to-play**; **Export** instant-feedback.
-5. **Editor recording fixes.** Recording **auto-stops at clip end** (no loop), starts at the trim;
-   main **Play plays the scene voices** for reels, **from the scene under the playhead** (not scene 0).
-6. **Reel quality scores.** Reels were 0/100. Now scored from their script: `Ticket.ai_generated`
-   (set by Script Factory) → AI scripts always **90+**, pasted get a heuristic (`main._score_reel`);
-   existing reels backfilled 90–97.
-7. **Engine bridge (cowork content engine).** `backend/app/sheets.py` POSTs each logged video to a
-   **Google Sheet webhook** (Apps Script). `POST /api/perf/sync-sheet` + Results **"📊 Sync to Google
-   Sheet"** button backfills. Payload matches the cowork **A–M contract**: `post_id, date, brand,
-   platform(full name), journey_stage(blank), hook, hook_trigger(blank), angle, caption_style, views,
-   follows, saves, sends` — **no score** (the Sheet computes it). Guarded by `PERF_SHEET_WEBHOOK_URL`
-   (empty = local no-op). Script in `docs/perf-sheet-AppsScript.gs`.
+## What shipped this session (committed)
+1. **Recording starts exactly at the trim** (`2643285`, then refined). The voice recorder now
+   **seeks → starts the mic → rolls** so a take begins on the trimmed frame, never the old
+   pre-trim frame. Preview re-parks to the first kept frame after a trim. For reels, a scene's
+   record range is clamped to the trim (a scene that begins before the trim records FROM it).
+2. **Clips no longer cut off the last word** (`ce363f3`). Brain MIN/MAX clamps re-snap to a
+   word boundary; editor trim handles snap off mid-word (`snapTrim`).
+3. **Compact board cards** (`f1d623d`). "Create videos" cards are compact horizontal rows
+   (~64px) instead of tall vertical cards — many fit per lane without scrolling.
+4. **Cut actually removes the section** (`f1d623d`, `28be421`). Cut words are dropped from
+   captions (`remapWords`/`remap_words_for_cuts`) AND the teleprompter (`keptWords`); the
+   scene-reel export splices cut ranges out of each scene, drops their words, and compresses
+   the captions. No more "the cut part is still there."
+5. **Multi-clip "Clips" editor** (`28be421`). New **Clips** tool: each kept segment is an
+   editable block on the timeline — trim each edge, add a clip from the source, delete, split.
+   Built entirely on the existing `start/end/cuts` storage (no schema change); the backend
+   already concatenates an arbitrary segment list.
+6. **Reels = each scene is its own clip** (`cd9e7ce`). For a stitched reel the Clips timeline
+   shows **3 scene blocks, not one** (split at the persistent scene markers). Trim/split/delete
+   each scene independently; "Add clip" is hidden for reels. Trim/cut maps to `start/end/cuts`,
+   which the scene-reel export honors (clamp each marker to the trim; drop a scene fully cut
+   away). Markers stay intact.
+7. **Trim honored everywhere for reels** (`28be421`). `render_scene_reel` clamps each scene
+   marker to `[start,end]`, drops scenes trimmed away, keeps `scene_vos` aligned. Teleprompter,
+   captions, scene preview (`runScene`/`selectScene`), and export all start at the trim.
+8. **Results: per-video, per-platform tracking** (`2c01580`). `/api/insights` returns
+   `videos[]` (every reel + rendered clip + ticket-reel, each with tt/ig/yt metrics + totals).
+   `log_perf` now **UPSERTS** by `(video_kind, video_id, platform)` — re-logging updates the
+   numbers instead of double-counting. New **VideoTracker** UI: one table of all videos with
+   TikTok/Instagram/YouTube side by side; pick a reel → edit all 3 platforms (prefilled) → save.
 
-## New files
-`frontend/src/Dialog.tsx` · `backend/app/learn.py` · `backend/app/sheets.py` ·
-`docs/perf-sheet-AppsScript.gs` · this file. Plans in `~/.claude/plans/`:
-`results-learning-loop-saas.md`, `cvideo-engine-bridge.md`, `add-the-submagic-features-temporal-pike.md`.
+## Key files touched
+`frontend/src/App.tsx` (Clips tool, FilmstripTimeline blocks, recording, VideoTracker,
+PlatformEditor), `frontend/src/api.ts` (VideoPerf type), `frontend/src/index.css`,
+`backend/app/main.py` (insights `videos[]`, `log_perf` upsert, scene-reel trim clamp),
+`backend/app/pipeline/assemble.py` (`render_scene_reel` honors cuts + drops deleted scenes),
+`backend/app/pipeline/brain.py`.
 
-## Schema changes (additive — `db._migrate` / `_migrate_perf_videos`, idempotent)
-- `Project.folder` · new `Folder` table · `Ticket.ai_generated`
-- `Perf.video_kind` + `Perf.video_id` (+ `ticket_id` made nullable via a one-time table rebuild that
-  backfilled the 8 legacy rows as `video_kind='reel'`).
+## Important behaviors / gotchas
+- **Rebuilding a reel wipes its edits.** "Make my video" / `build-edit` (`main.py:~1103`)
+  regenerates the reel Clip and resets `start=0`, `cuts=null`, fresh markers. So **trim AFTER
+  building**, and don't re-build after editing. *Possible next task: preserve trim/cuts on rebuild.*
+- **Voiced scenes are VO-duration-locked.** Trimming a scene that has a recorded voice changes
+  which frames show (video loops/stretches to the VO), not the output length. Trimming shortens
+  cleanly for scenes without a voice (or before recording).
+- **Record then trim is order-sensitive.** A scene voice recorded before a trim won't line up;
+  re-record that scene after trimming for exact sync.
+- **A scene's split with no gap is transient** (collapses on reload) — only matters as a step
+  before trim/delete, which creates a real gap that persists.
 
 ## Open / pending
-- **Caption-across-scene-cuts bug (Phase 0, not done).** Cutting a multi-scene reel (esp. the end) →
-  captions don't flow into the next scene. Root cause located: scene **markers aren't remapped for
-  cuts** (`srcToEdited` clamps post-segment words; `assemble.render_scene_reel` ignores `cuts_json`).
-  **Needs Dennis's exact repro** (which reel, where he cut). Fix = remap markers through the same cut
-  compression + make the scene export honor cuts. (Task in `results-learning-loop-saas.md` Phase 0.)
-- **Engine bridge — Dennis's setup remaining:** drag `content-performance-tracker.xlsx` into Drive →
-  Save as Google Sheets → paste the Apps Script → deploy web app → set `PERF_SHEET_WEBHOOK_URL` in
-  `backend/.env` → restart → hit Sync. Until then the push is a silent no-op.
-- **Brand caveat:** clips not linked to a brand-tagged ticket (older/long-form) default to
-  `"NoCrapDiet"` in the sheet payload. Could add a **brand picker** on the Results logger.
-- **Needs a live test by Dennis:** the recording auto-stop / play-with-voice (needs a mic + a reel
-  with recorded scene voices).
-- **Next big phase = AUTOPILOT** (orchestrator chaining ingest→clip→caption→export→schedule→post→measure
-  with approval gates) — the new-gen-SaaS layer. See `[[cvideo-vision-autopilot]]` memory. Then
-  **Submagic features** (auto-zoom first) — `add-the-submagic-features-temporal-pike.md`.
+- **Google Sheet bridge still dormant.** `sheets.py` + `/api/perf/sync-sheet` push every logged
+  video to a Google-Sheet webhook, but `PERF_SHEET_WEBHOOK_URL` isn't set. Dennis to: Drive →
+  Save xlsx as Google Sheet → paste `docs/perf-sheet-AppsScript.gs` → deploy web app → set the
+  env var → restart → "📊 Sync to Google Sheet". (One-way Cvideo→Sheet; the Sheet computes score.)
+- **Hook library (requested, not built).** Plan agreed: a seeded bank of proven hook *formulas*
+  → AI-expand to ~1000 brand-tagged hooks → inject into `ai.py` (like `learn.winners_prompt_block`)
+  → "Pick a hook" picker on New video / Ideas. No scraping. Open question: niche-locked vs general.
+- **Preserve trim/cuts on reel rebuild** (see gotcha above) — small `build-edit` change.
+- **Posting to 3 platforms** is still the Upload-Post dry-run adapter (`poster.py`); going live
+  needs `UPLOAD_POST_USER` set. The Results tracker is manual-entry today.
 
 ## Run / verify
-- Backend: `cd backend; .\.venv\Scripts\python.exe -m uvicorn app.main:app --port 8000` (no --reload;
-  refresh PATH first per `CONTEXT.md §1`). Frontend: `cd frontend; npm run dev`.
-- Verify: `cd frontend && npm run build` → 0 TS errors; backend import + `init_db()` clean.
-- During this session both were run in the background (backend :8000, Vite preview :3000) — restart as
-  needed.
+- Backend: `cd backend; .\.venv\Scripts\python.exe -m uvicorn app.main:app --port 8000` (no
+  --reload). **NOTE: the backend crashed mid-session once** — if Results/Home 500s, it's just
+  down; restart it. Frontend: `cd frontend; npm run dev`.
+- Verify: `cd frontend && npm run build` → 0 TS errors; `python -c "import app.main"` clean.
+- This session was verified live via the preview MCP (Reel 10 scene editing; Results 3-platform
+  tracking). Screenshots can hang on this machine — use DOM reads instead.
