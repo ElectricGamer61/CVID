@@ -161,7 +161,7 @@ function TicketCard({ t, onOpen, onMove, onDelete }: {
   const i = phaseOf(t.stage);
   const made = !!t.clip_url;
   return (
-    <div className="tkt-card" onClick={onOpen}>
+    <div className="tkt-card" onClick={onOpen} title="Open">
       <div className="tkt-thumb">
         {made ? (
           <img src={api.ticketThumbUrl(t.id)} alt="" loading="lazy"
@@ -169,18 +169,18 @@ function TicketCard({ t, onOpen, onMove, onDelete }: {
         ) : (
           <div className="tkt-thumb-ph"><span>{modeIcon(t.capture_mode)}</span></div>
         )}
-        <span className="tkt-mode">{modeLabel(t.capture_mode)}</span>
-        {made && <span className="tkt-made">✓ made</span>}
-        <button className="icon-btn danger tkt-del" title="Delete this video" onClick={(e) => { e.stopPropagation(); onDelete(t); }}>🗑</button>
+        {made && <span className="tkt-made" title="Video made">✓</span>}
       </div>
       <div className="tkt-card-body">
-        {t.hook_text ? <div className="tkt-hook-main">“{t.hook_text}”</div> : null}
-        <div className="tkt-angle">{t.angle || <span className="muted">Untitled video</span>}</div>
-        <div className="tkt-foot" onClick={(e) => e.stopPropagation()}>
-          <button className="icon-btn" disabled={i <= 0} title="Move back a step" onClick={() => onMove(t, -1)}>◀</button>
-          <span className="muted tkt-open">Open ⤢</span>
-          <button className="icon-btn" disabled={i >= PHASES.length - 1} title="Move forward a step" onClick={() => onMove(t, 1)}>▶</button>
-        </div>
+        {t.hook_text
+          ? <div className="tkt-hook-main">“{t.hook_text}”</div>
+          : <div className="tkt-angle">{t.angle || <span className="muted">Untitled video</span>}</div>}
+        <div className="tkt-sub">{t.hook_text ? (t.angle || modeLabel(t.capture_mode)) : modeLabel(t.capture_mode)}</div>
+      </div>
+      <div className="tkt-side" onClick={(e) => e.stopPropagation()}>
+        <button className="icon-btn" disabled={i <= 0} title="Move back a step" onClick={() => onMove(t, -1)}>◀</button>
+        <button className="icon-btn" disabled={i >= PHASES.length - 1} title="Move forward a step" onClick={() => onMove(t, 1)}>▶</button>
+        <button className="icon-btn danger tkt-del" title="Delete this video" onClick={() => onDelete(t)}>🗑</button>
       </div>
     </div>
   );
@@ -1809,16 +1809,18 @@ function srcToEdited(t: number, segs: Seg[]): number {
   return base;
 }
 
-/* Retime caption words onto the edited timeline. A cut removes VIDEO, not caption
-   text — so EVERY word is kept (word 4 5 6, cut, 7 8 — never dropped). Words that
-   fell inside a removed gap collapse to the seam, keeping their order. Mirrors
-   backend render.remap_words_for_cuts so the preview matches the export exactly. */
+/* Retime caption words onto the edited timeline. A cut removes the video AND its
+   audio, so a word spoken inside a cut is no longer heard — we DROP it (otherwise it
+   piled up at the seam and looked like the cut part was "still there"). Words that
+   straddle a cut edge are clamped to the seam. Mirrors backend
+   render.remap_words_for_cuts so the preview matches the export exactly. */
 function remapWords(words: Word[], segs: Seg[]): Word[] {
   return words
+    .filter((w) => segs.some(([a, b]) => w.end > a && w.start < b))   // keep only words that overlap kept video
     .map((w) => {
       const s = srcToEdited(w.start, segs);
       let e = srcToEdited(w.end, segs);
-      if (e <= s) e = s + Math.max(0.15, w.end - w.start);   // word lived inside a cut → keep it at the seam
+      if (e <= s) e = s + 0.15;
       return { ...w, start: s, end: e };
     })
     .sort((x, y) => x.start - y.start);
