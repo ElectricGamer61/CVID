@@ -1512,9 +1512,6 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
   // Captions retimed onto the edited (post-cut) timeline so the PREVIEW matches the
   // EXPORT exactly — captions always continue after a cut, never disappear.
   const editedWords = useMemo(() => remapWords(doc.words, segments), [doc.words, segments]);
-  // Words that survive cuts (still in kept video) — used by the teleprompter so a cut
-  // section's words aren't shown/read as if the section were still there.
-  const keptWords = useMemo(() => doc.words.filter((w) => segments.some(([a, b]) => w.end > a && w.start < b)), [doc.words, segments]);
 
   // The first frame that survives trimming/cuts — where the clip (and any recording)
   // should actually begin, even if a leading part was cut away.
@@ -1563,43 +1560,40 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
       const v = videoRef.current;
       if (v) {
         const lr = loopRangeRef.current;
+        // ONE logical playhead. We compute where the playhead should be (`t`), seek the
+        // video there only if it drifted, and drive the UI from `t` — NOT from a stale
+        // read of v.currentTime right after a seek (that jitter flashed the wrong caption
+        // at every cut). At a cut we jump to the exact next-segment start `b` (no 0.12
+        // overshoot that used to swallow the first sliver of kept video/caption).
+        let t = v.currentTime;
+        let stop = false;
         if (lr && lr.rec) {
-          // RECORDING: roll once from the trim start to the clip end, then STOP (don't
-          // loop) — the take ends exactly when the clip does. Skip cut ranges so the take
-          // lines up with the exported video.
-          for (const [a, b] of doc.cuts) {
-            if (v.currentTime >= a && v.currentTime < b) { v.currentTime = b + 0.12; break; }
-          }
-          if (v.currentTime >= lr.e) {
-            v.pause();
+          // RECORDING: roll once from the trim start to the clip end, then STOP (no loop).
+          for (const [a, b] of doc.cuts) { if (t >= a && t < b) { t = b; break; } }
+          if (t >= lr.e) {
+            v.pause(); stop = true;
             const cb = recordEndRef.current; recordEndRef.current = null;
             cb?.();                          // auto-stop: hand off to the panel's Stop flow
           }
         } else if (lr) {
           // Scene PREVIEW: loop within the scene while its voice plays once (skip cuts).
-          if (v.currentTime >= lr.e || v.currentTime < lr.s - 0.05) v.currentTime = lr.s;
-          else {
-            for (const [a, b] of doc.cuts) {
-              if (v.currentTime >= a && v.currentTime < b) {
-                v.currentTime = b >= lr.e - 0.05 ? lr.s : Math.min(b + 0.12, lr.e);
-                break;
-              }
-            }
-          }
+          if (t >= lr.e || t < lr.s - 0.05) t = lr.s;
+          else { for (const [a, b] of doc.cuts) { if (t >= a && t < b) { t = b >= lr.e - 0.05 ? lr.s : b; break; } } }
         } else {
-          if (v.currentTime >= doc.end) v.currentTime = doc.start;
-          for (const [a, b] of doc.cuts) { if (v.currentTime >= a && v.currentTime < b) { v.currentTime = Math.min(b + 0.12, doc.end); break; } }
-          // Keep a saved voiceover aligned to the clip's local time (preview only).
+          // Normal preview: loop the kept range, jump cleanly over cuts.
+          if (t >= doc.end) t = clipStart;
+          else { for (const [a, b] of doc.cuts) { if (t >= a && t < b) { t = b; break; } } }
           const au = audioRef.current;
-          if (au && voUrl) { const want = v.currentTime - doc.start; if (Math.abs(au.currentTime - want) > 0.25) au.currentTime = Math.max(0, want); }
+          if (au && voUrl) { const want = t - doc.start; if (Math.abs(au.currentTime - want) > 0.25) au.currentTime = Math.max(0, want); }
         }
-        setTime(v.currentTime);
+        if (!stop && Math.abs(t - v.currentTime) > 0.001) v.currentTime = t;
+        setTime(t);
       }
       raf = requestAnimationFrame(tick);
     };
     if (playing) raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [playing, doc.start, doc.end, doc.cuts, voUrl]);
+  }, [playing, doc.start, doc.end, doc.cuts, clipStart, voUrl]);
 
   // keyboard undo/redo
   useEffect(() => {
@@ -1745,6 +1739,10 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
   const removedBefore = (t: number) => doc.cuts.reduce((s, [a, b]) => s + (t >= b ? b - a : t > a ? t - a : 0), 0);
   const effLen = Math.max(0, (doc.end - doc.start) - removedTotal);
   const effPos = Math.max(0, (time - doc.start) - removedBefore(time));
+  // ONE clock for every overlay: the playhead in edited (post-cut) time. Captions AND the
+  // teleprompter both read this + edited-time words, so cuts compress smoothly instead of
+  // the two disagreeing (captions edited, teleprompter source) and flashing at every seam.
+  const editedTime = srcToEdited(time, segments);
 
   const rendered = clip.status === "rendered";
   const busy = clip.status === "rendering";
@@ -1789,10 +1787,10 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
             title={tool === "reframe" ? undefined : "Click or press Space to play / pause"}>
             <video ref={videoRef} src={api.sourceUrl(pid)} onLoadedMetadata={onLoaded} style={{ objectPosition: `${doc.center * 100}% 50%` }} playsInline />
             <audio ref={audioRef} src={hasScenes ? undefined : (voUrl ?? undefined)} preload="auto" />
-            <CaptionOverlay words={editedWords} time={srcToEdited(time, segments)} style={doc.style} containerHeight={boxH} />
+            <CaptionOverlay words={editedWords} time={editedTime} style={doc.style} containerHeight={boxH} />
             {tool === "reframe" && <div className="reframe-guide" style={{ left: `${doc.center * 100}%` }} />}
           </div>
-          {tool === "voice" && <Teleprompter words={activeScene ? wordsInRange(keptWords, Math.max(activeScene.start, clipStart), Math.min(activeScene.end, doc.end)) : keptWords} time={time} maxWords={doc.style.max_words} />}
+          {tool === "voice" && <Teleprompter words={activeScene ? wordsInRange(editedWords, srcToEdited(Math.max(activeScene.start, clipStart), segments), srcToEdited(Math.min(activeScene.end, doc.end), segments)) : editedWords} time={editedTime} maxWords={doc.style.max_words} />}
           <div className="play-row">
             <button className="primary round" onClick={togglePlay}>{playing ? "❚❚" : "▶"}</button>
             <span className="timecode">{fmt(effPos)} / {fmt(effLen)}{removedTotal > 0 ? ` (−${fmt(removedTotal)} cut)` : ""}</span>
