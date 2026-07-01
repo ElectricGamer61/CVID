@@ -922,13 +922,14 @@ function VideoTracker({ videos, onLogged }: { videos: VideoPerf[]; onLogged: () 
         <div className="muted">No reels or clips yet — make one, then track how it does on each platform here.</div>
       ) : (
         <table className="ins-table vid-table">
-          <thead><tr><th>Video</th><th>🎵 TikTok</th><th>📸 Instagram</th><th>▶ YouTube</th><th>Saves+Follows</th><th></th></tr></thead>
+          <thead><tr><th>Video</th><th>Brand</th><th>🎵 TikTok</th><th>📸 Instagram</th><th>▶ YouTube</th><th>Saves+Follows</th><th></th></tr></thead>
           <tbody>{shown.map((v) => {
             const key = `${v.video_kind}:${v.video_id}`;
             const open = sel === key;
             return (
               <tr key={key} className={"vid-row" + (open ? " sel" : "")} onClick={() => setSel(open ? "" : key)}>
                 <td><span className={"exp-kind-tag " + (v.is_reel ? "reel" : "clip")}>{v.is_reel ? "reel" : "clip"}</span> {v.hook || v.title}</td>
+                <td>{v.brand ? <span className="brand-tag">{v.brand}</span> : <span className="brand-tag none" title="No brand set — pick one so it logs correctly">— set —</span>}</td>
                 <td>{cell(v, "tt")}</td><td>{cell(v, "ig")}</td><td>{cell(v, "yt")}</td>
                 <td><b>{v.score}</b></td>
                 <td><button className="sm" onClick={(e) => { e.stopPropagation(); setSel(open ? "" : key); }}>{open ? "Close" : "Track"}</button></td>

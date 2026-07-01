@@ -585,6 +585,8 @@ button.primary.danger-solid:hover { background: #db3a48; border-color: #db3a48; 
 
 /* Per-video tracker table */
 .vid-table td, .vid-table th { font-variant-numeric: tabular-nums; }
+.brand-tag { display: inline-block; font-size: 11.5px; font-weight: 700; padding: 1px 8px; border-radius: 999px; background: var(--surface-3); border: 1px solid var(--border); color: var(--text-2); }
+.brand-tag.none { color: var(--accent); background: transparent; border-style: dashed; font-weight: 600; }
 .vid-row { cursor: pointer; transition: background var(--ease); }
 .vid-row:hover { background: var(--surface-2); }
 .vid-row.sel { background: var(--surface-2); box-shadow: inset 3px 0 0 var(--primary); }
