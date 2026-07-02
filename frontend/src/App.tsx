@@ -2676,13 +2676,15 @@ function FilmstripTimeline({ pid, winStart, winEnd, clips, selected, time, zoom,
   const cEnd = clips.length ? clips[clips.length - 1][1] : winEnd;
 
   const dragHandle = (i: number, edge: "start" | "end") => (e: React.PointerEvent) => {
-    e.preventDefault(); e.stopPropagation(); onSelectClip(i);
+    e.preventDefault(); e.stopPropagation();
     const move = (ev: PointerEvent) => onTrimClip(i, edge, toTime(ev.clientX));
     const up = () => { window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up); };
     window.addEventListener("pointermove", move); window.addEventListener("pointerup", up);
   };
+  // Pressing/dragging anywhere on a block just scrubs the playhead (no selection). Trim with
+  // the edge handles; delete (on a reel with multiple scenes) via the × that shows on hover.
   const dragBlock = (i: number) => (e: React.PointerEvent) => {
-    e.preventDefault(); e.stopPropagation(); onSelectClip(i); onScrub(toTime(e.clientX));
+    e.preventDefault(); e.stopPropagation(); onScrub(toTime(e.clientX));
     const move = (ev: PointerEvent) => onScrub(toTime(ev.clientX));
     const up = () => { window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up); };
     window.addEventListener("pointermove", move); window.addEventListener("pointerup", up);
@@ -2726,8 +2728,8 @@ function FilmstripTimeline({ pid, winStart, winEnd, clips, selected, time, zoom,
               <span className="fs-block-no">{i + 1}</span>
               <div className="fs-handle l" onPointerDown={dragHandle(i, "start")} title="Trim this clip's start" />
               <div className="fs-handle r" onPointerDown={dragHandle(i, "end")} title="Trim this clip's end" />
-              {selected === i && clips.length > 1 && (
-                <button className="fs-del" title="Delete this clip" onPointerDown={(e) => e.stopPropagation()}
+              {clips.length > 1 && (
+                <button className="fs-del" title="Delete this scene" onPointerDown={(e) => e.stopPropagation()}
                   onClick={(e) => { e.stopPropagation(); onDeleteClip(i); }}>×</button>
               )}
             </div>
