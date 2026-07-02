@@ -86,6 +86,16 @@ export interface Ticket {
   scheduled_at?: string | null;
   posted_at?: string | null;
   created_at: string;
+  autopilot?: boolean;
+  gate?: string | null;
+  gate_reason?: string | null;
+  queue_kind?: string;
+}
+
+export interface AutopilotState {
+  running: boolean;
+  interval: number;
+  queue: Ticket[];
 }
 
 export interface Beat {
@@ -305,6 +315,18 @@ export const api = {
   deleteSceneVoiceover: (cid: number, idx: number): Promise<{ ok: boolean }> =>
     req(`/api/clips/${cid}/scene-voiceover/${idx}`, { method: "DELETE" }),
   sceneVoiceoverUrl: (cid: number, idx: number) => `/api/clips/${cid}/scene-voiceover/${idx}`,
+
+  // --- Autopilot (the autonomous orchestrator) ---
+  autopilotState: (): Promise<AutopilotState> => req("/api/autopilot"),
+  autopilotStart: (): Promise<AutopilotState> => req("/api/autopilot/start", { method: "POST" }),
+  autopilotStop: (): Promise<AutopilotState> => req("/api/autopilot/stop", { method: "POST" }),
+  autopilotTick: (): Promise<{ result: Record<string, string> }> => req("/api/autopilot/tick", { method: "POST" }),
+  autopilotToggle: (tid: number, on: boolean): Promise<Ticket> =>
+    req(`/api/autopilot/tickets/${tid}/toggle`, jsonInit("POST", { on })),
+  autopilotApprove: (tid: number): Promise<Ticket> => req(`/api/autopilot/tickets/${tid}/approve`, { method: "POST" }),
+  autopilotReject: (tid: number): Promise<Ticket> => req(`/api/autopilot/tickets/${tid}/reject`, { method: "POST" }),
+  autopilotRegenerate: (tid: number, note = ""): Promise<Ticket> =>
+    req(`/api/autopilot/tickets/${tid}/regenerate`, jsonInit("POST", { note })),
 
   scriptFactory: (tid: number, brief = ""): Promise<TicketWithBeats> =>
     req(`/api/tickets/${tid}/script-factory`, jsonInit("POST", { brief })),

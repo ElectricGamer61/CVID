@@ -1,5 +1,5 @@
 import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
-import { api, Beat, Clip, ExportItem, Folder, InsightsData, Outlier, Presets, Project, QueueData, QueueTicket, Ticket, VideoPerf } from "./api";
+import { api, AutopilotState, Beat, Clip, ExportItem, Folder, InsightsData, Outlier, Presets, Project, QueueData, QueueTicket, Ticket, VideoPerf } from "./api";
 import { CaptionOverlay } from "./CaptionOverlay";
 import { CaptionStyle, FALLBACK_PRESETS, groupLines, Word, wordsInRange } from "./captionStyles";
 import { Sidebar } from "./Sidebar";
@@ -16,6 +16,7 @@ type Route =
   | { name: "queue" }
   | { name: "insights" }
   | { name: "library" }
+  | { name: "autopilot" }
   | { name: "video"; tid: number }
   | { name: "project"; pid: number }
   | { name: "editor"; pid: number; cid: number; from?: "board" | "project" | "home" | "video"; tid?: number };
@@ -32,15 +33,16 @@ export default function App() {
   const goQueue = () => setRoute({ name: "queue" });
   const goInsights = () => setRoute({ name: "insights" });
   const goLibrary = () => setRoute({ name: "library" });
+  const goAutopilot = () => setRoute({ name: "autopilot" });
 
-  const NAMED: Record<string, string> = { board: "Create videos", intake: "Ideas", queue: "Schedule", insights: "Results", library: "Downloads" };
+  const NAMED: Record<string, string> = { board: "Create videos", intake: "Ideas", queue: "Schedule", insights: "Results", library: "Downloads", autopilot: "Autopilot" };
   const crumbLabel = NAMED[route.name] ?? null;
   const sbView = (route.name === "video" ? "board"
-    : ["board", "intake", "queue", "insights", "library"].includes(route.name) ? route.name : "home") as any;
+    : ["board", "intake", "queue", "insights", "library", "autopilot"].includes(route.name) ? route.name : "home") as any;
 
   return (
     <div className="shell">
-      <Sidebar view={sbView} onHome={goHome} onBoard={goBoard} onIntake={goIntake} onQueue={goQueue} onInsights={goInsights} onLibrary={goLibrary} />
+      <Sidebar view={sbView} onHome={goHome} onBoard={goBoard} onIntake={goIntake} onQueue={goQueue} onInsights={goInsights} onLibrary={goLibrary} onAutopilot={goAutopilot} />
       <main className="main">
         <header className="topbar">
           <div className="crumbs">
@@ -64,6 +66,7 @@ export default function App() {
         {route.name === "queue" && <Queue />}
         {route.name === "insights" && <Insights />}
         {route.name === "library" && <Library />}
+        {route.name === "autopilot" && <Autopilot onOpen={(tid) => setRoute({ name: "video", tid })} />}
         {route.name === "home" && <Home presets={presets} onOpen={(pid) => setRoute({ name: "project", pid })} />}
         {route.name === "project" && (
           <MomentsGrid pid={route.pid} onName={setProjName}
@@ -84,6 +87,103 @@ export default function App() {
   );
 }
 
+/* ------------------------------ Autopilot ------------------------------ */
+// The autonomous driver's control room: turn the loop on/off, watch the queue,
+// and approve / reject / regenerate each gated video with one click.
+const GATE_LABEL: Record<string, string> = {
+  awaiting_approval: "Needs your OK", awaiting_footage: "Needs footage",
+  parked: "Parked", running: "Working…", done: "Posted",
+};
+function Autopilot({ onOpen }: { onOpen: (tid: number) => void }) {
+  const [state, setState] = useState<AutopilotState | null>(null);
+  const [busy, setBusy] = useState(false);
+  const toast = useToast();
+  const refresh = () => api.autopilotState().then(setState).catch(() => {});
+  useEffect(() => { refresh(); const t = setInterval(refresh, 5000); return () => clearInterval(t); }, []);
+
+  const act = async (fn: () => Promise<unknown>, ok: string) => {
+    setBusy(true);
+    try { await fn(); toast(ok, "ok"); refresh(); }
+    catch (e: any) { toast(`Failed: ${e?.message || e}`, "err"); } finally { setBusy(false); }
+  };
+
+  const queue = state?.queue ?? [];
+  const waiting = queue.filter((t) => t.gate === "awaiting_approval" || t.gate === "awaiting_footage");
+  const parked = queue.filter((t) => t.gate === "parked");
+  const running = queue.filter((t) => !t.gate || t.queue_kind === "running");
+  const posted = queue.filter((t) => t.stage === "posted");
+
+  return (
+    <div className="page">
+      <div className="page-head">
+        <h2>Autopilot</h2>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <span className={"ap-dot" + (state?.running ? " on" : "")} />
+          <span className="muted" style={{ fontSize: 13 }}>{state?.running ? "Running" : "Paused"}</span>
+          {state?.running
+            ? <button onClick={() => act(api.autopilotStop, "Autopilot paused")} disabled={busy}>Pause</button>
+            : <button className="primary" onClick={() => act(api.autopilotStart, "Autopilot running")} disabled={busy}>Start</button>}
+          <button onClick={() => act(() => api.autopilotTick(), "Advanced one step")} disabled={busy} title="Advance every enrolled video one step now">Run once</button>
+        </div>
+      </div>
+      <div className="ap-digest">
+        <span><b>{waiting.length}</b> awaiting you</span>
+        <span><b>{running.length}</b> working</span>
+        <span><b>{parked.length}</b> parked</span>
+        <span><b>{posted.length}</b> posted</span>
+      </div>
+
+      {queue.length === 0 && (
+        <div className="empty"><div className="big" style={{ fontSize: 26 }}>🤖</div>
+          <div style={{ fontWeight: 700, color: "var(--text)" }}>No videos on autopilot yet</div>
+          <div>Open a video and turn on <b>Autopilot</b> to let the app draft, assemble, and queue it for you.</div>
+        </div>
+      )}
+
+      {waiting.length > 0 && <h3 className="ap-sec">Waiting for you ({waiting.length})</h3>}
+      {waiting.map((t) => (
+        <div key={t.id} className="ap-card ap-wait">
+          <div className="ap-card-main" onClick={() => onOpen(t.id)}>
+            <div className="ap-hook">{t.hook_text || t.angle || "Untitled"}</div>
+            <div className="ap-sub">{t.brand} · {GATE_LABEL[t.gate || "running"]}{t.gate_reason ? ` — ${t.gate_reason}` : ""}</div>
+          </div>
+          <div className="ap-actions" onClick={(e) => e.stopPropagation()}>
+            {t.gate === "awaiting_footage"
+              ? <button className="primary" onClick={() => onOpen(t.id)}>Add footage</button>
+              : <button className="primary" onClick={() => act(() => api.autopilotApprove(t.id), "Approved")} disabled={busy}>Approve</button>}
+            <button onClick={() => act(() => api.autopilotRegenerate(t.id), "Regenerating")} disabled={busy}>Regenerate</button>
+            <button className="danger" onClick={() => act(() => api.autopilotReject(t.id), "Removed from autopilot")} disabled={busy}>Kill</button>
+          </div>
+        </div>
+      ))}
+
+      {parked.length > 0 && <h3 className="ap-sec">Parked — needs a fix ({parked.length})</h3>}
+      {parked.map((t) => (
+        <div key={t.id} className="ap-card ap-parked">
+          <div className="ap-card-main" onClick={() => onOpen(t.id)}>
+            <div className="ap-hook">{t.hook_text || t.angle || "Untitled"}</div>
+            <div className="ap-sub">{t.brand} · {t.gate_reason || "parked"}</div>
+          </div>
+          <div className="ap-actions" onClick={(e) => e.stopPropagation()}>
+            <button onClick={() => act(() => api.autopilotRegenerate(t.id), "Retrying")} disabled={busy}>Retry</button>
+            <button className="danger" onClick={() => act(() => api.autopilotReject(t.id), "Removed")} disabled={busy}>Kill</button>
+          </div>
+        </div>
+      ))}
+
+      {running.length > 0 && <h3 className="ap-sec">Working ({running.length})</h3>}
+      {running.map((t) => (
+        <div key={t.id} className="ap-card" onClick={() => onOpen(t.id)}>
+          <div className="ap-card-main">
+            <div className="ap-hook">{t.hook_text || t.angle || "Untitled"}</div>
+            <div className="ap-sub">{t.brand} · {phaseLabel(t.stage)}</div>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 /* ------------------------------- Board --------------------------------- */
 // The 8 DB stages collapse into 4 dead-simple Board columns (matches the how-banner).
 // Stage stays the DB source of truth; this is display-only grouping.
@@ -95,6 +195,7 @@ const PHASES: Phase[] = [
   { key: "posted", label: "4. Posted",  stages: ["scheduled", "posted"] },
 ];
 const phaseOf = (stage: string) => Math.max(0, PHASES.findIndex((p) => p.stages.includes(stage)));
+const phaseLabel = (stage: string) => PHASES[phaseOf(stage)].label;
 const PHASE_HINT: Record<string, string> = {
   idea: "New videos start here", make: "Write & film your scenes",
   ready: "Made — ready to post", posted: "Posted videos land here",
@@ -359,6 +460,11 @@ function VideoWorkspace({ tid, presets, onBack, onOpenEditor }: { tid: number; p
                   onChange={(e) => patchT({ capture_mode: e.target.value })}>
                   {modes.map((m) => <option key={m} value={m}>{modeLabel(m)}</option>)}
                 </select>
+                <button className={"vw-ap-toggle" + (ticket.autopilot ? " on" : "")}
+                  title="Let Autopilot draft, assemble, and queue this video for you"
+                  onClick={async () => { try { await api.autopilotToggle(tid, !ticket.autopilot); load(); toast(ticket.autopilot ? "Autopilot off for this video" : "On autopilot — check the Autopilot tab", "ok"); } catch (e: any) { toast(`Failed: ${e?.message || e}`, "err"); } }}>
+                  🤖 {ticket.autopilot ? "On autopilot" : "Autopilot"}
+                </button>
               </div>
             </div>
 
