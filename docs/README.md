@@ -21,7 +21,8 @@ docs/
 │   ├── 02-2026-07-01-session.md
 │   ├── 03-2026-07-01-next-session-handoff.md
 │   ├── 04-2026-07-02-next-steps.md        ← editor pivot plan (next build)
-│   └── 05-2026-07-02-autopilot-master-plan.md  ← latest session
+│   ├── 05-2026-07-02-autopilot-master-plan.md
+│   └── 06-2026-07-02-editor-and-autopilot-build.md  ← latest session
 └── reference/
     └── perf-sheet-AppsScript.gs           the Google Sheet Apps Script
 ```
@@ -33,5 +34,8 @@ docs/
 - [../GOAL.md](../GOAL.md) — pipeline build goal (used by the `goal` skill)
 
 ## Current focus
-1. **Editor** — back to the custom ClipEditor, per [timeline/04-2026-07-02-next-steps.md](timeline/04-2026-07-02-next-steps.md). ← active
-2. **Autopilot** — master plan locked in [autopilot/master-plan.md](autopilot/master-plan.md); phases A–D start after editor Phase 4.
+1. **Autopilot** — A–D shipped (cartridges, orchestrator, gates, ideation feeder, per-brand
+   learning, control-room UI); see [timeline/06](timeline/06-2026-07-02-editor-and-autopilot-build.md).
+   Remaining: set Upload-Post creds for the first live autonomous post; D polish (day-7 cards, UI autonomy dial).
+2. **Editor** — P1 (FreeCut shelved) + P2 (bug fixes) done; **P3 (transcript editor)** and
+   **P4 (AI auto-effects)** remain, per [timeline/04](timeline/04-2026-07-02-next-steps.md).
