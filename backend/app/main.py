@@ -63,6 +63,7 @@ class ClipPatch(BaseModel):
     style: Optional[dict] = None  # caption style overrides (stored as style_json)
     words: Optional[list] = None  # edited caption words (stored as words_json)
     cuts: Optional[list] = None   # removed middle ranges [[a,b],...] (stored as cuts_json)
+    splits: Optional[list] = None  # split points [t1,...] (stored as splits_json)
 
 
 class CreateTicket(BaseModel):
@@ -1250,19 +1251,42 @@ def build_edit(tid: int):
         raise HTTPException(500, f"build failed: {e}")
     (settings.project_dir(pid) / "words.json").write_text(
         json.dumps({"words": result["words"]}, ensure_ascii=False), encoding="utf-8")
+    full = result["duration"]
+    new_scene_ct = len(result["scenes"])
     with get_session() as s:
-        clip = s.exec(select(Clip).where(Clip.project_id == pid)).first() or Clip(project_id=pid, idx=0)
-        clip.start, clip.end, clip.title = 0.0, result["duration"], title
+        clip = s.exec(select(Clip).where(Clip.project_id == pid)).first()
+        # Preserve the user's edits across a rebuild when the timeline shape is unchanged
+        # (same scene count) and the clip actually carries edits — a trim/cut/split/voice.
+        # If the scene count changed, the old edits no longer map, so wipe to a fresh clip.
+        prev_scene_ct = 0
+        if clip and clip.markers_json:
+            try:
+                prev_scene_ct = len(json.loads(clip.markers_json))
+            except Exception:  # noqa: BLE001
+                prev_scene_ct = 0
+        edited = bool(clip and (clip.words_json or clip.cuts_json or clip.splits_json
+                                or clip.voiceover_path or clip.scene_vo_json
+                                or (clip.start or 0) > 0.05
+                                or (0 < (clip.end or 0) < full - 0.05)))
+        reuse = bool(clip and edited and prev_scene_ct == new_scene_ct)
+        if not clip:
+            clip = Clip(project_id=pid, idx=0)
+        clip.title = title
         clip.aspect, clip.caption_preset = "9:16", "capcut"
         clip.score = reel_score                       # rate the reel from its script
-        clip.markers_json = json.dumps(result["scenes"])
-        clip.status, clip.words_json, clip.cuts_json = "suggested", None, None
+        clip.markers_json = json.dumps(result["scenes"])  # markers always refresh
+        if not reuse:
+            clip.start, clip.end = 0.0, full
+            clip.words_json = clip.cuts_json = clip.splits_json = None
+            clip.voiceover_path = clip.scene_vo_json = None
+        clip.status = "suggested"
         s.add(clip); s.commit(); s.refresh(clip); cid = clip.id
         proj = s.get(Project, pid)
-        proj.status, proj.stage, proj.progress, proj.duration = "ready", "Ready", 100, result["duration"]
+        proj.status, proj.stage, proj.progress, proj.duration = "ready", "Ready", 100, full
         s.add(proj)
         t = s.get(Ticket, tid); t.project_id = pid; s.add(t); s.commit()
-    return {"pid": pid, "cid": cid}
+    return {"pid": pid, "cid": cid, "reused_edits": reuse,
+            "wiped_edits": bool(edited and not reuse)}
 
 
 # --------------------------------------------------------------------------- #
@@ -1280,12 +1304,15 @@ def patch_clip(cid: int, body: ClipPatch):
         style = data.pop("style", None)
         words = data.pop("words", None)
         cuts = data.pop("cuts", None)
+        splits = data.pop("splits", None)
         if style is not None:
             clip.style_json = json.dumps(style)
         if words is not None:
             clip.words_json = json.dumps(words)
         if cuts is not None:
             clip.cuts_json = json.dumps(cuts)
+        if splits is not None:
+            clip.splits_json = json.dumps(splits)
         for k, v in data.items():
             setattr(clip, k, v)
         clip.status = "suggested"  # edits invalidate any previous render

@@ -45,6 +45,7 @@ export interface Clip {
   style_json?: string;
   words_json?: string;
   cuts_json?: string;
+  splits_json?: string;
   markers_json?: string;
   voiceover_path?: string | null;
   scene_vo_json?: string;
@@ -239,7 +240,7 @@ export const api = {
     req("/api/projects/upload", { method: "POST", body: form }),
   patchClip: (
     cid: number,
-    body: Partial<Clip> & { style?: CaptionStyle; words?: Word[]; cuts?: number[][] }
+    body: Partial<Clip> & { style?: CaptionStyle; words?: Word[]; cuts?: number[][]; splits?: number[] }
   ): Promise<Clip> =>
     req(`/api/clips/${cid}`, jsonInit("PATCH", body)),
   renderClip: (cid: number): Promise<{ status: string }> =>
@@ -284,7 +285,7 @@ export const api = {
     req(`/api/tickets/${tid}/use-clip/${cid}`, { method: "POST" }),
   ticketDownloadUrl: (tid: number) => `/api/tickets/${tid}/download`,
   ticketThumbUrl: (tid: number) => `/api/tickets/${tid}/thumb`,
-  buildEdit: (tid: number): Promise<{ pid: number; cid: number }> =>
+  buildEdit: (tid: number): Promise<{ pid: number; cid: number; reused_edits?: boolean; wiped_edits?: boolean }> =>
     req(`/api/tickets/${tid}/build-edit`, { method: "POST" }),
 
   // Clip voiceover (recorded/uploaded in the editor)

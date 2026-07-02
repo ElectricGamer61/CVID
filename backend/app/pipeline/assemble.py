@@ -233,7 +233,11 @@ def render_scene_reel(source: Path, out_path: Path, markers: list[dict],
 
         kept_dur = sum(b - a for a, b in scene_segs)
         if has_vo:
-            dur = max(0.8, float(probe_duration(Path(vo)) or kept_dur))
+            # Voice-first, but a trim must still shorten output: clamp to min(video, voice).
+            # If the scene was trimmed shorter than its VO, the VO is truncated to the kept
+            # length (`-t dur` below) instead of looping the video out to the full VO.
+            vo_dur = float(probe_duration(Path(vo)) or kept_dur)
+            dur = max(0.8, min(float(kept_dur), vo_dur))
             local_words = _even_split(" ".join(w["word"] for w in scene_words), dur)
         else:
             dur = max(0.8, float(kept_dur))

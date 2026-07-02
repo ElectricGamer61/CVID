@@ -292,7 +292,12 @@ function VideoWorkspace({ tid, presets, onBack, onOpenEditor }: { tid: number; p
   const [building, setBuilding] = useState(false);
   const openEditor = async () => {
     setBuilding(true);
-    try { const r = await api.buildEdit(tid); onOpenEditor(r.pid, r.cid); }
+    try {
+      const r = await api.buildEdit(tid);
+      if (r.wiped_edits) toast("Scenes changed — previous trims/cuts were reset", "err");
+      else if (r.reused_edits) toast("Kept your trims & cuts", "ok");
+      onOpenEditor(r.pid, r.cid);
+    }
     catch (e: any) { toast(`Couldn't open editor: ${e?.message || e}`, "err"); }
     finally { setBuilding(false); }
   };
@@ -1509,6 +1514,7 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
     words: jsonOr(clip.words_json, wordsInRange(words, clip.start, clip.end)),
     center: clip.crop_center, resolution: clip.resolution ?? "1080p", title: clip.title,
     cuts: jsonOr(clip.cuts_json, [] as [number, number][]),
+    splits: jsonOr(clip.splits_json, [] as number[]),
   };
   const { doc, set, undo, redo, canUndo, canRedo } = useHistory<EditDoc>(initDoc);
 
@@ -1517,7 +1523,6 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
   // Multi-clip timeline: which block is selected + transient split marks (a no-gap
   // split that isn't stored in start/end/cuts — see applySplits).
   const [selClip, setSelClip] = useState<number | null>(null);
-  const [splitMarks, setSplitMarks] = useState<number[]>([]);
   // Resync captions from the transcript when the clip range moves to a new section.
   // Saved words are respected on open; once the user hand-edits words this session,
   // we stop auto-resyncing so their edits aren't clobbered by a later trim.
@@ -1589,7 +1594,7 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
   const sceneBounds = useMemo(() => hasScenes
     ? markers.slice(1).map((m) => m.start).filter((s) => s > clipStart + 0.05 && s < doc.end - 0.05)
     : [], [hasScenes, markers, clipStart, doc.end]);
-  const blocks = useMemo(() => applySplits(segments, [...splitMarks, ...sceneBounds]), [segments, splitMarks, sceneBounds]);
+  const blocks = useMemo(() => applySplits(segments, [...doc.splits, ...sceneBounds]), [segments, doc.splits, sceneBounds]);
   const allowAdd = !hasScenes;   // can't drop an external clip into a stitched reel
   // Every block mutation funnels through set(docFromClips()) so doc.start/end/cuts
   // stays canonical (preview, thumbnails, autosave, undo/redo, render all unchanged).
@@ -1598,13 +1603,14 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
     commitClips(trimClip(blocks, i, edge, snapTrim(words, t, edge === "end"), win.s, win.e));
   };
   const onDeleteClip = (i: number) => {
-    commitClips(deleteClip(blocks, i)); setSelClip(null); setSplitMarks([]);
+    // Deleting a block re-derives start/end/cuts; clear splits (their geometry changed).
+    set({ ...docFromClips(deleteClip(blocks, i)), splits: [] }); setSelClip(null);
   };
   const onAddClip = (a: number, b: number) => { if (allowAdd) commitClips(addClip(blocks, a, b, win.s, win.e)); };
   const addClipAtPlayhead = () => onAddClip(time, Math.min(time + 3, win.e));
   const splitAtPlayhead = () => {
     const i = blocks.findIndex(([a, b]) => time > a && time < b);
-    if (i >= 0 && splitClip(blocks, i, time) !== blocks) setSplitMarks((m) => [...m, time]);
+    if (i >= 0 && splitClip(blocks, i, time) !== blocks) set({ splits: [...doc.splits, time].sort((x, y) => x - y) });
   };
   const matchCaptionsToClips = () => { if (words.length) { setManualWords(false); set({ words: blocks.flatMap(([a, b]) => wordsInRange(words, a, b)) }); } };
 
@@ -1614,7 +1620,7 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
     if (firstRun.current) { firstRun.current = false; return; }
     setSaveState("saving");
     const id = setTimeout(async () => {
-      await api.patchClip(clip.id, { start: doc.start, end: doc.end, caption_preset: doc.preset, resolution: doc.resolution, crop_center: doc.center, style: doc.style, words: doc.words, title: doc.title, cuts: doc.cuts });
+      await api.patchClip(clip.id, { start: doc.start, end: doc.end, caption_preset: doc.preset, resolution: doc.resolution, crop_center: doc.center, style: doc.style, words: doc.words, title: doc.title, cuts: doc.cuts, splits: doc.splits });
       setSaveState("saved"); onChange();
     }, 800);
     return () => clearTimeout(id);
@@ -1929,7 +1935,7 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
 }
 
 /* ---------------- wayin-style clip editor helpers ---------------- */
-type EditDoc = { start: number; end: number; preset: string; style: CaptionStyle; words: Word[]; center: number; resolution: string; title: string; cuts: [number, number][] };
+type EditDoc = { start: number; end: number; preset: string; style: CaptionStyle; words: Word[]; center: number; resolution: string; title: string; cuts: [number, number][]; splits: number[] };
 type Seg = [number, number];
 
 /* Keep a trim handle off the MIDDLE of a spoken word so trimming never chops a
