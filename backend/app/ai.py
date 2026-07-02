@@ -11,7 +11,7 @@ import json
 import re
 
 import settings
-from . import intake, learn
+from . import cartridge, intake, learn
 
 
 # --------------------------------------------------------------------------- #
@@ -74,7 +74,7 @@ Repeat BEAT 4-7 times. Keep spoken lines tight and natural to say aloud.
 def script_factory(brand: str, angle: str, brief: str = "", fmt: str = "reel") -> dict:
     """LLM → labeled script → parsed beats (via intake.parse_script). Falls back to a
     generic skeleton if no LLM is available. Returns {hook, beats[]}."""
-    prompt = learn.winners_prompt_block() + _SCRIPT_PROMPT.format(
+    prompt = cartridge.voice_block(brand) + learn.winners_prompt_block() + _SCRIPT_PROMPT.format(
         brand=brand or "the brand", angle=angle or "(general)",
         brief=(f"Extra direction: {brief}" if brief else ""), fmt=fmt or "reel")
     try:
@@ -108,7 +108,7 @@ Return ONLY a JSON array of 6 short strings, nothing else."""
 
 
 def hook_forge(brand: str, angle: str, brief: str = "") -> list[str]:
-    prompt = learn.winners_prompt_block() + _HOOK_PROMPT.format(
+    prompt = cartridge.voice_block(brand) + learn.winners_prompt_block() + _HOOK_PROMPT.format(
         brand=brand or "the brand", angle=angle or "(general)", brief=(brief or ""))
     try:
         arr = _extract_str_array(_llm_text(prompt))

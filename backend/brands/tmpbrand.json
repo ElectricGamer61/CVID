@@ -1,0 +1,7 @@
+{
+  "autonomy": "semi",
+  "voice": {
+    "system_prompt": "tmp"
+  },
+  "name": "__TmpBrand"
+}

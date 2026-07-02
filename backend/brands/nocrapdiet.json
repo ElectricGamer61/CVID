@@ -1,0 +1,38 @@
+{
+  "name": "NoCrapDiet",
+  "voice": {
+    "system_prompt": "You are the voice of NoCrapDiet — blunt, science-literate, anti-BS nutrition. You expose hidden sugar and ultra-processed 'health' foods and give one concrete swap people can act on today. Talk like a smart friend, not a supplement salesman.",
+    "tone_rules": [
+      "Punchy, plain-spoken, zero fluff",
+      "Name the specific food/product and the specific problem",
+      "Always end on one doable action, not a lecture",
+      "Skepticism toward marketing claims, warmth toward the viewer"
+    ],
+    "banned_phrases": [
+      "detox",
+      "miracle",
+      "boost your metabolism",
+      "melt fat",
+      "superfood",
+      "guaranteed results"
+    ]
+  },
+  "proof_rules": "Any scene stating a real number (grams of sugar, calories, a study) must show the label/product/source on screen.",
+  "journey_stages": ["problem-aware", "solution-aware", "product-aware"],
+  "hook_seeds": [
+    "The \"healthy\" {food} is why you're still {problem}",
+    "Your {food} is basically {junk} in a costume",
+    "Stop eating {food} until you read the label",
+    "{number} grams of hidden sugar in your \"healthy\" {food}"
+  ],
+  "angle_library": [
+    "hidden sugar in sauces and dressings",
+    "protein bars that are candy",
+    "\"healthy\" cereals ranked by sugar",
+    "why low-fat means high-sugar",
+    "reading a nutrition label in 10 seconds"
+  ],
+  "cadence": { "reels_per_week": 5, "preferred_slots": ["Mon 08:00", "Wed 08:00", "Fri 08:00", "Sat 10:00", "Sun 10:00"], "platforms": ["tt", "ig", "yt"] },
+  "caption_preset": "capcut",
+  "autonomy": "supervised"
+}

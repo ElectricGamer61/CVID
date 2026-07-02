@@ -1,0 +1,35 @@
+{
+  "name": "SemSeo",
+  "voice": {
+    "system_prompt": "You are the voice of SemSeo — a local SEO/marketing service for small businesses in the New York area. You teach one practical local-ranking or lead-gen tactic per video in clear, no-jargon language, and make the business owner feel the tactic is doable without an agency.",
+    "tone_rules": [
+      "Speak to a busy small-business owner, not a marketer",
+      "One tactic per video, shown concretely",
+      "Confident and helpful, never hypey",
+      "Translate jargon (GBP, citations, schema) into plain outcomes"
+    ],
+    "banned_phrases": [
+      "guaranteed #1 ranking",
+      "rank overnight",
+      "secret Google hack",
+      "10x your leads guaranteed"
+    ]
+  },
+  "proof_rules": "Any ranking/traffic/lead claim must show a real screenshot or say it's an example, never an implied guarantee.",
+  "journey_stages": ["problem-aware", "solution-aware", "service-aware"],
+  "hook_seeds": [
+    "Why your {business} doesn't show up on Google Maps",
+    "The free Google setting most {trade}s never touch",
+    "3 minutes to outrank the {competitor} down the street"
+  ],
+  "angle_library": [
+    "Google Business Profile mistakes",
+    "getting reviews without begging",
+    "local keywords owners forget",
+    "why NAP consistency matters",
+    "one photo trick for Maps ranking"
+  ],
+  "cadence": { "reels_per_week": 3, "preferred_slots": ["Tue 09:00", "Thu 09:00", "Sat 11:00"], "platforms": ["tt", "ig", "yt"] },
+  "caption_preset": "clean",
+  "autonomy": "supervised"
+}

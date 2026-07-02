@@ -15,7 +15,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 import settings
-from . import ai, intake, sheets
+from . import ai, cartridge, intake, sheets
 from .db import Angle, Beat, Clip, Folder, Outlier, Perf, Project, Ticket, get_session, init_db
 from .jobs import get_words, submit_analyze
 from .pipeline import captions as caps
@@ -36,6 +36,27 @@ _assemble_status: dict[int, dict] = {}
 @app.on_event("startup")
 def _startup():
     init_db()
+
+
+# --------------------------------------------------------------------------- #
+# Brand cartridges (the "who am I posting as" layer — one JSON file per brand)
+# --------------------------------------------------------------------------- #
+@app.get("/api/brands")
+def list_brands():
+    return {"brands": cartridge.list_brands()}
+
+
+@app.get("/api/brands/{name}")
+def get_brand(name: str):
+    return cartridge.load(name) or {"name": name}
+
+
+@app.put("/api/brands/{name}")
+def put_brand(name: str, body: dict):
+    try:
+        return cartridge.save(name, body)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
 
 
 # --------------------------------------------------------------------------- #
