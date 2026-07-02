@@ -1987,10 +1987,6 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
         </div>
 
         <div className="ed2-panel">
-          {tool === "clips" && <ClipsPanel blocks={blocks} selected={selClip} onSelect={setSelClip} onTrim={onTrimClip}
-            onDelete={onDeleteClip} onAdd={addClipAtPlayhead} onSplit={splitAtPlayhead} time={time} onSeek={seek}
-            onMatchCaptions={matchCaptionsToClips} allowAdd={allowAdd} isReel={hasScenes} />}
-          {tool === "trim" && <TrimPanel doc={doc} set={set} max={win.e} />}
           {tool === "cut" && <CutPanel doc={doc} set={set} time={time} onSeek={seek} />}
           {tool === "voice" && (hasScenes
             ? <SceneVoicePanel cid={clip.id} markers={markers} sceneIdx={Math.min(sceneIdx, markers.length - 1)} onSelectScene={selectScene}
@@ -2324,17 +2320,12 @@ function subtractRange(cuts: [number, number][], [a, b]: [number, number]): [num
 }
 
 const TOOLS: { id: string; label: string; icon: string; soon?: boolean }[] = [
-  { id: "clips", label: "Clips", icon: "▭" },
-  { id: "trim", label: "Trim", icon: "✂" },
   { id: "cut", label: "Cut", icon: "⌦" },
   { id: "reframe", label: "Reframe", icon: "⛶" },
   { id: "subs", label: "Subtitles", icon: "CC" },
   { id: "voice", label: "Voice", icon: "🎙" },
   { id: "text", label: "Transcript", icon: "T" },
   { id: "fx", label: "AI Effects", icon: "✨" },
-  { id: "broll", label: "B-roll", icon: "▦", soon: true },
-  { id: "music", label: "Music", icon: "♪", soon: true },
-  { id: "transitions", label: "Transitions", icon: "⇄", soon: true },
 ];
 const COMING_SOON = TOOLS.filter((t) => t.soon).map((t) => t.id);
 
