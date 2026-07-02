@@ -126,10 +126,23 @@ def build_ass(words: list[dict], clip_start: float, clip_end: float,
 
     local = [
         {"start": w["start"] - clip_start, "end": w["end"] - clip_start,
-         "word": (w["word"].upper() if p.uppercase else w["word"]).strip()}
+         "word": (w["word"].upper() if p.uppercase else w["word"]).strip(),
+         # Opt-in AI auto-effect keys (absent on normal words → rendering unchanged).
+         "emphasis": bool(w.get("emphasis")), "emoji": (w.get("emoji") or "").strip()}
         for w in words
         if w["end"] > clip_start and w["start"] < clip_end and w["word"].strip()
     ]
+
+    def _render(lw: dict) -> str:
+        """A single word span, honoring optional emphasis (persistent pop in the highlight
+        color) and a trailing emoji. Plain words with neither key are byte-identical to before."""
+        txt = lw["word"]
+        if lw.get("emoji"):
+            txt = f"{txt} {lw['emoji']}"
+        if lw.get("emphasis"):
+            return f"{{\\1c{hi_c}\\b1\\fscx118\\fscy118}}{txt}{{\\1c{base_c}\\b0\\fscx100\\fscy100}}"
+        return txt
+
     body = []
     for line in _group_lines(local, p.max_words):
         if not line:
@@ -140,13 +153,14 @@ def build_ass(words: list[dict], clip_start: float, clip_end: float,
             parts = []
             for j, lw in enumerate(line):
                 if j == i:
-                    # active word: highlight color + slight scale pop
+                    # active word: highlight color + slight scale pop (+ emoji if any)
+                    active = lw["word"] + (f" {lw['emoji']}" if lw.get("emoji") else "")
                     parts.append(
-                        f"{{\\1c{hi_c}\\fscx112\\fscy112}}{lw['word']}"
+                        f"{{\\1c{hi_c}\\fscx112\\fscy112}}{active}"
                         f"{{\\1c{base_c}\\fscx100\\fscy100}}"
                     )
                 else:
-                    parts.append(lw["word"])
+                    parts.append(_render(lw))
             text = " ".join(parts)
             body.append(f"Dialogue: 0,{_ts(start)},{_ts(end)},Base,,0,0,0,,{text}")
     return _ass_header(p, out_w, out_h) + "\n".join(body) + "\n"

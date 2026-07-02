@@ -51,20 +51,28 @@ export function CaptionOverlay({
         ...pos,
       }}
     >
-      {cap.line.map((w, i) => (
-        <span
-          key={i}
-          style={{
-            color: i === cap.activeIdx ? style.highlight : style.color,
-            display: "inline-block",
-            transform: i === cap.activeIdx ? "scale(1.12)" : "scale(1)",
-            transition: "transform 0.08s",
-            margin: "0 0.12em",
-          }}
-        >
-          {style.uppercase ? w.word.trim().toUpperCase() : w.word.trim()}
-        </span>
-      ))}
+      {cap.line.map((w, i) => {
+        const active = i === cap.activeIdx;
+        // Opt-in AI emphasis: persistent pop in the highlight color (mirrors the burned ASS).
+        const emph = !!w.emphasis;
+        const scale = active ? 1.12 : emph ? 1.16 : 1;
+        return (
+          <span
+            key={i}
+            style={{
+              color: active || emph ? style.highlight : style.color,
+              fontWeight: emph ? 900 : undefined,
+              display: "inline-block",
+              transform: `scale(${scale})`,
+              transition: "transform 0.08s",
+              margin: "0 0.12em",
+            }}
+          >
+            {style.uppercase ? w.word.trim().toUpperCase() : w.word.trim()}
+            {w.emoji ? <span style={{ marginLeft: "0.15em" }}>{w.emoji}</span> : null}
+          </span>
+        );
+      })}
     </div>
   );
 }

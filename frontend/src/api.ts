@@ -46,6 +46,7 @@ export interface Clip {
   words_json?: string;
   cuts_json?: string;
   splits_json?: string;
+  effects_json?: string;
   markers_json?: string;
   voiceover_path?: string | null;
   scene_vo_json?: string;
@@ -97,6 +98,10 @@ export interface AutopilotState {
   interval: number;
   queue: Ticket[];
 }
+
+export interface ZoomKey { t: number; scale: number; duration: number }
+export interface SfxCue { t: number; name: string }
+export interface ClipEffects { zoom?: ZoomKey[]; sfx?: SfxCue[] }
 
 export interface Beat {
   id: number;
@@ -250,7 +255,7 @@ export const api = {
     req("/api/projects/upload", { method: "POST", body: form }),
   patchClip: (
     cid: number,
-    body: Partial<Clip> & { style?: CaptionStyle; words?: Word[]; cuts?: number[][]; splits?: number[] }
+    body: Partial<Clip> & { style?: CaptionStyle; words?: Word[]; cuts?: number[][]; splits?: number[]; effects?: ClipEffects }
   ): Promise<Clip> =>
     req(`/api/clips/${cid}`, jsonInit("PATCH", body)),
   renderClip: (cid: number): Promise<{ status: string }> =>
@@ -327,6 +332,10 @@ export const api = {
   autopilotReject: (tid: number): Promise<Ticket> => req(`/api/autopilot/tickets/${tid}/reject`, { method: "POST" }),
   autopilotRegenerate: (tid: number, note = ""): Promise<Ticket> =>
     req(`/api/autopilot/tickets/${tid}/regenerate`, jsonInit("POST", { note })),
+
+  aiEffects: (cid: number, opts: { emphasis: boolean; zoom: boolean; sfx: boolean }): Promise<{
+    clip: Clip; words: Word[]; effects: ClipEffects; counts: Record<string, number>;
+  }> => req(`/api/clips/${cid}/ai-effects`, jsonInit("POST", opts)),
 
   scriptFactory: (tid: number, brief = ""): Promise<TicketWithBeats> =>
     req(`/api/tickets/${tid}/script-factory`, jsonInit("POST", { brief })),

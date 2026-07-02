@@ -19,6 +19,8 @@ export interface Word {
   start: number;
   end: number;
   word: string;
+  emphasis?: boolean;   // opt-in AI auto-effect: punch this word visually
+  emoji?: string;       // opt-in AI auto-effect: emoji shown with this word
 }
 
 // Fallback presets if the API hasn't loaded yet (kept in sync with captions.PRESETS).

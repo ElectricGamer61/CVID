@@ -12,42 +12,7 @@ import re
 
 import settings
 from . import cartridge, intake, learn
-
-
-# --------------------------------------------------------------------------- #
-# LLM plumbing (mirrors brain.py's clients)
-# --------------------------------------------------------------------------- #
-def _ollama_chat(prompt: str) -> str:
-    import ollama
-    client = ollama.Client(host=settings.OLLAMA_HOST)
-    resp = client.chat(model=settings.OLLAMA_MODEL,
-                       messages=[{"role": "user", "content": prompt}],
-                       options={"temperature": 0.7})
-    return resp["message"]["content"]
-
-
-def _gemini_chat(prompt: str) -> str:
-    import google.generativeai as genai
-    if not settings.GEMINI_API_KEY:
-        raise RuntimeError("GEMINI_API_KEY not set")
-    genai.configure(api_key=settings.GEMINI_API_KEY)
-    return genai.GenerativeModel(settings.GEMINI_MODEL).generate_content(prompt).text
-
-
-def _llm_text(prompt: str, brain: str | None = None) -> str:
-    """Try the preferred brain, then the other, raising if none work."""
-    brain = brain or settings.DEFAULT_BRAIN
-    order = [brain] + [b for b in ("ollama", "gemini") if b != brain]
-    last: Exception | None = None
-    for b in order:
-        try:
-            if b == "ollama":
-                return _ollama_chat(prompt)
-            if b == "gemini":
-                return _gemini_chat(prompt)
-        except Exception as e:  # noqa: BLE001
-            last = e
-    raise RuntimeError(f"no LLM available ({last})")
+from .pipeline.llm import llm_text as _llm_text  # shared dispatch (also used by gates.py)
 
 
 # --------------------------------------------------------------------------- #

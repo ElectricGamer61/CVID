@@ -1,5 +1,5 @@
 import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
-import { api, AutopilotState, Beat, Clip, ExportItem, Folder, InsightsData, Outlier, Presets, Project, QueueData, QueueTicket, Ticket, VideoPerf } from "./api";
+import { api, AutopilotState, Beat, Clip, ClipEffects, ExportItem, Folder, InsightsData, Outlier, Presets, Project, QueueData, QueueTicket, Ticket, VideoPerf } from "./api";
 import { CaptionOverlay } from "./CaptionOverlay";
 import { CaptionStyle, FALLBACK_PRESETS, groupLines, Word, wordsInRange } from "./captionStyles";
 import { Sidebar } from "./Sidebar";
@@ -1633,6 +1633,8 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
   // Saved words are respected on open; once the user hand-edits words this session,
   // we stop auto-resyncing so their edits aren't clobbered by a later trim.
   const [manualWords, setManualWords] = useState<boolean>(false);
+  // Opt-in AI auto-effects (zoom/sfx). Emphasis/emoji live on doc.words; these drive the preview.
+  const [effects, setEffects] = useState<ClipEffects>(() => jsonOr(clip.effects_json, {} as ClipEffects));
   const [time, setTime] = useState(clip.start);
   const [playing, setPlaying] = useState(false);
   const [recording, setRecording] = useState(false);
@@ -1922,6 +1924,11 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
   // teleprompter both read this + edited-time words, so cuts compress smoothly instead of
   // the two disagreeing (captions edited, teleprompter source) and flashing at every seam.
   const editedTime = srcToEdited(time, segments);
+  // Punch-in zoom preview: match the current SOURCE time against the stored zoom windows.
+  const zoomScale = useMemo(() => {
+    for (const k of effects.zoom ?? []) if (time >= k.t && time < k.t + k.duration) return k.scale;
+    return 1;
+  }, [effects, time]);
 
   const rendered = clip.status === "rendered";
   const busy = clip.status === "rendering";
@@ -1964,7 +1971,7 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
             style={tool === "reframe" ? undefined : { cursor: "pointer" }}
             onClick={() => { if (tool !== "reframe") togglePlay(); }}
             title={tool === "reframe" ? undefined : "Click or press Space to play / pause"}>
-            <video ref={videoRef} src={api.sourceUrl(pid)} onLoadedMetadata={onLoaded} style={{ objectPosition: `${doc.center * 100}% 50%` }} playsInline />
+            <video ref={videoRef} src={api.sourceUrl(pid)} onLoadedMetadata={onLoaded} style={{ objectPosition: `${doc.center * 100}% 50%`, transform: zoomScale !== 1 ? `scale(${zoomScale})` : undefined, transition: "transform 0.12s ease-out" }} playsInline />
             <audio ref={audioRef} src={hasScenes ? undefined : (voUrl ?? undefined)} preload="auto" />
             <CaptionOverlay words={editedWords} time={editedTime} style={doc.style} containerHeight={boxH} />
             {tool === "reframe" && <div className="reframe-guide" style={{ left: `${doc.center * 100}%` }} />}
@@ -1994,6 +2001,8 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
           {tool === "reframe" && <ReframePanel center={doc.center} set={set} autoCenter={doAutoCenter} autoBusy={autoBusy} />}
           {tool === "text" && <TranscriptEditor words={doc.words} cuts={doc.cuts} start={doc.start} end={doc.end}
             time={time} onSeek={seek} onCutsChange={(c) => set({ cuts: c })} />}
+          {tool === "fx" && <AIEffectsPanel cid={clip.id}
+            onApplied={(w, eff) => { setManualWords(true); set({ words: w }); setEffects(eff); onChange(); }} />}
           {tool === "subs" && (
             <div className="panel-body">
               <div className="seg-toggle wide">
@@ -2245,6 +2254,48 @@ function TranscriptEditor({ words, cuts, start, end, time, onSeek, onCutsChange 
   );
 }
 
+/* Submagic-style AI auto-effects — one panel, three opt-in checkboxes. Nothing changes until
+   "Apply". Emphasis/emoji land on the caption words (visible in the preview immediately); zoom
+   and SFX are stored for the export (zoom also previews via a CSS scale on the video). */
+function AIEffectsPanel({ cid, onApplied }: { cid: number; onApplied: (words: Word[], effects: ClipEffects) => void }) {
+  const [opts, setOpts] = useState({ emphasis: true, zoom: true, sfx: true });
+  const [busy, setBusy] = useState(false);
+  const [counts, setCounts] = useState<Record<string, number> | null>(null);
+  const toast = useToast();
+  const apply = async () => {
+    if (!opts.emphasis && !opts.zoom && !opts.sfx) { toast("Pick at least one effect", "err"); return; }
+    setBusy(true);
+    try {
+      const r = await api.aiEffects(cid, opts);
+      onApplied(r.words, r.effects); setCounts(r.counts);
+      toast("AI effects applied", "ok");
+    } catch (e: any) { toast(`Failed: ${e?.message || e}`, "err"); } finally { setBusy(false); }
+  };
+  const row = (key: keyof typeof opts, label: string, hint: string) => (
+    <label className="fx-opt">
+      <input type="checkbox" checked={opts[key]} onChange={(e) => setOpts({ ...opts, [key]: e.target.checked })} />
+      <span><b>{label}</b><span className="muted"> — {hint}</span></span>
+    </label>
+  );
+  return (
+    <div className="panel-body">
+      <div className="muted" style={{ fontSize: 12.5, marginBottom: 12 }}>✨ AI auto-effects. Nothing changes until you apply. Runs on your local Ollama.</div>
+      {row("emphasis", "Emphasis & emoji", "punch key words, add emoji")}
+      {row("zoom", "Punch-in zoom", "zoom on the biggest beats")}
+      {row("sfx", "Sound effects", "whoosh / pop on key moments")}
+      <button className="primary big-btn" style={{ marginTop: 14 }} onClick={apply} disabled={busy}>
+        {busy ? "Analyzing…" : "✨ Apply AI effects"}
+      </button>
+      {counts && <div className="muted" style={{ fontSize: 12, marginTop: 10 }}>
+        Added: {counts.emphasis} emphasized · {counts.emoji} emoji · {counts.zoom} zooms · {counts.sfx} SFX
+      </div>}
+      <div className="muted" style={{ fontSize: 11.5, marginTop: 10 }}>
+        Emphasis & emoji show in the preview now; zoom previews as a scale; SFX are mixed in on export.
+      </div>
+    </div>
+  );
+}
+
 /* ---- Transcript-editor helpers (reuse doc.cuts — no new storage) ---- */
 // Keep EVERY word, tagged whether it falls inside a cut (unlike remapWords, which drops them).
 function annotateWordsWithCuts(words: Word[], cuts: [number, number][]): (Word & { cut: boolean })[] {
@@ -2280,10 +2331,10 @@ const TOOLS: { id: string; label: string; icon: string; soon?: boolean }[] = [
   { id: "subs", label: "Subtitles", icon: "CC" },
   { id: "voice", label: "Voice", icon: "🎙" },
   { id: "text", label: "Transcript", icon: "T" },
+  { id: "fx", label: "AI Effects", icon: "✨" },
   { id: "broll", label: "B-roll", icon: "▦", soon: true },
   { id: "music", label: "Music", icon: "♪", soon: true },
   { id: "transitions", label: "Transitions", icon: "⇄", soon: true },
-  { id: "aihook", label: "AI Hook", icon: "✨", soon: true },
 ];
 const COMING_SOON = TOOLS.filter((t) => t.soon).map((t) => t.id);
 

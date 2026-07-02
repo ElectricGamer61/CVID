@@ -141,6 +141,7 @@ class ClipPatch(BaseModel):
     words: Optional[list] = None  # edited caption words (stored as words_json)
     cuts: Optional[list] = None   # removed middle ranges [[a,b],...] (stored as cuts_json)
     splits: Optional[list] = None  # split points [t1,...] (stored as splits_json)
+    effects: Optional[dict] = None  # {zoom:[...], sfx:[...]} (stored as effects_json)
 
 
 class CreateTicket(BaseModel):
@@ -1382,6 +1383,7 @@ def patch_clip(cid: int, body: ClipPatch):
         words = data.pop("words", None)
         cuts = data.pop("cuts", None)
         splits = data.pop("splits", None)
+        effects = data.pop("effects", None)
         if style is not None:
             clip.style_json = json.dumps(style)
         if words is not None:
@@ -1390,6 +1392,8 @@ def patch_clip(cid: int, body: ClipPatch):
             clip.cuts_json = json.dumps(cuts)
         if splits is not None:
             clip.splits_json = json.dumps(splits)
+        if effects is not None:
+            clip.effects_json = json.dumps(effects)
         for k, v in data.items():
             setattr(clip, k, v)
         clip.status = "suggested"  # edits invalidate any previous render
@@ -1397,6 +1401,57 @@ def patch_clip(cid: int, body: ClipPatch):
         s.commit()
         s.refresh(clip)
         return clip.model_dump()
+
+
+class AIEffectsBody(BaseModel):
+    emphasis: bool = True   # emphasize key words + add emoji (on words_json)
+    zoom: bool = True       # punch-in keyframes (effects_json.zoom)
+    sfx: bool = True        # sound effects (effects_json.sfx)
+
+
+@app.post("/api/clips/{cid}/ai-effects")
+def ai_effects(cid: int, body: AIEffectsBody):
+    """Submagic-style AI auto-effects (opt-in). Runs ONLY the checked sub-effects: emphasis/emoji
+    get written onto the clip's caption words (words_json), zoom/sfx into effects_json. A clip
+    nobody runs this on is untouched (byte-identical render)."""
+    from .pipeline import effects as fx
+    with get_session() as s:
+        clip = s.get(Clip, cid)
+        if not clip:
+            raise HTTPException(404, "clip not found")
+        pid, start, end = clip.project_id, clip.start, clip.end
+        words = json.loads(clip.words_json) if clip.words_json else [
+            w for w in get_words(pid) if w["end"] > start and w["start"] < end]
+
+    sug = fx.suggest(words, body.emphasis, body.zoom, body.sfx)
+
+    if body.emphasis:
+        em, emoji = set(sug["emphasis"]), {int(k): v for k, v in sug["emoji"].items()}
+        for i, w in enumerate(words):
+            if i in em:
+                w["emphasis"] = True
+            else:
+                w.pop("emphasis", None)
+            if i in emoji:
+                w["emoji"] = emoji[i]
+            else:
+                w.pop("emoji", None)
+
+    with get_session() as s:
+        clip = s.get(Clip, cid)
+        if body.emphasis:
+            clip.words_json = json.dumps(words)
+        eff = json.loads(clip.effects_json) if clip.effects_json else {}
+        if body.zoom:
+            eff["zoom"] = sug["zoom"]
+        if body.sfx:
+            eff["sfx"] = sug["sfx"]
+        clip.effects_json = json.dumps(eff)
+        clip.status = "suggested"
+        s.add(clip); s.commit(); s.refresh(clip)
+    return {"clip": clip.model_dump(), "words": words, "effects": eff,
+            "counts": {"emphasis": len(sug["emphasis"]), "emoji": len(sug["emoji"]),
+                       "zoom": len(sug["zoom"]), "sfx": len(sug["sfx"])}}
 
 
 def _set_clip(cid: int, **fields):
@@ -1428,6 +1483,7 @@ def _render_clip_job(cid: int):
         voiceover = clip.voiceover_path if (clip.voiceover_path and Path(clip.voiceover_path).exists()) else None
         markers = json.loads(clip.markers_json) if clip.markers_json else []
         scene_vos = json.loads(clip.scene_vo_json) if clip.scene_vo_json else []
+        effects = json.loads(clip.effects_json) if clip.effects_json else {}
         proj = s.get(Project, pid)
         source_type, source_url = proj.source_type, proj.source_url
     try:
@@ -1450,6 +1506,10 @@ def _render_clip_job(cid: int):
         out_w, out_h = settings.output_dims(aspect, resolution)
         vo_path = Path(voiceover) if voiceover else None
         segments = render.kept_segments(start, end, cuts)
+        # Opt-in AI auto-effects. Remap the source-time zoom/sfx keyframes onto the edited
+        # (post-cut) timeline; empty when the clip has none → render is unchanged.
+        zoom_kfs = render.remap_keyframes_for_cuts(effects.get("zoom", []), segments)
+        sfx_cues = render.remap_keyframes_for_cuts(effects.get("sfx", []), segments)
         if markers and any(scene_vos):
             # Per-scene voice-first reel: re-time each scene to its own recorded voice.
             # Honor the trim: clamp every scene to [start,end], drop scenes trimmed away,
@@ -1468,19 +1528,23 @@ def _render_clip_job(cid: int):
                 # Whole reel trimmed off its voiced scenes → plain trimmed-range render.
                 caps.write_ass(words, start, end, preset, ass, overrides=style)
                 render.render_clip(source, out, start, end, aspect, ass, center,
-                                   out_w=out_w, out_h=out_h, voiceover=vo_path)
+                                   out_w=out_w, out_h=out_h, voiceover=vo_path, zoom=zoom_kfs)
         elif cuts and len(segments) != 1:
             # Middle parts removed → concat kept segments + retime captions.
             # ASS keeps the 1080×1920 PlayRes baseline; libass scales it to the frame.
             local_words, total = render.remap_words_for_cuts(words, segments)
             caps.write_ass(local_words, 0.0, total, preset, ass, overrides=style)
             render.render_clip_segments(source, out, segments, aspect, ass, center,
-                                        out_w=out_w, out_h=out_h, voiceover=vo_path)
+                                        out_w=out_w, out_h=out_h, voiceover=vo_path, zoom=zoom_kfs)
         else:
             # No cuts → unchanged single-range fast path.
             caps.write_ass(words, start, end, preset, ass, overrides=style)
             render.render_clip(source, out, start, end, aspect, ass, center,
-                               out_w=out_w, out_h=out_h, voiceover=vo_path)
+                               out_w=out_w, out_h=out_h, voiceover=vo_path, zoom=zoom_kfs)
+
+        # SFX: isolated post-pass (no-op without cues; a failure keeps the clean render).
+        if sfx_cues:
+            render.mix_sfx(out, sfx_cues, settings.BACKEND_DIR / "assets" / "sfx")
 
         with get_session() as s:
             clip = s.get(Clip, cid)

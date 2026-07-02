@@ -73,6 +73,10 @@ class Clip(SQLModel, table=True):
     # JSON list of split points [t1,t2,...] (source secs) — boundaries the user
     # added to slice one clip into independently-trimmable pieces. None/[] -> none.
     splits_json: Optional[str] = None
+    # Opt-in AI auto-effects (Submagic-style). {"zoom":[{t,scale,duration}], "sfx":[{t,name}]}
+    # in SOURCE seconds. None/{} -> no effects (render is byte-identical). Emphasis/emoji live
+    # on the word dicts in words_json (additive keys), not here.
+    effects_json: Optional[str] = None
     # JSON list of scene boundaries [{start,end,label}] when this clip was built
     # by stitching a reel's scenes — drawn as markers on the editor timeline.
     markers_json: Optional[str] = None
@@ -230,7 +234,7 @@ def _migrate() -> None:
     from sqlalchemy import text
     wanted = {
         "clip": {"style_json": "TEXT", "words_json": "TEXT", "cuts_json": "TEXT",
-                 "splits_json": "TEXT",
+                 "splits_json": "TEXT", "effects_json": "TEXT",
                  "markers_json": "TEXT", "voiceover_path": "TEXT", "scene_vo_json": "TEXT",
                  "stage": "TEXT DEFAULT ''", "hook": "TEXT DEFAULT ''",
                  "resolution": f"TEXT DEFAULT '{settings.DEFAULT_RESOLUTION}'",
