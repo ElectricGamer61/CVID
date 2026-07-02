@@ -34,8 +34,11 @@ docs/
 - [../GOAL.md](../GOAL.md) — pipeline build goal (used by the `goal` skill)
 
 ## Current focus
-1. **Autopilot** — A–D shipped (cartridges, orchestrator, gates, ideation feeder, per-brand
-   learning, control-room UI); see [timeline/06](timeline/06-2026-07-02-editor-and-autopilot-build.md).
-   Remaining: set Upload-Post creds for the first live autonomous post; D polish (day-7 cards, UI autonomy dial).
-2. **Editor** — P1 (FreeCut shelved) + P2 (bug fixes) done; **P3 (transcript editor)** and
-   **P4 (AI auto-effects)** remain, per [timeline/04](timeline/04-2026-07-02-next-steps.md).
+1. **Editor — DONE (P1–P4).** FreeCut shelved; rebuild/voiced-trim/splits fixed; Descript-style
+   transcript editor; Submagic-style AI auto-effects (emphasis/emoji/zoom/SFX, opt-in). See
+   [timeline/06](timeline/06-2026-07-02-editor-and-autopilot-build.md). Open: eyeball the ffmpeg
+   zoom/SFX render quality on a real export.
+2. **Autopilot — A–D shipped** (cartridges, orchestrator, gates, ideation feeder, per-brand
+   learning, control-room UI). Open: set Upload-Post creds for the first live post (deferred by
+   Dennis until ship); D polish (day-7 perf cards, in-UI autonomy dial).
+3. **Model:** default Ollama brain is now `qwen3.5:9b`.

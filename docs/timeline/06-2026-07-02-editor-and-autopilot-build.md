@@ -29,10 +29,19 @@ junk). The human's whole job is the Autopilot queue: Approve / Regenerate / Kill
   enrolled ticket live (digest updates); no console/network errors.
 - Feeder is opt-in, rotates angles, respects cadence.
 
+## Follow-up in the same session (pt.3)
+| Commit | What |
+|---|---|
+| `5fe9680` | **Editor P3** — Descript-style transcript editor (the "Transcript" tool): click a word to seek, drag-select + Delete to cut it out, select struck-through words + Delete to restore. Reuses `doc.cuts` (interop with Cut/Clips/timeline/captions/export verified live). |
+| `e0ba7da` | Default Ollama model → **qwen3.5:9b** (Dennis pulled the stronger model). Verified it responds. |
+| `9263782` | **Editor P4** — Submagic-style AI auto-effects, opt-in (`✨ AI Effects` panel, 3 checkboxes). `effects.py` (one LLM analysis → emphasis/emoji/zoom/SFX + heuristic fallback) → `POST /api/clips/{cid}/ai-effects`. Emphasis/emoji on `words_json` (render in `build_ass` + `CaptionOverlay`); zoom/SFX in new `Clip.effects_json` (zoompan after crop + isolated `mix_sfx` post-pass); 4 synthesized placeholder SFX. Byte-identical when unused. Verified end-to-end with qwen3.5:9b (POWERADE→⚡, sugar→🍬, 4 zooms, 4 SFX). **Caveat:** the ffmpeg zoom/SFX render output isn't eyeballed on this machine (opt-in + guarded). |
+
+**Editor P1–P4 are now complete.**
+
 ## NOT done / deferred (honest)
-- **Editor P3 (Descript transcript editor)** and **P4 (Submagic AI auto-effects)** — the two
-  heavy editor features. Not started; they need live-preview verification (the preview viewport
-  is stuck at 3px on this machine, so UI-heavy features can't be driven with real clicks here).
+- **ffmpeg zoom/SFX render output** (Editor P4) isn't eyeballed on this machine — the mechanism
+  is built, opt-in and guarded (a clip with no effects renders byte-identical), but the actual
+  zoom motion / SFX mix quality on a real export is Dennis's to confirm.
 - **End-to-end autonomous run** is NOT proven: the orchestrator calls real LLM (Ollama/Gemini),
   ffmpeg, and Upload-Post; those need Ollama up, footage, and creds. Each is guarded and parks on
   failure. The **live post** still needs `UPLOAD_POST_API_KEY` / `UPLOAD_POST_USER` (Dennis's to
