@@ -16,7 +16,6 @@ type Route =
   | { name: "queue" }
   | { name: "insights" }
   | { name: "library" }
-  | { name: "studio" }
   | { name: "video"; tid: number }
   | { name: "project"; pid: number }
   | { name: "editor"; pid: number; cid: number; from?: "board" | "project" | "home" | "video"; tid?: number };
@@ -33,16 +32,15 @@ export default function App() {
   const goQueue = () => setRoute({ name: "queue" });
   const goInsights = () => setRoute({ name: "insights" });
   const goLibrary = () => setRoute({ name: "library" });
-  const goStudio = () => setRoute({ name: "studio" });
 
-  const NAMED: Record<string, string> = { board: "Create videos", intake: "Ideas", queue: "Schedule", insights: "Results", library: "Downloads", studio: "Editor" };
+  const NAMED: Record<string, string> = { board: "Create videos", intake: "Ideas", queue: "Schedule", insights: "Results", library: "Downloads" };
   const crumbLabel = NAMED[route.name] ?? null;
   const sbView = (route.name === "video" ? "board"
-    : ["board", "intake", "queue", "insights", "library", "studio"].includes(route.name) ? route.name : "home") as any;
+    : ["board", "intake", "queue", "insights", "library"].includes(route.name) ? route.name : "home") as any;
 
   return (
     <div className="shell">
-      <Sidebar view={sbView} onHome={goHome} onBoard={goBoard} onIntake={goIntake} onQueue={goQueue} onInsights={goInsights} onLibrary={goLibrary} onStudio={goStudio} />
+      <Sidebar view={sbView} onHome={goHome} onBoard={goBoard} onIntake={goIntake} onQueue={goQueue} onInsights={goInsights} onLibrary={goLibrary} />
       <main className="main">
         <header className="topbar">
           <div className="crumbs">
@@ -66,7 +64,6 @@ export default function App() {
         {route.name === "queue" && <Queue />}
         {route.name === "insights" && <Insights />}
         {route.name === "library" && <Library />}
-        {route.name === "studio" && <Studio />}
         {route.name === "home" && <Home presets={presets} onOpen={(pid) => setRoute({ name: "project", pid })} />}
         {route.name === "project" && (
           <MomentsGrid pid={route.pid} onName={setProjName}
@@ -84,22 +81,6 @@ export default function App() {
         )}
       </main>
     </div>
-  );
-}
-
-/* ------------------------------- Studio -------------------------------- */
-// The vendored FreeCut editor, embedded same-origin under /editor (proxied to its dev
-// server). Same-origin is required so FreeCut's File System Access workspace picker works —
-// it's blocked in cross-origin iframes. The frontend runs cross-origin-isolated so FreeCut's
-// WebGPU/WebCodecs pipeline runs inside the frame.
-function Studio() {
-  return (
-    <iframe
-      src="/editor/"
-      title="Editor"
-      allow="cross-origin-isolated; fullscreen; clipboard-read; clipboard-write; camera; microphone"
-      style={{ width: "100%", height: "calc(100vh - 52px)", border: 0, display: "block", background: "#151515" }}
-    />
   );
 }
 
@@ -393,8 +374,11 @@ function VideoWorkspace({ tid, presets, onBack, onOpenEditor }: { tid: number; p
                 </div>
                 {beats.length === 0 ? (
                   <div className="vw-empty">
-                    <div className="muted" style={{ fontSize: 13 }}>No scenes yet — paste a script below, or let AI write one (right side).</div>
-                    <ReimportBox tid={tid} empty onDone={load} />
+                    <div className="muted" style={{ fontSize: 13, marginBottom: 12 }}>No scenes yet — add a scene and start writing, paste a full script, or let AI write one (right side).</div>
+                    <div className="beat-add-row">
+                      <button className="primary" onClick={addBeat}>+ Add a scene</button>
+                      <ReimportBox tid={tid} onDone={load} />
+                    </div>
                   </div>
                 ) : (
                   <>

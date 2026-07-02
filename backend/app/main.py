@@ -24,19 +24,9 @@ from .pipeline import ingest, reframe, render
 app = FastAPI(title="Cvideo")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173",
-                   "http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
     allow_methods=["*"], allow_headers=["*"],
 )
-
-
-@app.middleware("http")
-async def _corp_header(request, call_next):
-    """Cvideo's frontend runs cross-origin-isolated (to embed the FreeCut editor). Tag every
-    response so its thumbnails/videos/API can still be loaded by that isolated document."""
-    resp = await call_next(request)
-    resp.headers.setdefault("Cross-Origin-Resource-Policy", "cross-origin")
-    return resp
 
 _render_pool = ThreadPoolExecutor(max_workers=2)
 # Transient assemble progress per ticket (no schema change needed): id -> {state,stage,error}
