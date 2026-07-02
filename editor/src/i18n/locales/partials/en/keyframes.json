@@ -1,0 +1,112 @@
+{
+  "timeline": {
+    "keyframeEditor": {
+      "title": "Keyframe Editor",
+      "graph": "Graph",
+      "sheet": "Sheet",
+      "split": "Split",
+      "selectItem": "Select an item to edit keyframes",
+      "parameters": "Parameters",
+      "parameterDisplayOptions": "Parameter display options",
+      "displayKeyframedParameters": "Display parameters with keyframes",
+      "displayGroupParameters": "Display {{group}} parameters",
+      "expandAllParameters": "Expand all parameters",
+      "collapseAllParameters": "Collapse all parameters",
+      "resetParameterView": "Reset parameter view",
+      "filtered": "Filtered",
+      "graphLabel": "Graph: {{property}}",
+      "keyframes_one": "{{count}} keyframe",
+      "keyframes_other": "{{count}} keyframes",
+      "local": "Local",
+      "global": "Global",
+      "localFrame": "Local frame",
+      "globalFrame": "Global frame",
+      "property": "Property",
+      "noParametersMatch": "No parameters match the current view",
+      "noKeyframesToDisplay": "No keyframes to display",
+      "emptyState": {
+        "title": "No keyframes yet",
+        "intro": "Animate this clip by adding keyframes to any parameter.",
+        "hintValue": "Type a value next to a parameter and press Enter to set a keyframe at the playhead.",
+        "hintDiamond": "Or click the diamond on a parameter row to add a keyframe at the current frame.",
+        "hintAutoKey": "Turn on auto-key (the timer icon) to capture every value change automatically."
+      },
+      "copySelectedKeyframes": "Copy selected keyframes",
+      "cutSelectedKeyframes": "Cut selected keyframes",
+      "moveKeyframesFromClipboard": "Move keyframes from clipboard",
+      "pasteKeyframes": "Paste keyframes",
+      "cut": "Cut",
+      "removeSelectedKeyframes": "Remove selected keyframes",
+      "horizontalZoom": "Horizontal zoom",
+      "verticalZoom": "Vertical zoom",
+      "graphViewOptions": "Graph view options",
+      "sheetViewOptions": "Sheet view options",
+      "displayTimeRulerSeconds": "Display time ruler in seconds",
+      "displayTimeRulerFrames": "Display time ruler in frames",
+      "showAllHandles": "Show all handles",
+      "autoZoomGraphHeight": "Auto zoom graph height",
+      "easing": {
+        "hold": "Hold",
+        "linear": "Linear",
+        "easeIn": "Ease In",
+        "easeInOut": "Ease In/Out",
+        "easeOut": "Ease Out"
+      },
+      "legend": {
+        "trigger": "What do these icons mean?",
+        "title": "Editor guide",
+        "modesHeading": "Views",
+        "graphMode": "Graph — edit each parameter's value curve and easing over time.",
+        "sheetMode": "Sheet — see and move every parameter's keyframes on one grid.",
+        "iconsHeading": "Row controls",
+        "iconCurve": "Show this parameter's curve in Graph view.",
+        "iconLock": "Lock the row so its keyframes can't be moved or edited.",
+        "iconAutoKey": "Auto-key: capture a keyframe automatically whenever you change this value.",
+        "iconDiamond": "Add or remove a keyframe at the playhead.",
+        "colorsHeading": "Keyframes",
+        "colorDefault": "Orange diamond: a keyframe.",
+        "colorSelected": "Bright orange with a ring: selected keyframe."
+      },
+      "keyframeMarker": {
+        "rowLabel": "Keyframe at frame {{frame}} — drag to retime, Alt-drag to duplicate",
+        "groupLabel": "{{group}} keyframe at frame {{frame}} — drag to retime, Alt-drag to duplicate",
+        "locked": "Keyframe at frame {{frame}} (row locked)"
+      }
+    }
+  },
+  "keyframes": {
+    "groups": {
+      "transform": "Transform",
+      "crop": "Crop",
+      "audio": "Audio",
+      "effects": "Effects",
+      "other": "Other"
+    },
+    "properties": {
+      "x": "X Position",
+      "y": "Y Position",
+      "width": "Width",
+      "height": "Height",
+      "anchorX": "Anchor X",
+      "anchorY": "Anchor Y",
+      "rotation": "Rotation",
+      "opacity": "Opacity",
+      "cornerRadius": "Corner Radius",
+      "cropLeft": "Crop Left",
+      "cropRight": "Crop Right",
+      "cropTop": "Crop Top",
+      "cropBottom": "Crop Bottom",
+      "cropSoftness": "Crop Softness",
+      "volume": "Volume (dB)",
+      "textStyleScale": "Preset Scale",
+      "fontSize": "Font Size",
+      "lineHeight": "Line Height",
+      "textPadding": "Text Padding",
+      "backgroundRadius": "Background Radius",
+      "textShadowOffsetX": "Shadow X",
+      "textShadowOffsetY": "Shadow Y",
+      "textShadowBlur": "Shadow Blur",
+      "strokeWidth": "Stroke Width"
+    }
+  }
+}

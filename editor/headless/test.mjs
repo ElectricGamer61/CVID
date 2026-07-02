@@ -1,0 +1,275 @@
+// Headless regression test. Builds the harness, then exercises both the render
+// and edit paths inside headless Chrome and asserts the results. Self-contained:
+// no workspace, no media, no ffprobe — so it runs in CI. Exits non-zero on any
+// failed check.
+//
+// Run: node headless/test.mjs   (or: npm run headless:test)
+import { chromium } from 'playwright'
+import { execSync } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
+import fs from 'node:fs'
+import path from 'node:path'
+import os from 'node:os'
+import { createHarnessServer } from './server.mjs'
+import { chromeLaunchArgs } from './lib/cli.mjs'
+
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+
+// A zero-media text title — no effects/transitions, so it renders without WebGPU.
+const TEXT_TIMELINE = {
+  tracks: [
+    {
+      id: 'track-1',
+      name: 'V1',
+      kind: 'video',
+      height: 60,
+      locked: false,
+      syncLock: true,
+      visible: true,
+      muted: false,
+      solo: false,
+      order: 0,
+      items: [],
+    },
+  ],
+  items: [
+    {
+      id: 'text-1',
+      trackId: 'track-1',
+      from: 0,
+      durationInFrames: 90,
+      label: 'Title',
+      type: 'text',
+      text: 'regression',
+      color: '#ffffff',
+      fontSize: 120,
+      fontWeight: 'bold',
+      textAlign: 'center',
+      verticalAlign: 'middle',
+    },
+  ],
+  transitions: [],
+  fps: 30,
+  width: 1280,
+  height: 720,
+  backgroundColor: '#101418',
+  settings: {
+    mode: 'video',
+    codec: 'vp9',
+    container: 'webm',
+    quality: 'high',
+    resolution: { width: 1280, height: 720 },
+    fps: 30,
+    videoBitrate: 4_000_000,
+  },
+  outputFileName: 'regression.webm',
+}
+
+const SAMPLE_PROJECT = {
+  id: 'test-project',
+  name: 'Test',
+  description: '',
+  createdAt: 1735689600000,
+  updatedAt: 1735689600000,
+  duration: 90,
+  schemaVersion: 10,
+  metadata: { width: 1280, height: 720, fps: 30, backgroundColor: '#000000' },
+  timeline: {
+    masterBusDb: 0,
+    tracks: [
+      {
+        id: 'track-1',
+        name: 'V1',
+        kind: 'video',
+        height: 60,
+        locked: false,
+        syncLock: true,
+        visible: true,
+        muted: false,
+        solo: false,
+        order: 0,
+        items: [],
+      },
+    ],
+    items: [
+      {
+        id: 'text-1',
+        trackId: 'track-1',
+        from: 0,
+        durationInFrames: 90,
+        label: 'Title',
+        type: 'text',
+        text: 'hello',
+        color: '#ffffff',
+        fontSize: 96,
+        fontWeight: 'bold',
+        textAlign: 'center',
+        verticalAlign: 'middle',
+        transform: {},
+      },
+    ],
+    transitions: [],
+    keyframes: [],
+    compositions: [],
+  },
+}
+
+function textProjectRenderSettings(project) {
+  const width = project.metadata?.width ?? 1280
+  const height = project.metadata?.height ?? 720
+  const fps = project.metadata?.fps ?? 30
+
+  return {
+    mode: 'video',
+    codec: 'vp9',
+    container: 'webm',
+    quality: 'medium',
+    resolution: { width, height },
+    fps,
+    videoBitrate: 2_000_000,
+  }
+}
+
+let failures = 0
+function check(name, condition, detail) {
+  if (condition) {
+    console.log(`  PASS  ${name}`)
+  } else {
+    failures++
+    console.error(`  FAIL  ${name}${detail ? ` — ${detail}` : ''}`)
+  }
+}
+
+async function main() {
+  const distDir = path.join(REPO_ROOT, 'dist')
+  // --skip-build reuses an existing dist/ (e.g. CI, where the build step
+  // already ran); without it the harness always rebuilds.
+  if (process.argv.includes('--skip-build')) {
+    console.log('Skipping build (--skip-build), using existing dist/...')
+  } else {
+    console.log('Building harness (npm run build)...')
+    execSync('npm run build', { cwd: REPO_ROOT, stdio: 'inherit' })
+  }
+  if (!fs.existsSync(path.join(distDir, 'headless.html'))) {
+    throw new Error(
+      process.argv.includes('--skip-build')
+        ? 'dist/headless.html missing — run npm run build first or drop --skip-build'
+        : 'Build did not produce dist/headless.html',
+    )
+  }
+
+  const server = await createHarnessServer({ distDir })
+  const browser = await chromium.launch({ channel: 'chrome', headless: true, args: chromeLaunchArgs() })
+  try {
+    const context = await browser.newContext({ acceptDownloads: true })
+    const page = await context.newPage()
+    page.on('pageerror', (e) => {
+      failures++
+      console.error('  FAIL  page error —', e.message)
+    })
+
+    await page.goto(server.harnessUrl, { waitUntil: 'load', timeout: 60_000 })
+    await page.waitForFunction(() => Boolean(window.freecut?.ready), { timeout: 30_000 })
+
+    // --- Render path ---
+    console.log('\nRender:')
+    const downloadPromise = page.waitForEvent('download', { timeout: 120_000 })
+    downloadPromise.catch(() => {})
+    const summary = await page.evaluate((input) => window.freecut.renderTimeline(input), TEXT_TIMELINE)
+    const outPath = path.join(os.tmpdir(), 'freecut-headless-regression.webm')
+    const download = await downloadPromise
+    await download.saveAs(outPath)
+    const size = fs.existsSync(outPath) ? fs.statSync(outPath).size : 0
+
+    check('render returns ok', summary.ok === true)
+    check('render mime is video', /video\//.test(summary.mimeType), summary.mimeType)
+    check('render duration ~3s', Math.abs(summary.durationSeconds - 3) < 0.3, `got ${summary.durationSeconds}`)
+    check('render produced bytes (>1KB)', size > 1000, `size ${size}`)
+
+    // --- Edit path ---
+    console.log('\nEdit:')
+    const edit = await page.evaluate((input) => window.freecut.editProject(input), {
+      project: SAMPLE_PROJECT,
+      ops: [
+        {
+          op: 'addText',
+          id: 'caption-1',
+          text: 'added',
+          from: 30,
+          durationInFrames: 45,
+          color: '#7dd3fc',
+          fontSize: 72,
+          textAlign: 'center',
+          verticalAlign: 'middle',
+        },
+        {
+          op: 'setTransform',
+          id: 'text-1',
+          transform: { x: 24, y: -32, opacity: 0.85, rotation: 0 },
+        },
+        { op: 'addKeyframe', itemId: 'text-1', property: 'opacity', frame: 0, value: 0.2 },
+        { op: 'addKeyframe', itemId: 'text-1', property: 'opacity', frame: 30, value: 1 },
+      ],
+    })
+    check('edit applied all ops', edit.applied === 4)
+    check('edit ops succeeded', edit.results?.every((result) => result.ok) === true)
+    const before = SAMPLE_PROJECT.timeline.items.length
+    const after = edit.project?.timeline?.items?.length ?? 0
+    check('edit added an item', after === before + 1, `items ${before} -> ${after}`)
+
+    const reopenedProject = JSON.parse(JSON.stringify(edit.project))
+    const items = reopenedProject.timeline?.items ?? []
+    const keyframes = reopenedProject.timeline?.keyframes ?? []
+    const expectedEditedDurationSeconds =
+      Math.max(...items.map((item) => item.from + item.durationInFrames)) /
+      (reopenedProject.metadata?.fps ?? 30)
+    const movedTitle = items.find((item) => item.id === 'text-1')
+    const addedCaption = items.find((item) => item.id === 'caption-1')
+    const opacityKeys = keyframes
+      .find((group) => group.itemId === 'text-1')
+      ?.properties?.find((property) => property.property === 'opacity')?.keyframes
+
+    check('round-trip preserves added caption', addedCaption?.text === 'added')
+    check('round-trip preserves transform', movedTitle?.transform?.opacity === 0.85)
+    check('round-trip preserves keyframes', opacityKeys?.length === 2)
+
+    console.log('\nEdited project render:')
+    const editedDownloadPromise = page.waitForEvent('download', { timeout: 120_000 })
+    editedDownloadPromise.catch(() => {})
+    const editedSummary = await page.evaluate(
+      (input) => window.freecut.renderProject(input),
+      {
+        project: reopenedProject,
+        settings: textProjectRenderSettings(reopenedProject),
+        outputFileName: 'regression-edited.webm',
+      },
+    )
+    const editedOutPath = path.join(os.tmpdir(), 'freecut-headless-regression-edited.webm')
+    const editedDownload = await editedDownloadPromise
+    await editedDownload.saveAs(editedOutPath)
+    const editedSize = fs.existsSync(editedOutPath) ? fs.statSync(editedOutPath).size : 0
+
+    check('edited render returns ok', editedSummary.ok === true)
+    check('edited render mime is video', /video\//.test(editedSummary.mimeType), editedSummary.mimeType)
+    check(
+      'edited render duration matches timeline',
+      Math.abs(editedSummary.durationSeconds - expectedEditedDurationSeconds) < 0.3,
+      `got ${editedSummary.durationSeconds}, expected ${expectedEditedDurationSeconds}`,
+    )
+    check('edited render produced bytes (>1KB)', editedSize > 1000, `size ${editedSize}`)
+  } finally {
+    await browser.close()
+    await server.close()
+  }
+
+  if (failures > 0) {
+    console.error(`\n${failures} check(s) FAILED`)
+    process.exit(1)
+  }
+  console.log('\nAll headless checks passed ✓')
+}
+
+main().catch((e) => {
+  console.error('\nTest crashed:', e.message ?? e)
+  process.exit(1)
+})

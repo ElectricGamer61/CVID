@@ -1,0 +1,290 @@
+// React and external libraries
+import { useState, useCallback, useEffect, useRef, useLayoutEffect } from 'react'
+
+// Stores and selectors
+import { usePlaybackStore } from '@/shared/state/playback'
+import { useSelectionStore } from '@/shared/state/selection'
+
+// Utilities and hooks
+import { useTimelineZoomContext } from '../contexts/timeline-zoom-context'
+import { createScrubThrottleState, shouldCommitScrubFrame } from '../utils/scrub-throttle'
+import { withPerfMeasure, perfMarkRender } from '@/shared/logging/perf-marks'
+import { PlayheadMarks } from '@/shared/ui/playhead-marks'
+
+interface TimelinePlayheadProps {
+  inRuler?: boolean // If true, shows diamond indicator for ruler
+  maxFrame?: number // Maximum frame the playhead can be dragged to (content duration)
+  // Drop the marks below the ruler's top IO lane so the flag doesn't share it.
+  topOffsetPx?: number
+}
+
+/**
+ * Timeline Playhead Component
+ *
+ * Renders the playhead indicator that shows the current frame position
+ * - Vertical line across all tracks
+ * - Diamond indicator in ruler when inRuler=true
+ * - Synchronized with playback store via manual subscription (no re-renders during playback)
+ * - Draggable for scrubbing through timeline
+ */
+export function TimelinePlayhead({
+  inRuler = false,
+  maxFrame,
+  topOffsetPx = 0,
+}: TimelinePlayheadProps) {
+  perfMarkRender('TimelinePlayhead')
+  // Don't subscribe to currentFrame - use ref + manual subscription instead
+  const setScrubFrame = usePlaybackStore((s) => s.setScrubFrame)
+  const { frameToPixels, pixelsToFrame, pixelsPerSecond } = useTimelineZoomContext()
+
+  const [isDragging, setIsDragging] = useState(false)
+  const [isExternalDrag, setIsExternalDrag] = useState(false)
+  const playheadRef = useRef<HTMLDivElement>(null)
+  const isDraggingRef = useRef(false)
+
+  // Track activeTool via ref subscription to avoid re-renders during playback
+  // This prevents mode toggle from interrupting frame updates
+  const activeToolRef = useRef(useSelectionStore.getState().activeTool)
+  useEffect(() => {
+    return useSelectionStore.subscribe((state) => {
+      activeToolRef.current = state.activeTool
+    })
+  }, [])
+
+  // Use refs to avoid stale closures
+  const pixelsToFrameRef = useRef(pixelsToFrame)
+  const setScrubFrameRef = useRef(setScrubFrame)
+  const maxFrameRef = useRef(maxFrame)
+  const frameToPixelsRef = useRef(frameToPixels)
+  const pixelsPerSecondRef = useRef(pixelsPerSecond)
+
+  // RAF throttling refs for smooth scrubbing without excessive state updates
+  const pendingFrameRef = useRef<number | null>(null)
+  const pendingPointerXRef = useRef<number | null>(null)
+  const rafIdRef = useRef<number | null>(null)
+  const scrubThrottleStateRef = useRef(
+    createScrubThrottleState({
+      frame: usePlaybackStore.getState().currentFrame,
+      nowMs: performance.now(),
+    }),
+  )
+  const setPreviewFrameRef = useRef(usePlaybackStore.getState().setPreviewFrame)
+  useEffect(() => {
+    return usePlaybackStore.subscribe((state) => {
+      setPreviewFrameRef.current = state.setPreviewFrame
+    })
+  }, [])
+
+  // Update refs when functions change
+  useEffect(() => {
+    pixelsToFrameRef.current = pixelsToFrame
+    setScrubFrameRef.current = setScrubFrame
+    maxFrameRef.current = maxFrame
+    frameToPixelsRef.current = frameToPixels
+    pixelsPerSecondRef.current = pixelsPerSecond
+  }, [pixelsToFrame, setScrubFrame, maxFrame, frameToPixels, pixelsPerSecond])
+
+  useEffect(() => {
+    isDraggingRef.current = isDragging
+  }, [isDragging])
+
+  // Subscribe to playback frame changes and update position directly.
+  // During playhead drags, use the same atomic scrub state as the main ruler
+  // so the fast-scrub overlay hands back to the player consistently.
+  useEffect(() => {
+    const updatePosition = (frame: number) => {
+      if (!playheadRef.current) return
+      const leftPosition = Math.round(frameToPixelsRef.current(frame))
+      // Use transform (compositor-only) instead of style.left (triggers layout).
+      playheadRef.current.style.transform = `translate3d(${leftPosition}px, 0, 0)`
+    }
+
+    // Initial update
+    updatePosition(usePlaybackStore.getState().currentFrame)
+
+    // Subscribe to store changes
+    return usePlaybackStore.subscribe((state) => {
+      updatePosition(
+        isDraggingRef.current && state.previewFrame !== null
+          ? state.previewFrame
+          : state.currentFrame,
+      )
+    })
+  }, [])
+
+  // Also update position when frameToPixels changes (zoom changes)
+  useLayoutEffect(() => {
+    if (!playheadRef.current) return
+    const playbackState = usePlaybackStore.getState()
+    const frame =
+      isDraggingRef.current && playbackState.previewFrame !== null
+        ? playbackState.previewFrame
+        : playbackState.currentFrame
+    const leftPosition = Math.round(frameToPixels(frame))
+    playheadRef.current.style.transform = `translate3d(${leftPosition}px, 0, 0)`
+  }, [frameToPixels, isDragging])
+
+  // Track external drag operations to disable pointer events on hit areas
+  useEffect(() => {
+    const handleDragStart = () => setIsExternalDrag(true)
+    const handleDragEnd = () => setIsExternalDrag(false)
+
+    document.addEventListener('dragstart', handleDragStart)
+    document.addEventListener('dragend', handleDragEnd)
+    document.addEventListener('drop', handleDragEnd)
+
+    return () => {
+      document.removeEventListener('dragstart', handleDragStart)
+      document.removeEventListener('dragend', handleDragEnd)
+      document.removeEventListener('drop', handleDragEnd)
+    }
+  }, [])
+
+  // Handle drag start
+  const handleMouseDown = useCallback(
+    (e: React.MouseEvent) => {
+      e.preventDefault()
+      e.stopPropagation()
+      const container = inRuler
+        ? playheadRef.current?.closest('.timeline-ruler')
+        : playheadRef.current?.closest('.timeline-tracks')
+      const rect = container?.getBoundingClientRect()
+      const pointerX = rect
+        ? e.clientX - rect.left
+        : frameToPixelsRef.current(usePlaybackStore.getState().currentFrame)
+      scrubThrottleStateRef.current = createScrubThrottleState({
+        pointerX,
+        frame: usePlaybackStore.getState().currentFrame,
+        nowMs: performance.now(),
+      })
+      setIsDragging(true)
+    },
+    [inRuler],
+  )
+
+  // Handle dragging
+  useEffect(() => {
+    if (!isDragging) return
+
+    // Apply grabbing cursor globally to prevent flickering
+    const originalCursor = document.body.style.cursor
+    document.body.style.cursor = 'grabbing'
+
+    const handleMouseMove = (e: MouseEvent) => {
+      // Find the correct container based on where the playhead is rendered
+      // - If in ruler: use .timeline-ruler as the container
+      // - If in tracks: use .timeline-tracks as the container
+      const container = inRuler
+        ? playheadRef.current?.closest('.timeline-ruler')
+        : playheadRef.current?.closest('.timeline-tracks')
+
+      if (!container) return
+
+      const rect = container.getBoundingClientRect()
+      const x = e.clientX - rect.left
+
+      // Convert pixel position to frame number using ref to avoid stale closure
+      // Round to whole frames for pixel-perfect positioning
+      // Clamp to [0, maxFrame] to keep playhead within content duration
+      let frame = Math.max(0, Math.round(pixelsToFrameRef.current(x)))
+      if (maxFrameRef.current !== undefined) {
+        frame = Math.min(frame, maxFrameRef.current)
+      }
+
+      // RAF throttling: batch frame updates to max 60fps to reduce state updates
+      pendingFrameRef.current = frame
+      pendingPointerXRef.current = x
+
+      if (rafIdRef.current === null) {
+        rafIdRef.current = requestAnimationFrame(() => {
+          rafIdRef.current = null
+          withPerfMeasure('tl.raf.playheadScrub', () => {
+            if (pendingFrameRef.current !== null && pendingPointerXRef.current !== null) {
+              const targetFrame = pendingFrameRef.current
+              const pointerX = pendingPointerXRef.current
+              if (
+                shouldCommitScrubFrame({
+                  state: scrubThrottleStateRef.current,
+                  pointerX,
+                  targetFrame,
+                  pixelsPerSecond: pixelsPerSecondRef.current,
+                  nowMs: performance.now(),
+                })
+              ) {
+                setScrubFrameRef.current(targetFrame)
+              }
+            }
+          })
+        })
+      }
+    }
+
+    const handleMouseUp = () => {
+      const pendingFrame = pendingFrameRef.current
+      // Cancel any pending RAF before clearing preview to prevent resurrection
+      if (rafIdRef.current !== null) {
+        cancelAnimationFrame(rafIdRef.current)
+        rafIdRef.current = null
+      }
+
+      if (pendingFrame !== null) {
+        setScrubFrameRef.current(pendingFrame)
+      }
+
+      pendingFrameRef.current = null
+      pendingPointerXRef.current = null
+      setPreviewFrameRef.current(null)
+      setIsDragging(false)
+    }
+
+    document.addEventListener('mousemove', handleMouseMove)
+    document.addEventListener('mouseup', handleMouseUp)
+
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove)
+      document.removeEventListener('mouseup', handleMouseUp)
+      // Restore original cursor
+      document.body.style.cursor = originalCursor
+      // Cancel any pending RAF to prevent memory leaks
+      if (rafIdRef.current !== null) {
+        cancelAnimationFrame(rafIdRef.current)
+        rafIdRef.current = null
+      }
+    }
+  }, [isDragging, inRuler]) // Stable dependencies - no stale closures
+
+  return (
+    <div
+      ref={playheadRef}
+      className="absolute top-0 bottom-0"
+      style={{
+        // left is set via ref subscription in useEffect (no re-renders during playback)
+        pointerEvents: 'none',
+        zIndex: 9999,
+      }}
+    >
+      {/* Shared line + (ruler-only) flag handle. */}
+      <PlayheadMarks handle={inRuler ? 'flag' : 'none'} topOffsetPx={topOffsetPx} />
+
+      {/* Invisible larger hit area over the flag — draggable to scrub. */}
+      {inRuler && (
+        <div
+          className="absolute"
+          style={{
+            top: `${topOffsetPx}px`,
+            left: '0px',
+            width: '20px',
+            height: '20px',
+            transform: 'translateX(-50%)',
+            cursor:
+              activeToolRef.current === 'razor' ? 'default' : isDragging ? 'grabbing' : 'default',
+            // Pass through pointer events in razor mode or during external drag operations
+            pointerEvents: activeToolRef.current === 'razor' || isExternalDrag ? 'none' : 'auto',
+            backgroundColor: 'transparent',
+          }}
+          onMouseDown={handleMouseDown}
+        />
+      )}
+    </div>
+  )
+}

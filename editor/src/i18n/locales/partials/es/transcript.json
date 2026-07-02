@@ -1,0 +1,23 @@
+{
+  "transcript": {
+    "title": "Transcripción",
+    "tabLabel": "Transcripción",
+    "emptySelection": "Selecciona un clip de vídeo o audio para editar su transcripción.",
+    "searchPlaceholder": "Buscar en la transcripción",
+    "nextMatch": "Coincidencia siguiente",
+    "previousMatch": "Coincidencia anterior",
+    "clearSearch": "Borrar búsqueda",
+    "noTranscript": "Este clip aún no tiene transcripción.",
+    "generate": "Generar transcripción",
+    "transcribing": "Transcribiendo…",
+    "loading": "Cargando transcripción…",
+    "wordsSelected_one": "{{count}} palabra seleccionada",
+    "wordsSelected_other": "{{count}} palabras seleccionadas",
+    "selectHint": "Haz clic en una palabra para saltar ahí; arrastra para seleccionar.",
+    "deleteSelection": "Eliminar",
+    "toastRemoved": "Se eliminaron {{count}} clip(s)",
+    "toastNothingRemoved": "No se eliminó nada",
+    "toastRemoveFailed": "No se pudieron eliminar las palabras seleccionadas",
+    "toastTranscribeFailed": "La transcripción falló"
+  }
+}

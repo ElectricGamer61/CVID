@@ -1,0 +1,23 @@
+{
+  "transcript": {
+    "title": "Transkript",
+    "tabLabel": "Transkript",
+    "emptySelection": "Wähle einen Video- oder Audioclip, um sein Transkript zu bearbeiten.",
+    "searchPlaceholder": "Transkript durchsuchen",
+    "nextMatch": "Nächster Treffer",
+    "previousMatch": "Vorheriger Treffer",
+    "clearSearch": "Suche löschen",
+    "noTranscript": "Dieser Clip hat noch kein Transkript.",
+    "generate": "Transkript erstellen",
+    "transcribing": "Transkribieren…",
+    "loading": "Transkript wird geladen…",
+    "wordsSelected_one": "{{count}} Wort ausgewählt",
+    "wordsSelected_other": "{{count}} Wörter ausgewählt",
+    "selectHint": "Klicke auf ein Wort, um dorthin zu springen; ziehen zum Auswählen.",
+    "deleteSelection": "Löschen",
+    "toastRemoved": "{{count}} Clip(s) entfernt",
+    "toastNothingRemoved": "Es wurde nichts entfernt",
+    "toastRemoveFailed": "Die ausgewählten Wörter konnten nicht entfernt werden",
+    "toastTranscribeFailed": "Transkription fehlgeschlagen"
+  }
+}

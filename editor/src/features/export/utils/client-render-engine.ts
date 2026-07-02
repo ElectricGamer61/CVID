@@ -1,0 +1,1987 @@
+/**
+ * Client Render Engine
+ *
+ * Contains the `createCompositionRenderer` factory that builds the per-frame
+ * renderer with full support for effects, masks, transitions, and keyframe
+ * animations.
+ *
+ * The top-level render orchestration functions (`renderComposition`,
+ * `renderAudioOnly`, `renderSingleFrame`) live in
+ * `canvas-render-orchestrator.ts`.
+ *
+ * Per-item rendering helpers (video, image, text, shape, transitions) live
+ * in `canvas-item-renderer.ts`.
+ */
+
+import type { CompositionInputProps } from '@/types/export'
+import type {
+  TimelineItem,
+  VideoItem,
+  ImageItem,
+  ShapeItem,
+  CompositionItem,
+} from '@/types/timeline'
+import type { ItemKeyframes } from '@/types/keyframe'
+import type { ItemEffect } from '@/types/effects'
+import type { ResolvedTransform } from '@/types/transform'
+import { createLogger } from '@/shared/logging/logger'
+import { blobUrlManager } from '@/infrastructure/browser/blob-url-manager'
+import { resolveMediaUrl } from '@/features/export/deps/media-library'
+import { VideoSourcePool } from '@/features/export/deps/player-contract'
+
+// Import subsystems
+import { buildKeyframesMap } from './canvas-keyframes'
+import { type AdjustmentLayerWithTrackOrder } from './canvas-effects'
+import { GpuPipelineManager } from './gpu-pipeline-manager'
+import { isItemFullyOccluding, type FrameOcclusionContext } from './frame-occlusion'
+import {
+  renderMasksToGpuTexture as renderMasksToGpuTexturePure,
+  applyTrackScopedMasks as applyTrackScopedMasksPure,
+  type RenderedTaskResult,
+} from './frame-mask-helpers'
+import {
+  renderTransitionFallbackCanvas as renderTransitionFallbackCanvasPure,
+  renderItemWithEffects as renderItemWithEffectsPure,
+  type FrameItemRenderDeps,
+} from './frame-render-tasks'
+import { compositeFrameResults } from './frame-compositing'
+import {
+  buildMaskFrameIndex,
+  getActiveMasksForFrame,
+  type MaskCanvasSettings,
+  type PreparedMask,
+} from './canvas-masks'
+import { type ActiveTransition } from './canvas-transitions'
+import { type CachedGifFrames, gifFrameCache } from '@/features/export/deps/timeline-gif-cache'
+import { CanvasPool, TextMeasurementCache } from './canvas-pool'
+import { SharedVideoExtractorPool, type VideoFrameSource } from './shared-video-extractor'
+import { getCompositeOperation } from '@/types/blend-mode-css'
+import {
+  useCompositionsStore,
+  type SubComposition,
+} from '@/features/export/deps/timeline-compositions'
+import { doesMaskAffectTrack } from '@/shared/utils/mask-scope'
+import type { FrameInvalidationRequest } from '@/shared/utils/frame-invalidation'
+import {
+  collectReachableCompositionIdsFromItems,
+  collectReachableCompositionIdsFromTracks,
+} from '@/features/export/deps/timeline-compositions'
+
+// Item renderer
+import {
+  createFrameCompositionSceneCache,
+  hasCornerPin,
+  type PreviewPathVerticesOverride,
+  resolveCompositionRenderPlan,
+  collectFrameVideoCandidates,
+  getVideoTargetTimeSeconds,
+  resolveFrameRenderScene,
+} from '@/features/export/deps/composition-runtime'
+import {
+  renderItem,
+  renderTransitionToGpuTexture,
+  type CanvasSettings,
+  type WorkerLoadedImage,
+  type ItemRenderContext,
+  type SubCompRenderData,
+} from './canvas-item-renderer'
+import { ScrubbingCache } from '@/features/export/deps/preview'
+import { resolveFrameRenderOptimization } from './render-path-optimizer'
+import { ReverseVideoFrameCache } from './reverse-video-frame-cache'
+import { resolveReverseConformedVideoItem } from '@/shared/utils/reverse-conform-item'
+import {
+  itemHasEnabledGpuEffect,
+  isAnimatedImage,
+  isGifFormat,
+  subCompositionRenderDataHasGpuEffects,
+} from './render-engine-predicates'
+
+function getLog() {
+  return createLogger('ClientRenderEngine')
+}
+
+function getPrewarmVideoSourceTimeSeconds(item: VideoItem, frame: number, fps: number): number {
+  const localFrame = frame - item.from
+  const sourceStart = item.sourceStart ?? item.trimStart ?? 0
+  const sourceFps = item.sourceFps ?? fps
+  const speed = item.speed ?? 1
+  const sourceFramesNeeded = (item.durationInFrames * speed * sourceFps) / fps
+  const reverseSourceEnd = item.sourceEnd ?? sourceStart + sourceFramesNeeded
+  return getVideoTargetTimeSeconds(
+    sourceStart,
+    sourceFps,
+    localFrame,
+    speed,
+    fps,
+    0,
+    item.isReversed === true,
+    reverseSourceEnd,
+  )
+}
+
+// Predicate helpers (GPU-effect / animated-image classifiers) live in
+// `render-engine-predicates.ts`. `subCompositionRenderDataHasGpuEffects` is
+// re-exported so existing import sites (and its test) keep working.
+export { subCompositionRenderDataHasGpuEffects }
+
+// WebP frame extraction is handled by gifFrameCache.getWebpFrames() —
+// the cache service uses the ImageDecoder API and provides the same
+// CachedGifFrames structure used for GIF.
+
+// ---------------------------------------------------------------------------
+// Scrub perf instrumentation (DEV diagnostics, opt-in)
+// ---------------------------------------------------------------------------
+//
+// Gated on `window.__SCRUB_PERF__ = true` (off by default → zero overhead).
+// When on, every `renderFrame` call records its wall-time + which path it took
+// (cache-hit / direct / full) into `window.__scrubPerf` and emits a
+// `scrub.renderFrame.<path>` User Timing measure so it shows up on the
+// Performance panel's Timings track. Read with:
+//   window.__scrubPerf            // raw ring buffer
+//   — or record a Performance profile and look for `scrub.renderFrame.*`.
+interface ScrubPerfSample {
+  f: number
+  path: 'cache-hit' | 'direct' | 'full'
+  ms: number
+}
+type ScrubPerfGlobal = {
+  __SCRUB_PERF__?: boolean
+  __scrubPerf?: ScrubPerfSample[]
+}
+
+function scrubPerfStart(): number {
+  return (globalThis as ScrubPerfGlobal).__SCRUB_PERF__ ? performance.now() : -1
+}
+
+function recordScrubPerf(frame: number, path: ScrubPerfSample['path'], startMs: number): void {
+  if (startMs < 0) return
+  const w = globalThis as ScrubPerfGlobal
+  const ms = Number((performance.now() - startMs).toFixed(2))
+  const buffer = (w.__scrubPerf ??= [])
+  buffer.push({ f: frame, path, ms })
+  if (buffer.length > 3000) buffer.shift()
+  try {
+    performance.measure(`scrub.renderFrame.${path}`, { start: startMs })
+  } catch {
+    /* User Timing unavailable — ignore */
+  }
+}
+
+// ---------------------------------------------------------------------------
+// createCompositionRenderer
+// ---------------------------------------------------------------------------
+
+/**
+ * Creates a composition renderer that can render frames to a canvas
+ * with full support for effects, masks, transitions, and keyframe animations.
+ */
+export async function createCompositionRenderer(
+  composition: CompositionInputProps,
+  canvas: OffscreenCanvas,
+  ctx: OffscreenCanvasRenderingContext2D,
+  options: {
+    mode?: 'export' | 'preview'
+    getPreviewTransformOverride?: (itemId: string) => Partial<ResolvedTransform> | undefined
+    getPreviewEffectsOverride?: (itemId: string) => ItemEffect[] | undefined
+    getPreviewCornerPinOverride?: (itemId: string) => TimelineItem['cornerPin'] | undefined
+    getPreviewPathVerticesOverride?: PreviewPathVerticesOverride
+    getLiveItemSnapshot?: (itemId: string) => TimelineItem | undefined
+    getLiveKeyframes?: (itemId: string) => ItemKeyframes | undefined
+    domVideoElementProvider?: (itemId: string) => HTMLVideoElement | null
+    useProxyMedia?: boolean
+  } = {},
+) {
+  const { fps, transitions = [], backgroundColor = '#000000', keyframes = [] } = composition
+  const renderMode = options.mode ?? 'export'
+  const tracks =
+    composition.tracks?.map((track) => ({
+      ...track,
+      items: (track.items ?? []).map((item) =>
+        item.type === 'video'
+          ? resolveReverseConformedVideoItem(item, fps, {
+              mode: renderMode,
+              useProxy: options.useProxyMedia,
+            })
+          : item,
+      ),
+    })) ?? []
+  const getPreviewTransformOverride = options.getPreviewTransformOverride
+  const getPreviewEffectsOverride = options.getPreviewEffectsOverride
+  const getPreviewCornerPinOverride = options.getPreviewCornerPinOverride
+  const getPreviewPathVerticesOverride = options.getPreviewPathVerticesOverride
+  const getLiveItemSnapshot = options.getLiveItemSnapshot
+  const getLiveKeyframes = options.getLiveKeyframes
+  const domVideoElementProvider = options.domVideoElementProvider
+  const hasDom = typeof document !== 'undefined'
+  const previewStrictDecode = renderMode === 'preview'
+
+  const canvasSettings: CanvasSettings = {
+    width: canvas.width,
+    height: canvas.height,
+    fps,
+  }
+  const frameSceneCache = createFrameCompositionSceneCache()
+  let frameSceneRevision = 0
+
+  const renderPlan = resolveCompositionRenderPlan({ tracks, transitions })
+  const { trackRenderState } = renderPlan
+  const {
+    visibleTrackIds,
+    visibleTracksByOrderDesc: sortedTracks,
+    visibleTracksByOrderAsc: tracksTopToBottom,
+    trackOrderMap,
+  } = trackRenderState
+
+  // === PERFORMANCE OPTIMIZATION: Canvas Pool ===
+  // Pre-allocate reusable canvases instead of creating new ones per frame
+  // Initial size: 10 (1 content + ~5 items + 2 effects + 2 transitions)
+  const canvasPool = new CanvasPool(canvas.width, canvas.height, 10, 20)
+
+  // === PERFORMANCE OPTIMIZATION: Text Measurement Cache ===
+  const textMeasureCache = new TextMeasurementCache()
+
+  // === 3-TIER SCRUBBING CACHE (preview only) ===
+  // Tier 1: GPU textures in VRAM for instant scrub (~0.1ms blit)
+  // Tier 2: Per-video last-frame for instant clip boundary display
+  // Tier 3: Deep RAM ImageBitmap buffer (~900 frames) with GPU promotion
+  // When all tiers are warm, scrubbing doesn't decode at all.
+  const FRAME_CACHE_ENABLED = renderMode === 'preview'
+  const scrubbingCache = FRAME_CACHE_ENABLED ? new ScrubbingCache() : null
+  let lastRenderedFrame = -1
+  const cacheRenderedFrame = (frame: number) => {
+    if (!scrubbingCache) {
+      return
+    }
+
+    const delta = frame - lastRenderedFrame
+    const isSequentialForward = delta > 0 && delta <= 3
+    lastRenderedFrame = frame
+    if (gpu.effects) {
+      scrubbingCache.setGpuDevice(gpu.effects.getDevice(), canvas.width, canvas.height)
+    }
+    scrubbingCache.cacheFrame(frame, canvas, isSequentialForward)
+  }
+
+  // === GPU pipeline cluster ===
+  // All WebGPU pipelines, the compositor/texture-pool/mask-manager, the
+  // composite output target, and the glyph/bitmap-mask texture caches are
+  // owned by the manager. Lazily initialized on first use; the effects
+  // pipeline owns the device that every other pipeline derives from.
+  const gpu = new GpuPipelineManager()
+
+  // Build lookup maps
+  const keyframesMap = buildKeyframesMap(keyframes)
+  const getCurrentKeyframes = (itemId: string): ItemKeyframes | undefined =>
+    getLiveKeyframes?.(itemId) ?? keyframesMap.get(itemId)
+  const getCurrentItem = <TItem extends TimelineItem>(item: TItem): TItem => {
+    const liveItem = getLiveItemSnapshot?.(item.id)
+    const current = liveItem && liveItem.type === item.type ? (liveItem as TItem) : item
+    if (current.type !== 'video') {
+      return current
+    }
+
+    const resolvedVideoItem = resolveReverseConformedVideoItem(current, fps, {
+      mode: renderMode,
+      useProxy: options.useProxyMedia,
+    })
+    syncVideoItemRegistration(resolvedVideoItem)
+    return resolvedVideoItem as TItem
+  }
+  const getLiveMaskItem = getLiveItemSnapshot
+    ? (itemId: string) => {
+        const live = getLiveItemSnapshot(itemId)
+        return live && live.type === 'shape' ? (live as ShapeItem) : undefined
+      }
+    : undefined
+
+  // === PERFORMANCE OPTIMIZATION: Use mediabunny for video decoding ===
+  // VideoFrameExtractor provides precise frame access without seek delays
+  const sharedVideoExtractors = new SharedVideoExtractorPool({
+    // Same-source transitions and overlaps can require multiple concurrent decode
+    // timelines. Keep a small fixed lane cap to prevent per-clip duplication.
+    maxLanesPerSource: 4,
+    logFrameFailuresAsDebug: renderMode === 'preview',
+  })
+  const videoExtractors = new Map<string, VideoFrameSource>()
+  const videoSourceByItemId = new Map<string, string>()
+  const videoItemIdsBySource = new Map<string, Set<string>>()
+  const videoItemsById = new Map<string, VideoItem>()
+  // Keep video elements as fallback if mediabunny fails
+  const videoElements = new Map<string, HTMLVideoElement>()
+  const fallbackVideoPool = hasDom && !previewStrictDecode ? new VideoSourcePool() : null
+  const fallbackVideoBySrc = new Set<string>()
+  const fallbackVideoClipIdByItem = new Map<string, string>()
+  let fallbackVideoClipCounter = 0
+
+  const registerVideoItem = (itemId: string, src: string): void => {
+    if (!src) return
+    const prevSrc = videoSourceByItemId.get(itemId)
+    if (prevSrc && prevSrc !== src) {
+      const prevSet = videoItemIdsBySource.get(prevSrc)
+      prevSet?.delete(itemId)
+      if (prevSet && prevSet.size === 0) {
+        videoItemIdsBySource.delete(prevSrc)
+      }
+      sharedVideoExtractors.releaseItem(itemId)
+    }
+    videoSourceByItemId.set(itemId, src)
+    let ids = videoItemIdsBySource.get(src)
+    if (!ids) {
+      ids = new Set<string>()
+      videoItemIdsBySource.set(src, ids)
+    }
+    ids.add(itemId)
+    videoExtractors.set(itemId, sharedVideoExtractors.getOrCreateItemExtractor(itemId, src))
+  }
+
+  const bindFallbackVideoElement = (itemId: string, src: string): void => {
+    if (!fallbackVideoPool) return
+
+    let clipId = fallbackVideoClipIdByItem.get(itemId)
+    if (!clipId) {
+      clipId = `export-fallback-${++fallbackVideoClipCounter}-${itemId}`
+      fallbackVideoClipIdByItem.set(itemId, clipId)
+    }
+
+    const element = fallbackVideoPool.acquireForClip(clipId, src)
+    if (!element) return
+
+    // Configure element immediately after acquire, then warm shared source preload.
+    element.crossOrigin = 'anonymous'
+    element.muted = true
+    element.preload = 'auto'
+
+    if (!fallbackVideoBySrc.has(src)) {
+      fallbackVideoBySrc.add(src)
+      fallbackVideoPool.preloadSource(src).catch(() => {})
+    }
+
+    videoElements.set(itemId, element)
+  }
+
+  for (const track of tracks) {
+    for (const item of track.items ?? []) {
+      if (item.type === 'video') {
+        const videoItem = item as VideoItem
+        videoItemsById.set(item.id, videoItem)
+        if (videoItem.src) {
+          getLog().debug('Registering shared video extractor', {
+            itemId: item.id,
+            src: videoItem.src.substring(0, 80),
+          })
+
+          // Create item-bound wrapper backed by a shared per-source extractor pool.
+          registerVideoItem(item.id, videoItem.src)
+
+          // Also create fallback video element in case mediabunny fails (main thread only).
+          if (hasDom && !previewStrictDecode) {
+            bindFallbackVideoElement(item.id, videoItem.src)
+          }
+        }
+      }
+    }
+  }
+
+  // Pre-load image elements
+  const imageElements = new Map<string, WorkerLoadedImage>()
+  const imageLoadPromises: Promise<void>[] = []
+
+  // Track animated image items for frame extraction (GIF + animated WebP)
+  const gifItems: ImageItem[] = []
+  const webpItems: ImageItem[] = []
+  const gifFramesMap = new Map<string, CachedGifFrames>()
+
+  for (const track of tracks) {
+    for (const item of track.items ?? []) {
+      if (item.type === 'image' && (item as ImageItem).src) {
+        const imageItem = item as ImageItem
+
+        // Check if this is a potentially animated image
+        if (isAnimatedImage(imageItem)) {
+          if (isGifFormat(imageItem)) {
+            gifItems.push(imageItem)
+          } else {
+            webpItems.push(imageItem)
+          }
+          // Still load as regular image for fallback
+        }
+
+        if (hasDom && typeof Image !== 'undefined') {
+          const img = new Image()
+          img.crossOrigin = 'anonymous'
+          const loadPromise = new Promise<void>((resolve, reject) => {
+            img.onload = () => {
+              imageElements.set(item.id, {
+                source: img,
+                width: img.naturalWidth,
+                height: img.naturalHeight,
+              })
+              resolve()
+            }
+            img.onerror = () => reject(new Error(`Failed to load image: ${imageItem.src}`))
+          })
+          img.src = imageItem.src
+          imageLoadPromises.push(loadPromise)
+        } else {
+          const loadPromise = (async () => {
+            if (typeof createImageBitmap !== 'function') {
+              throw new Error('WORKER_REQUIRES_MAIN_THREAD:imagebitmap')
+            }
+            const response = await fetch(imageItem.src)
+            if (!response.ok) {
+              throw new Error(`Failed to load image: ${imageItem.src}`)
+            }
+            const blob = await response.blob()
+            const bitmap = await createImageBitmap(blob)
+            imageElements.set(item.id, {
+              source: bitmap,
+              width: bitmap.width,
+              height: bitmap.height,
+            })
+          })()
+          imageLoadPromises.push(loadPromise)
+        }
+      }
+    }
+  }
+
+  // Collect adjustment layers
+  const adjustmentLayers = renderPlan.visibleAdjustmentLayers as AdjustmentLayerWithTrackOrder[]
+
+  const transitionTrackOrderById = new Map<string, number>()
+  for (const window of renderPlan.transitionWindows) {
+    const transitionTrackId = window.transition.trackId
+    const trackOrder = transitionTrackId ? (trackOrderMap.get(transitionTrackId) ?? 0) : 0
+    transitionTrackOrderById.set(window.transition.id, trackOrder)
+  }
+
+  const maskSettings: MaskCanvasSettings = canvasSettings
+  const maskFrameIndex = buildMaskFrameIndex(tracks, maskSettings)
+
+  // Track which videos successfully use mediabunny (for render decisions)
+  const useMediabunny = new Set<string>()
+  // Track persistent mediabunny failures and disable extractor after repeated errors.
+  const mediabunnyFailureCountByItem = new Map<string, number>()
+  const mediabunnyInitFailureCountByItem = new Map<string, number>()
+  const mediabunnyDisabledItems = new Set<string>()
+  const MEDIABUNNY_DISABLE_THRESHOLD = 4
+  const PREWARM_FAILURE_DISABLE_THRESHOLD = 3
+  const inFlightInitByItem = new Map<string, Promise<boolean>>()
+  let isDisposed = false
+
+  function syncVideoItemRegistration(videoItem: VideoItem): void {
+    if (!videoItem.src) return
+
+    const prevSrc = videoSourceByItemId.get(videoItem.id)
+    if (prevSrc !== videoItem.src) {
+      useMediabunny.delete(videoItem.id)
+      mediabunnyDisabledItems.delete(videoItem.id)
+      mediabunnyFailureCountByItem.delete(videoItem.id)
+      mediabunnyInitFailureCountByItem.delete(videoItem.id)
+      inFlightInitByItem.delete(videoItem.id)
+      registerVideoItem(videoItem.id, videoItem.src)
+      if (hasDom && !previewStrictDecode) {
+        bindFallbackVideoElement(videoItem.id, videoItem.src)
+      }
+    }
+
+    videoItemsById.set(videoItem.id, videoItem)
+  }
+
+  // Pre-computed sub-composition render data. Populated synchronously at
+  // renderer creation (so the first renderFrame sees compound-clip structure
+  // even before preload finishes) and refreshed during preload.
+  const subCompRenderData = new Map<string, SubCompRenderData>()
+
+  const buildSubCompRenderDataEntry = (subComp: SubComposition): SubCompRenderData => {
+    const sorted = [...subComp.tracks].sort((a, b) => (b.order ?? 0) - (a.order ?? 0))
+    const sortedWithItems = sorted.map((t) => ({
+      order: t.order ?? 0,
+      visible: t.visible !== false,
+      items: subComp.items.filter(
+        (i) => i.trackId === t.id && i.type !== 'audio' && i.type !== 'adjustment',
+      ),
+    }))
+    const subKfMap = new Map<string, ItemKeyframes>()
+    for (const kf of subComp.keyframes ?? []) {
+      subKfMap.set(kf.itemId, kf)
+    }
+    const subAdjustmentLayers: AdjustmentLayerWithTrackOrder[] = []
+    for (const t of subComp.tracks) {
+      if (t.visible === false) continue
+      const trackOrder = t.order ?? 0
+      for (const i of subComp.items) {
+        if (i.trackId === t.id && i.type === 'adjustment') {
+          subAdjustmentLayers.push({ layer: i, trackOrder })
+        }
+      }
+    }
+    return {
+      fps: subComp.fps,
+      durationInFrames: subComp.durationInFrames,
+      sortedTracks: sortedWithItems,
+      keyframesMap: subKfMap,
+      adjustmentLayers: subAdjustmentLayers,
+    }
+  }
+  const PREWARM_DECODE_MAX_ITEMS = 6
+  let prewarmCanvas: OffscreenCanvas | HTMLCanvasElement | null = null
+  let prewarmCtx: OffscreenCanvasRenderingContext2D | CanvasRenderingContext2D | null = null
+  let prewarmAttempted = false
+  const reverseVideoFrameCache = renderMode === 'export' ? new ReverseVideoFrameCache() : undefined
+
+  // Build the shared ItemRenderContext used by canvas-item-renderer functions
+  const itemRenderContext: ItemRenderContext = {
+    fps,
+    canvasSettings,
+    canvasPool,
+    textMeasureCache,
+    renderMode,
+    renderItem,
+    scrubbingCache,
+    getCurrentItemSnapshot: getCurrentItem,
+    getLiveItemSnapshotById: getLiveItemSnapshot,
+    getCurrentKeyframes,
+    getPreviewTransformOverride,
+    getPreviewCornerPinOverride,
+    videoExtractors,
+    videoElements,
+    useMediabunny,
+    mediabunnyDisabledItems,
+    mediabunnyFailureCountByItem,
+    reverseVideoFrameCache,
+    imageElements,
+    gifFramesMap,
+    keyframesMap,
+    adjustmentLayers,
+    getPreviewEffectsOverride,
+    getPreviewPathVerticesOverride,
+    subCompRenderData,
+    gpuPipeline: null,
+    gpuTransitionPipeline: null,
+    gpuMediaPipeline: null,
+    gpuMediaBlendPipeline: null,
+    gpuShapePipeline: null,
+    gpuTextPipeline: null,
+    gpuMaskCombinePipeline: null,
+    gpuTextTextureCache: gpu.textTextureCache,
+    gpuBitmapMaskTextureCache: gpu.bitmapMaskTextureCache,
+    // Cross-frame text raster cache (preview scrub). Only populated in preview
+    // mode; export renders each frame once so caching there only wastes RAM.
+    textRasterCache: renderMode === 'preview' ? new Map() : undefined,
+    // Cross-frame corner-pin warp cache for text (preview scrub only).
+    cornerPinWarpCache: renderMode === 'preview' ? new Map() : undefined,
+    gpuScratchTexturePool: {
+      acquire: (width, height, format) =>
+        gpu.texturePool?.acquire(width, height, format) ??
+        gpu.ensureTexturePool().acquire(width, height, format),
+      release: (texture) => {
+        gpu.texturePool?.release(texture)
+      },
+    },
+    domVideoElementProvider,
+  }
+
+  // Track the SubComposition identity we last built each entry from so we only
+  // rebuild when the Zustand store produced a new reference (effects added,
+  // items changed, etc.). Using reference equality keeps the per-frame cost
+  // near-zero when nothing edited the sub-comp.
+  const subCompRenderDataSource = new Map<string, SubComposition>()
+
+  const refreshSubCompRenderData = (compositionById: Record<string, SubComposition>) => {
+    const reachableIds = collectReachableCompositionIdsFromTracks(tracks, compositionById)
+    for (const compositionId of reachableIds) {
+      const subComp = compositionById[compositionId]
+      if (!subComp) continue
+      if (subCompRenderDataSource.get(compositionId) === subComp) continue
+      subCompRenderData.set(compositionId, buildSubCompRenderDataEntry(subComp))
+      subCompRenderDataSource.set(compositionId, subComp)
+    }
+  }
+
+  // Synchronously populate sub-comp render data from the current compositions
+  // store. Without this, the first renderFrame after creation would fall into
+  // the `if (!subData) return;` path in renderCompositionItem and skip all
+  // compound clips — producing a black frame until preload() finishes.
+  refreshSubCompRenderData(useCompositionsStore.getState().compositionById)
+
+  const getPrewarmContext = ():
+    | OffscreenCanvasRenderingContext2D
+    | CanvasRenderingContext2D
+    | null => {
+    if (prewarmAttempted) return prewarmCtx
+    prewarmAttempted = true
+
+    if (typeof OffscreenCanvas !== 'undefined') {
+      prewarmCanvas = new OffscreenCanvas(1, 1)
+      prewarmCtx = prewarmCanvas.getContext('2d')
+      return prewarmCtx
+    }
+
+    if (typeof document !== 'undefined') {
+      const canvasEl = document.createElement('canvas')
+      canvasEl.width = 1
+      canvasEl.height = 1
+      prewarmCanvas = canvasEl
+      prewarmCtx = canvasEl.getContext('2d')
+      return prewarmCtx
+    }
+
+    return null
+  }
+
+  const collectPrewarmVideoCandidatesForFrame = (frame: number): VideoItem[] =>
+    collectFrameVideoCandidates({
+      tracksByOrderAsc: tracksTopToBottom,
+      visibleTrackIds,
+      minFrame: frame - 1,
+      maxFrame: frame + 1,
+      maxItems: PREWARM_DECODE_MAX_ITEMS,
+    }).map((item) => getCurrentItem(item))
+
+  const initializeMediabunnyForItems = async (itemIds: string[]): Promise<Map<string, boolean>> => {
+    const itemResult = new Map<string, boolean>()
+    if (itemIds.length === 0) return itemResult
+
+    const bySource = new Map<string, string[]>()
+    for (const itemId of itemIds) {
+      const src = videoSourceByItemId.get(itemId)
+      if (!src) {
+        itemResult.set(itemId, false)
+        continue
+      }
+      let ids = bySource.get(src)
+      if (!ids) {
+        ids = []
+        bySource.set(src, ids)
+      }
+      ids.push(itemId)
+    }
+
+    await Promise.all(
+      [...bySource.entries()].map(async ([src, ids]) => {
+        const success = await sharedVideoExtractors.initSource(src)
+        if (isDisposed) return
+        // Intentional side effect: decode readiness is tracked per shared source,
+        // while itemResult only reports back for the explicitly requested ids.
+        const allItemsForSource = videoItemIdsBySource.get(src) ?? new Set(ids)
+        for (const itemId of allItemsForSource) {
+          if (success) {
+            useMediabunny.add(itemId)
+          } else {
+            useMediabunny.delete(itemId)
+          }
+        }
+        for (const itemId of ids) {
+          itemResult.set(itemId, success)
+        }
+      }),
+    )
+
+    return itemResult
+  }
+
+  const collectPriorityVideoItemIds = (targetFrame: number, windowFrames: number): string[] => {
+    const minFrame = targetFrame - windowFrames
+    const maxFrame = targetFrame + windowFrames
+    const ids: string[] = []
+
+    for (const track of tracks) {
+      if (!visibleTrackIds.has(track.id)) continue
+      for (const item of track.items ?? []) {
+        if (item.type !== 'video') continue
+        const start = item.from
+        const end = item.from + item.durationInFrames
+        if (end < minFrame || start > maxFrame) continue
+        const currentItem = getCurrentItem(item)
+        if (videoExtractors.has(currentItem.id)) {
+          ids.push(currentItem.id)
+        }
+      }
+    }
+
+    return ids
+  }
+
+  const ensureVideoItemReady = async (itemId: string): Promise<boolean> => {
+    if (useMediabunny.has(itemId)) return true
+    if (mediabunnyDisabledItems.has(itemId)) return false
+    if (!videoExtractors.has(itemId)) return false
+
+    const existing = inFlightInitByItem.get(itemId)
+    if (existing) return existing
+
+    const promise = initializeMediabunnyForItems([itemId])
+      .then((result) => {
+        if (isDisposed) return false
+        const ok = result.get(itemId) === true
+        if (ok) {
+          mediabunnyInitFailureCountByItem.delete(itemId)
+          return true
+        }
+
+        const failures = (mediabunnyInitFailureCountByItem.get(itemId) ?? 0) + 1
+        mediabunnyInitFailureCountByItem.set(itemId, failures)
+        if (failures >= MEDIABUNNY_DISABLE_THRESHOLD) {
+          mediabunnyDisabledItems.add(itemId)
+        }
+        return false
+      })
+      .finally(() => {
+        inFlightInitByItem.delete(itemId)
+      })
+
+    inFlightInitByItem.set(itemId, promise)
+    return promise
+  }
+  itemRenderContext.ensureVideoItemReady = ensureVideoItemReady
+
+  // Wire up pre-decoded bitmap cache from the decoder prewarm worker.
+  // Import eagerly so it's available before the first render.
+  if (renderMode === 'preview') {
+    void import('@/features/export/deps/preview-contract')
+      .then(({ getCachedPredecodedBitmap, waitForInflightPredecodedBitmap }) => {
+        itemRenderContext.getCachedPredecodedBitmap = getCachedPredecodedBitmap
+        itemRenderContext.waitForInflightPredecodedBitmap = waitForInflightPredecodedBitmap
+      })
+      .catch(() => {})
+  }
+
+  const reportPreviewDecodeCoverage = () => {
+    if (previewStrictDecode && useMediabunny.size !== videoExtractors.size) {
+      const failedItemIds = [...videoExtractors.keys()].filter((id) => !useMediabunny.has(id))
+      getLog().debug('Preview Mediabunny coverage incomplete; fallback paths remain available', {
+        failedCount: failedItemIds.length,
+        failedItemIds,
+      })
+    }
+  }
+
+  return {
+    async preload(
+      options: {
+        priorityFrame?: number
+        priorityWindowFrames?: number
+        onPriorityMediaReady?: () => void
+      } = {},
+    ) {
+      // Composition items require the compositions store which only exists on main thread.
+      // Workers get a fresh, empty Zustand store, so sub-comp data can never be resolved.
+      // Bail early to trigger the main-thread fallback path.
+      const hasCompositionItems = tracks.some((t) =>
+        (t.items ?? []).some((i) => i.type === 'composition'),
+      )
+      if (!hasDom && hasCompositionItems) {
+        throw new Error('WORKER_REQUIRES_MAIN_THREAD:composition')
+      }
+
+      const priorityFrame = Number.isFinite(options.priorityFrame)
+        ? Math.round(options.priorityFrame!)
+        : null
+      const priorityWindowFrames = Math.max(4, Math.round(options.priorityWindowFrames ?? fps * 4))
+      const prioritizedMainVideoIds =
+        priorityFrame === null
+          ? []
+          : collectPriorityVideoItemIds(priorityFrame, priorityWindowFrames)
+
+      getLog().debug('Preloading media', {
+        videoCount: videoExtractors.size,
+        videoSourceCount: new Set(videoSourceByItemId.values()).size,
+        imageCount: imageElements.size,
+      })
+
+      // Wait for images
+      await Promise.all(imageLoadPromises)
+
+      if (!hasDom && (gifItems.length > 0 || webpItems.length > 0)) {
+        throw new Error('WORKER_REQUIRES_MAIN_THREAD:animated-image')
+      }
+
+      // === Initialize mediabunny video extractors (primary method) ===
+      if (prioritizedMainVideoIds.length > 0) {
+        await initializeMediabunnyForItems(prioritizedMainVideoIds)
+      }
+      const prioritizedMainSet = new Set(prioritizedMainVideoIds)
+      const remainingMainVideoIds = [...videoExtractors.keys()].filter(
+        (itemId) => !prioritizedMainSet.has(itemId),
+      )
+      if (remainingMainVideoIds.length > 0) {
+        await initializeMediabunnyForItems(remainingMainVideoIds)
+      }
+
+      getLog().info('Video initialization complete', {
+        mediabunny: useMediabunny.size,
+        fallback: videoExtractors.size - useMediabunny.size,
+        uniqueSources: new Set(videoSourceByItemId.values()).size,
+      })
+
+      reportPreviewDecodeCoverage()
+
+      // === Preload ALL fallback video elements ===
+      // Load every video element (not just those that failed mediabunny init)
+      // so the HTML5 fallback is ready if mediabunny fails mid-export.
+      // This is critical for transitions where the outgoing clip's extractor
+      // may fail past the source duration boundary.
+      const allVideoIds = Array.from(videoElements.keys())
+
+      if (!hasDom && allVideoIds.some((id) => !useMediabunny.has(id))) {
+        throw new Error('WORKER_REQUIRES_MAIN_THREAD:video-fallback')
+      }
+
+      if (hasDom && !previewStrictDecode && allVideoIds.length > 0) {
+        const uniqueVideoEntries = new Map<HTMLVideoElement, string>()
+        for (const [itemId, video] of videoElements.entries()) {
+          if (!uniqueVideoEntries.has(video)) {
+            uniqueVideoEntries.set(video, itemId)
+          }
+        }
+
+        const videoLoadPromises = Array.from(uniqueVideoEntries.entries()).map(
+          ([video, itemId]) =>
+            new Promise<void>((resolve) => {
+              const timeout = setTimeout(() => {
+                getLog().warn('Video load timeout', { itemId, src: video.currentSrc || video.src })
+                resolve()
+              }, 10000)
+
+              if (video.readyState >= 2) {
+                clearTimeout(timeout)
+                resolve()
+              } else {
+                video.addEventListener(
+                  'loadeddata',
+                  () => {
+                    clearTimeout(timeout)
+                    resolve()
+                  },
+                  { once: true },
+                )
+                video.addEventListener(
+                  'error',
+                  () => {
+                    clearTimeout(timeout)
+                    getLog().error('Video load error', {
+                      itemId,
+                      src: video.currentSrc || video.src,
+                      mediaErrorCode: video.error?.code,
+                      mediaErrorMessage: video.error?.message,
+                    })
+                    resolve()
+                  },
+                  { once: true },
+                )
+                video.load()
+              }
+            }),
+        )
+
+        await Promise.all(videoLoadPromises)
+      }
+
+      // Load GIF frames for animated GIFs (main thread only)
+      if (hasDom && gifItems.length > 0) {
+        getLog().debug('Preloading GIF frames', { gifCount: gifItems.length })
+
+        const gifLoadPromises = gifItems.map(async (gifItem) => {
+          try {
+            // Use mediaId if available, otherwise use item id
+            const mediaId = gifItem.mediaId ?? gifItem.id
+            const cachedFrames = await gifFrameCache.getGifFrames(mediaId, gifItem.src)
+            gifFramesMap.set(gifItem.id, cachedFrames)
+            getLog().debug('GIF frames loaded', {
+              itemId: gifItem.id.substring(0, 8),
+              frameCount: cachedFrames.frames.length,
+              totalDuration: cachedFrames.totalDuration,
+            })
+          } catch (err) {
+            getLog().error('Failed to load GIF frames', { itemId: gifItem.id, error: err })
+            // GIF will fallback to static image rendering
+          }
+        })
+
+        await Promise.all(gifLoadPromises)
+        getLog().debug('All GIF frames loaded', { loadedCount: gifFramesMap.size })
+      }
+
+      // Load animated WebP frames via cache service (main thread only)
+      if (hasDom && webpItems.length > 0) {
+        getLog().debug('Preloading animated WebP frames', { webpCount: webpItems.length })
+
+        const webpLoadPromises = webpItems.map(async (webpItem) => {
+          try {
+            const mediaId = webpItem.mediaId ?? webpItem.id
+            const cachedFrames = await gifFrameCache.getWebpFrames(mediaId, webpItem.src)
+            gifFramesMap.set(webpItem.id, cachedFrames)
+            getLog().debug('Animated WebP frames loaded', {
+              itemId: webpItem.id.substring(0, 8),
+              frameCount: cachedFrames.frames.length,
+              totalDuration: cachedFrames.totalDuration,
+            })
+          } catch (err) {
+            getLog().error('Failed to load WebP frames', { itemId: webpItem.id, error: err })
+            // WebP will fallback to static image rendering
+          }
+        })
+
+        await Promise.all(webpLoadPromises)
+      }
+
+      // === PRELOAD SUB-COMPOSITION MEDIA & BUILD RENDER DATA ===
+      // CompositionItem references sub-compositions with their own media items.
+      // We preload media AND build pre-computed render data to avoid per-frame
+      // sorting, filtering, and linear searches in renderCompositionItem.
+      const subCompMediaItems: Array<{ subItem: TimelineItem; src: string }> = []
+      const pendingResolutions: Array<{ subItem: TimelineItem; mediaId: string }> = []
+      const prioritySubCompVideoItemIds = new Set<string>()
+      const compositionById = useCompositionsStore.getState().compositionById
+      // Collect priority video item IDs from all depths of nested compositions
+      // whose root-level wrapper falls within the priority scrub window.
+      for (const track of tracks) {
+        for (const item of track.items ?? []) {
+          if (item.type !== 'composition') continue
+          const compItem = item as CompositionItem
+          const subComp = compositionById[compItem.compositionId]
+          if (!subComp) continue
+          const subCompIsPriority =
+            priorityFrame !== null &&
+            compItem.from <= priorityFrame + priorityWindowFrames &&
+            compItem.from + compItem.durationInFrames >= priorityFrame - priorityWindowFrames
+          if (!subCompIsPriority) continue
+          const nestedCompIds = collectReachableCompositionIdsFromItems(
+            subComp.items,
+            compositionById,
+          )
+          const allComps = [
+            subComp,
+            ...nestedCompIds.flatMap((id) => (compositionById[id] ? [compositionById[id]] : [])),
+          ]
+          for (const comp of allComps) {
+            for (const subItem of comp.items) {
+              if (subItem.type === 'video') {
+                prioritySubCompVideoItemIds.add(subItem.id)
+              }
+            }
+          }
+        }
+      }
+
+      const reachableCompositionIds = collectReachableCompositionIdsFromTracks(
+        tracks,
+        compositionById,
+      )
+      for (const compositionId of reachableCompositionIds) {
+        const subComp = compositionById[compositionId]
+        if (!subComp) {
+          getLog().warn('Sub-composition not found in store!', {
+            compositionId,
+            storeCompositionCount: useCompositionsStore.getState().compositions.length,
+            storeCompositionIds: useCompositionsStore
+              .getState()
+              .compositions.map((c) => c.id.substring(0, 8)),
+          })
+          continue
+        }
+
+        if (subCompRenderDataSource.get(compositionId) !== subComp) {
+          subCompRenderData.set(compositionId, buildSubCompRenderDataEntry(subComp))
+          subCompRenderDataSource.set(compositionId, subComp)
+        }
+
+        for (const subItem of subComp.items) {
+          if (subItem.type !== 'video' && subItem.type !== 'image') continue
+          if (subItem.mediaId) {
+            const src = blobUrlManager.get(subItem.mediaId)
+            if (src) {
+              subCompMediaItems.push({ subItem, src })
+            } else {
+              pendingResolutions.push({ subItem, mediaId: subItem.mediaId })
+            }
+          } else {
+            const src = (subItem as VideoItem | ImageItem).src ?? ''
+            if (src) subCompMediaItems.push({ subItem, src })
+          }
+        }
+      }
+
+      // Resolve pending sub-comp URLs from OPFS in parallel
+      if (pendingResolutions.length > 0) {
+        getLog().debug('Resolving sub-comp media URLs from OPFS', {
+          count: pendingResolutions.length,
+        })
+        const resolved = await Promise.all(
+          pendingResolutions.map(async ({ subItem, mediaId }) => {
+            const src = await resolveMediaUrl(mediaId)
+            return { subItem, src }
+          }),
+        )
+        for (const { subItem, src } of resolved) {
+          if (src) subCompMediaItems.push({ subItem, src })
+        }
+      }
+
+      if (subCompMediaItems.length > 0) {
+        getLog().debug('Preloading sub-composition media', { count: subCompMediaItems.length })
+
+        // Preload sub-comp video extractors
+        const subVideoItemIds: string[] = []
+        for (const { subItem, src } of subCompMediaItems) {
+          if (subItem.type === 'video' && !videoExtractors.has(subItem.id)) {
+            registerVideoItem(subItem.id, src)
+            subVideoItemIds.push(subItem.id)
+            if (hasDom && !previewStrictDecode) {
+              bindFallbackVideoElement(subItem.id, src)
+            }
+          }
+        }
+        const prioritizedSubVideoItemIds = subVideoItemIds.filter((itemId) =>
+          prioritySubCompVideoItemIds.has(itemId),
+        )
+        if (prioritizedSubVideoItemIds.length > 0) {
+          await initializeMediabunnyForItems(prioritizedSubVideoItemIds)
+        }
+
+        // Signal that priority media for the current frame is ready. The
+        // preview controller uses this to trigger a re-render before the
+        // rest of preload (remaining videos, sub images, GIF/WebP frames)
+        // finishes — so the user sees the correct frame faster after
+        // exiting a sub-composition.
+        try {
+          options.onPriorityMediaReady?.()
+        } catch (err) {
+          getLog().warn('onPriorityMediaReady callback threw', { error: err })
+        }
+
+        const remainingSubVideoItemIds = subVideoItemIds.filter(
+          (itemId) => !prioritySubCompVideoItemIds.has(itemId),
+        )
+        if (remainingSubVideoItemIds.length > 0) {
+          await initializeMediabunnyForItems(remainingSubVideoItemIds)
+        }
+
+        reportPreviewDecodeCoverage()
+
+        // Load fallback video elements for sub-comp items that failed mediabunny init
+        if (hasDom && !previewStrictDecode) {
+          const subFallbackVideoIds = subCompMediaItems
+            .filter(({ subItem }) => subItem.type === 'video' && !useMediabunny.has(subItem.id))
+            .map(({ subItem }) => subItem.id)
+
+          if (subFallbackVideoIds.length > 0) {
+            const uniqueSubVideos = new Map<HTMLVideoElement, string>()
+            for (const itemId of subFallbackVideoIds) {
+              const video = videoElements.get(itemId)
+              if (video && !uniqueSubVideos.has(video)) {
+                uniqueSubVideos.set(video, itemId)
+              }
+            }
+
+            const subVideoLoadPromises = Array.from(uniqueSubVideos.entries()).map(
+              ([video, itemId]) =>
+                new Promise<void>((resolve) => {
+                  const timeout = setTimeout(() => {
+                    getLog().warn('Sub-comp video load timeout', { itemId })
+                    resolve()
+                  }, 10000)
+
+                  if (video.readyState >= 2) {
+                    clearTimeout(timeout)
+                    resolve()
+                  } else {
+                    video.addEventListener(
+                      'loadeddata',
+                      () => {
+                        clearTimeout(timeout)
+                        resolve()
+                      },
+                      { once: true },
+                    )
+                    video.addEventListener(
+                      'error',
+                      () => {
+                        clearTimeout(timeout)
+                        getLog().error('Sub-comp video load error', { itemId })
+                        resolve()
+                      },
+                      { once: true },
+                    )
+                    video.load()
+                  }
+                }),
+            )
+            await Promise.all(subVideoLoadPromises)
+          }
+        }
+
+        // Preload sub-comp images
+        const subImagePromises: Promise<void>[] = []
+        const subGifItems: ImageItem[] = []
+        const subWebpItems: ImageItem[] = []
+
+        for (const { subItem, src } of subCompMediaItems) {
+          if (subItem.type === 'image' && !imageElements.has(subItem.id)) {
+            const imageItem = subItem as ImageItem
+            const itemWithSrc = { ...imageItem, src } as ImageItem
+            // Check for animated image (GIF or WebP)
+            if (isAnimatedImage(itemWithSrc)) {
+              if (isGifFormat(itemWithSrc)) {
+                subGifItems.push(itemWithSrc)
+              } else {
+                subWebpItems.push(itemWithSrc)
+              }
+            }
+
+            if (hasDom && typeof Image !== 'undefined') {
+              const img = new Image()
+              img.crossOrigin = 'anonymous'
+              subImagePromises.push(
+                new Promise<void>((resolve) => {
+                  img.onload = () => {
+                    imageElements.set(subItem.id, {
+                      source: img,
+                      width: img.naturalWidth,
+                      height: img.naturalHeight,
+                    })
+                    resolve()
+                  }
+                  img.onerror = () => {
+                    getLog().error('Failed to load sub-comp image', { itemId: subItem.id })
+                    resolve()
+                  }
+                }),
+              )
+              img.src = src
+            } else {
+              subImagePromises.push(
+                (async () => {
+                  if (typeof createImageBitmap !== 'function') {
+                    throw new Error('WORKER_REQUIRES_MAIN_THREAD:imagebitmap')
+                  }
+                  const response = await fetch(src)
+                  if (!response.ok) {
+                    getLog().error('Failed to fetch sub-comp image', { itemId: subItem.id })
+                    return
+                  }
+                  const blob = await response.blob()
+                  const bitmap = await createImageBitmap(blob)
+                  imageElements.set(subItem.id, {
+                    source: bitmap,
+                    width: bitmap.width,
+                    height: bitmap.height,
+                  })
+                })(),
+              )
+            }
+          }
+        }
+        await Promise.all(subImagePromises)
+
+        // Load sub-comp GIF frames
+        if (hasDom && subGifItems.length > 0) {
+          const subGifPromises = subGifItems.map(async (gifItem) => {
+            try {
+              const mediaId = gifItem.mediaId ?? gifItem.id
+              const cachedFrames = await gifFrameCache.getGifFrames(mediaId, gifItem.src)
+              gifFramesMap.set(gifItem.id, cachedFrames)
+              getLog().debug('Sub-comp GIF frames loaded', {
+                itemId: gifItem.id.substring(0, 8),
+                frameCount: cachedFrames.frames.length,
+              })
+            } catch (err) {
+              getLog().error('Failed to load sub-comp GIF frames', {
+                itemId: gifItem.id,
+                error: err,
+              })
+            }
+          })
+          await Promise.all(subGifPromises)
+        }
+
+        // Load sub-comp animated WebP frames via cache service
+        if (hasDom && subWebpItems.length > 0) {
+          const subWebpPromises = subWebpItems.map(async (webpItem) => {
+            try {
+              const mediaId = webpItem.mediaId ?? webpItem.id
+              const cachedFrames = await gifFrameCache.getWebpFrames(mediaId, webpItem.src)
+              gifFramesMap.set(webpItem.id, cachedFrames)
+              getLog().debug('Sub-comp animated WebP frames loaded', {
+                itemId: webpItem.id.substring(0, 8),
+                frameCount: cachedFrames.frames.length,
+              })
+            } catch (err) {
+              getLog().error('Failed to load sub-comp WebP frames', {
+                itemId: webpItem.id,
+                error: err,
+              })
+            }
+          })
+          await Promise.all(subWebpPromises)
+        }
+
+        getLog().debug('Sub-composition media loaded', {
+          videos: subCompMediaItems.filter((s) => s.subItem.type === 'video').length,
+          images: subCompMediaItems.filter((s) => s.subItem.type === 'image').length,
+          gifs: subGifItems.length,
+          webps: subWebpItems.length,
+        })
+      }
+
+      getLog().debug('All media loaded')
+    },
+
+    async renderFrame(frame: number) {
+      const scrubPerfStartMs = scrubPerfStart()
+      // 3-tier cache lookup (preview only)
+      // Tier 1 (GPU texture) → Tier 3 (RAM ImageBitmap) → miss → full render
+      if (scrubbingCache) {
+        const cached = scrubbingCache.getFrame(frame)
+        if (cached) {
+          ctx.clearRect(0, 0, canvas.width, canvas.height)
+          ctx.drawImage(cached, 0, 0)
+          recordScrubPerf(frame, 'cache-hit', scrubPerfStartMs)
+          return
+        }
+      }
+
+      // Refresh sub-comp render data so edits inside compound clips (effects,
+      // items, keyframes) show up during playback. Reference-equality keeps
+      // unchanged compositions at ~zero cost; only mutated entries rebuild.
+      // This matters for nested compounds where `renderCompositionItem` reads
+      // sub-item effects directly from the cached snapshot — without this
+      // refresh, effects added after renderer creation stay invisible.
+      if (renderMode === 'preview') {
+        refreshSubCompRenderData(useCompositionsStore.getState().compositionById)
+      }
+
+      // Clear canvas
+      ctx.fillStyle = backgroundColor
+      ctx.fillRect(0, 0, canvas.width, canvas.height)
+
+      // Prepare masks for this frame
+      const activeMasks = getActiveMasksForFrame(
+        maskFrameIndex,
+        frame,
+        maskSettings,
+        getCurrentKeyframes,
+        renderMode === 'preview' ? getPreviewTransformOverride : undefined,
+        renderMode === 'preview' ? getPreviewPathVerticesOverride : undefined,
+        renderMode === 'preview' ? getLiveMaskItem : undefined,
+      )
+
+      const frameScene = frameSceneCache.resolve(
+        {
+          renderPlan,
+          frame,
+          canvas: canvasSettings,
+          getKeyframes: getCurrentKeyframes,
+          getPreviewTransform: renderMode === 'preview' ? getPreviewTransformOverride : undefined,
+          getPreviewPathVertices:
+            renderMode === 'preview' ? getPreviewPathVerticesOverride : undefined,
+        },
+        frameSceneRevision,
+      )
+      const { activeTransitions, transitionClipIds } = frameScene.transitionFrameState
+
+      // Debug: Log transition state at key frames (only in development)
+      if (
+        import.meta.env.DEV &&
+        activeTransitions.length > 0 &&
+        (frame === activeTransitions[0]?.transitionStart || frame % 30 === 0)
+      ) {
+        getLog().info(
+          `TRANSITION STATE: frame=${frame} activeTransitions=${activeTransitions.length} skippedClipIds=${Array.from(
+            transitionClipIds,
+          )
+            .map((id) => id.substring(0, 8))
+            .join(',')}`,
+        )
+      }
+
+      // Log periodically (only in development)
+      if (import.meta.env.DEV && frame % 30 === 0) {
+        getLog().debug('Rendering frame', {
+          frame,
+          tracksCount: sortedTracks.length,
+          activeMasks: activeMasks.length,
+          activeTransitions: activeTransitions.length,
+        })
+      }
+
+      let hasAnyGpuEffects = false
+      for (const track of sortedTracks) {
+        if (!visibleTrackIds.has(track.id)) continue
+        for (const baseItem of track.items ?? []) {
+          const item = getCurrentItem(baseItem)
+          if (frame < item.from || frame >= item.from + item.durationInFrames) continue
+          if (
+            itemHasEnabledGpuEffect(
+              item,
+              renderMode === 'preview' ? getPreviewEffectsOverride : undefined,
+            )
+          ) {
+            hasAnyGpuEffects = true
+            break
+          }
+          // Compound clips: also check GPU effects on sub-comp items and
+          // adjustment layers so the pipeline is initialized before
+          // renderCompositionItem needs it.
+          if (item.type === 'composition') {
+            if (
+              subCompositionRenderDataHasGpuEffects(item.compositionId, subCompRenderData, {
+                getCurrentItem,
+                getPreviewEffectsOverride:
+                  renderMode === 'preview' ? getPreviewEffectsOverride : undefined,
+              })
+            ) {
+              hasAnyGpuEffects = true
+              break
+            }
+          }
+        }
+        if (hasAnyGpuEffects) break
+      }
+      if (hasAnyGpuEffects || activeTransitions.length > 0) {
+        if (!itemRenderContext.gpuPipeline) {
+          itemRenderContext.gpuPipeline = await gpu.ensureEffects()
+        }
+        if (itemRenderContext.gpuPipeline) {
+          // Initialize GPU transition pipeline (shares device with effects pipeline)
+          if (hasAnyGpuEffects) {
+            if (!itemRenderContext.gpuMediaPipeline) gpu.ensureMedia()
+            itemRenderContext.gpuMediaPipeline = gpu.media
+          }
+          if (activeTransitions.length > 0) {
+            if (!itemRenderContext.gpuTransitionPipeline) gpu.ensureTransition()
+            if (!itemRenderContext.gpuMediaPipeline) gpu.ensureMedia()
+            if (!itemRenderContext.gpuMediaBlendPipeline) gpu.ensureMediaBlend()
+            if (!itemRenderContext.gpuShapePipeline) gpu.ensureShape()
+            if (!itemRenderContext.gpuTextPipeline) gpu.ensureText()
+            if (!itemRenderContext.gpuMaskCombinePipeline) gpu.ensureMaskCombine()
+            itemRenderContext.gpuTransitionPipeline = gpu.transition
+            itemRenderContext.gpuMediaPipeline = gpu.media
+            itemRenderContext.gpuMediaBlendPipeline = gpu.mediaBlend
+            itemRenderContext.gpuShapePipeline = gpu.shape
+            itemRenderContext.gpuTextPipeline = gpu.text
+            itemRenderContext.gpuMaskCombinePipeline = gpu.maskCombine
+          }
+        }
+      }
+
+      /**
+       * Render a single item with effects. Returns the canvas to composite
+       * (and canvases to release) for deferred compositing, or composites
+       * immediately in export mode.
+       */
+      const itemRenderDeps: FrameItemRenderDeps = {
+        frame,
+        canvasSettings,
+        maskSettings,
+        renderMode,
+        activeMasks,
+        adjustmentLayers,
+        gpu,
+        itemRenderContext,
+        canvasPool,
+        getCurrentItem,
+        getCurrentKeyframes,
+        getPreviewTransformOverride,
+        getPreviewCornerPinOverride,
+        getPreviewEffectsOverride,
+        getLiveItemSnapshot,
+      }
+      const renderItemWithEffects = (
+        baseItem: TimelineItem,
+        trackOrder: number,
+        deferred: boolean,
+        targetCtx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D,
+        bakeMasks = true,
+        preferGpuTextureOutput = false,
+        allowDirectGpu = true,
+      ): Promise<RenderedTaskResult | null> =>
+        renderItemWithEffectsPure(
+          baseItem,
+          trackOrder,
+          deferred,
+          targetCtx,
+          itemRenderDeps,
+          bakeMasks,
+          preferGpuTextureOutput,
+          allowDirectGpu,
+        )
+
+      const getEffectiveBlendMode = (item: TimelineItem): TimelineItem['blendMode'] => {
+        const blendMode = item.blendMode
+        if (!blendMode || blendMode === 'normal') return blendMode
+        return blendMode
+      }
+
+      // Helper to check if item should be rendered
+      const shouldRenderItem = (baseItem: TimelineItem): boolean => {
+        const item = getCurrentItem(baseItem)
+        // Skip items not visible at this frame
+        if (frame < item.from || frame >= item.from + item.durationInFrames) {
+          return false
+        }
+        // Skip items being handled by transitions
+        if (transitionClipIds.has(item.id)) {
+          return false
+        }
+        // Skip audio items (handled separately)
+        if (item.type === 'audio') return false
+        // Skip adjustment items (they apply effects, not render content)
+        if (item.type === 'adjustment') return false
+        // Skip mask shapes (handled by mask system)
+        if (item.type === 'shape' && (item as ShapeItem).isMask) return false
+        return true
+      }
+      // === OCCLUSION CULLING OPTIMIZATION ===
+      // Find the topmost (lowest order) track with a fully occluding item.
+      // Skip rendering all tracks below it (higher order) since they'll be fully covered.
+      //
+      // An item is fully occluding if:
+      // - Covers entire canvas (after transform/keyframes)
+      // - Opacity = 1 (after keyframe animation)
+      // - No rotation (or 0/180 that still covers)
+      // - No corner radius
+      // - Is video/image (opaque content)
+      // - Not in a transition
+      // - No transparency effects
+      // - No active masks (masks could reveal content below)
+
+      const occlusionContext: FrameOcclusionContext = {
+        frame,
+        canvasWidth: canvas.width,
+        canvasHeight: canvas.height,
+        canvasSettings,
+        renderMode,
+        transitionClipIds,
+        adjustmentLayers,
+        getCurrentItem,
+        getCurrentKeyframes,
+        getPreviewEffectsOverride,
+        getLiveItemSnapshot,
+      }
+      const isFullyOccluding = (baseItem: TimelineItem, trackOrder: number): boolean =>
+        isItemFullyOccluding(baseItem, trackOrder, occlusionContext)
+
+      // Find occlusion cutoff – the lowest track order with a fully occluding item
+      // If masks are active, disable occlusion culling (masks could reveal content)
+      const { occlusionCutoffOrder, renderTasks } = resolveFrameRenderScene<ActiveTransition>({
+        tracksByOrderDesc: sortedTracks,
+        tracksByOrderAsc: tracksTopToBottom,
+        visibleTrackIds,
+        activeTransitions,
+        getTransitionTrackOrder: (activeTransition) =>
+          transitionTrackOrderById.get(activeTransition.transition.id) ?? 0,
+        disableOcclusion: activeMasks.length > 0,
+        shouldRenderItem,
+        isFullyOccluding,
+      })
+
+      if (occlusionCutoffOrder !== null && import.meta.env.DEV && frame % 30 === 0) {
+        const occludingTask = sortedTracks
+          .filter(
+            (track) => visibleTrackIds.has(track.id) && (track.order ?? 0) === occlusionCutoffOrder,
+          )
+          .flatMap((track) => track.items ?? [])
+          .find((item) => shouldRenderItem(item) && isFullyOccluding(item, occlusionCutoffOrder))
+        if (occludingTask) {
+          getLog().debug(
+            `Occlusion culling: item ${occludingTask.id.substring(0, 8)} on track order ${occlusionCutoffOrder} fully occludes canvas`,
+          )
+        }
+      }
+
+      const { shouldDirectRenderSingleTask, shouldUseDeferredGpuBatch } =
+        resolveFrameRenderOptimization({
+          activeMaskCount: activeMasks.length,
+          activeTransitionCount: activeTransitions.length,
+          hasGpuEffects: hasAnyGpuEffects,
+          renderTaskCount: renderTasks.length,
+        })
+      const hasNonNormalBlend = renderTasks.some(
+        (t) =>
+          t.type === 'item' &&
+          (() => {
+            const item = getCurrentItem(t.item)
+            const blendMode = getEffectiveBlendMode(item)
+            return Boolean(blendMode && blendMode !== 'normal')
+          })(),
+      )
+      if (hasNonNormalBlend && !itemRenderContext.gpuPipeline) {
+        itemRenderContext.gpuPipeline = await gpu.ensureEffects()
+        if (!itemRenderContext.gpuPipeline) {
+          getLog().warn('GPU pipeline init failed - blend modes will use Canvas2D fallback')
+        }
+      }
+      const useGpuCompositor = Boolean(
+        hasNonNormalBlend && itemRenderContext.gpuPipeline && gpu.effects && gpu.ensureCompositor(),
+      )
+      const gpuCompositeOutput = useGpuCompositor
+        ? gpu.ensureCompositeOutput(canvasSettings.width, canvasSettings.height)
+        : null
+      if (shouldUseDeferredGpuBatch && itemRenderContext.gpuPipeline) {
+        itemRenderContext.gpuPipeline.beginBatch()
+      }
+
+      if (shouldDirectRenderSingleTask) {
+        const directTask = renderTasks[0]
+        if (directTask?.type === 'item') {
+          const blendMode = getEffectiveBlendMode(getCurrentItem(directTask.item))
+          try {
+            if (blendMode && blendMode !== 'normal') {
+              ctx.globalCompositeOperation = getCompositeOperation(blendMode)
+            }
+
+            await renderItemWithEffects(directTask.item, directTask.trackOrder, false, ctx)
+          } finally {
+            if (blendMode && blendMode !== 'normal') {
+              ctx.globalCompositeOperation = 'source-over'
+            }
+          }
+        }
+
+        cacheRenderedFrame(frame)
+        recordScrubPerf(frame, 'direct', scrubPerfStartMs)
+        return
+      }
+
+      // === PERFORMANCE: Use pooled canvas instead of creating new one each frame ===
+      const { canvas: contentCanvas, ctx: contentCtx } = canvasPool.acquire()
+
+      // Render tracks in order (bottom to top), with transitions at their track position
+      // Track order: higher values render first (behind), lower values render last (on top)
+      let skippedTracks = 0
+      let finalCompositeSource: OffscreenCanvas = contentCanvas
+
+      // Parallelize item rendering (video decode is the bottleneck).
+      // Collect all renderable items in z-order, fire all renders concurrently,
+      // then composite results in z-order.
+      {
+        if (occlusionCutoffOrder !== null) {
+          skippedTracks = sortedTracks.filter(
+            (track) => visibleTrackIds.has(track.id) && (track.order ?? 0) > occlusionCutoffOrder,
+          ).length
+        }
+
+        const renderMasksToGpuTexture = (masks: PreparedMask[]) =>
+          renderMasksToGpuTexturePure(masks, { gpu, canvasSettings, maskSettings })
+
+        const renderTransitionFallbackCanvas = (
+          task: Extract<(typeof renderTasks)[number], { type: 'transition' }>,
+        ): Promise<RenderedTaskResult> =>
+          renderTransitionFallbackCanvasPure(task, {
+            frame,
+            activeMasks,
+            itemRenderContext,
+            canvasPool,
+          })
+
+        const applyTrackScopedMasks = (
+          result: RenderedTaskResult | null,
+          trackOrder: number,
+          skipMasks: boolean,
+        ): RenderedTaskResult | null =>
+          applyTrackScopedMasksPure(result, trackOrder, skipMasks, {
+            activeMasks,
+            canvasPool,
+            maskSettings,
+          })
+
+        const renderTask = async (
+          task: (typeof renderTasks)[number],
+        ): Promise<RenderedTaskResult | null> => {
+          if (task.type === 'item') {
+            const item = getCurrentItem(task.item)
+            const canSeparateMasks =
+              useGpuCompositor && gpu.texturePool && !hasCornerPin(item.cornerPin)
+            return renderItemWithEffects(
+              task.item,
+              task.trackOrder,
+              true,
+              contentCtx,
+              !canSeparateMasks,
+              false,
+            )
+          }
+          const transitionMasks = activeMasks.filter((mask) =>
+            doesMaskAffectTrack(mask.trackOrder, task.trackOrder),
+          )
+          if (
+            useGpuCompositor &&
+            gpu.texturePool &&
+            transitionMasks.length === 0 &&
+            itemRenderContext.gpuTransitionPipeline
+          ) {
+            const transitionTexture = gpu.texturePool.acquire(
+              canvasSettings.width,
+              canvasSettings.height,
+            )
+            const renderedToTexture = await renderTransitionToGpuTexture(
+              transitionTexture,
+              task.transition,
+              frame,
+              itemRenderContext,
+              task.trackOrder,
+              gpu.texturePool,
+            )
+            if (renderedToTexture) {
+              return {
+                gpuTexture: transitionTexture,
+                poolCanvases: [],
+              } satisfies RenderedTaskResult
+            }
+            gpu.texturePool.release(transitionTexture)
+          }
+          // Transitions: render to a dedicated canvas
+          return renderTransitionFallbackCanvas(task)
+        }
+
+        let results: Array<RenderedTaskResult | null>
+        try {
+          // Fire all item renders in parallel (video decodes run concurrently).
+          results = await Promise.all(renderTasks.map((task) => renderTask(task)))
+        } finally {
+          // End GPU pool mode before compositing, even if one task fails.
+          if (shouldUseDeferredGpuBatch && itemRenderContext.gpuPipeline) {
+            itemRenderContext.gpuPipeline.endBatch()
+          }
+        }
+
+        if (shouldUseDeferredGpuBatch && itemRenderContext.gpuPipeline) {
+          await itemRenderContext.gpuPipeline.waitForSubmittedWork()
+        }
+
+        finalCompositeSource = await compositeFrameResults({
+          useGpuCompositor,
+          gpu,
+          gpuCompositeOutput,
+          canvasSettings,
+          maskSettings,
+          renderTasks,
+          results,
+          activeMasks,
+          contentCanvas,
+          contentCtx,
+          itemRenderContext,
+          canvasPool,
+          getCurrentItem,
+          getEffectiveBlendMode,
+          applyTrackScopedMasks,
+          renderMasksToGpuTexture,
+          renderTransitionFallbackCanvas,
+          renderItemWithEffects,
+        })
+      }
+
+      // Log occlusion culling stats periodically (only in development)
+      if (import.meta.env.DEV && skippedTracks > 0 && frame % 30 === 0) {
+        getLog().debug(`Occlusion culling: skipped ${skippedTracks} tracks at frame ${frame}`)
+      }
+
+      ctx.drawImage(finalCompositeSource, 0, 0)
+
+      // Release content canvas back to pool
+      canvasPool.release(contentCanvas)
+      cacheRenderedFrame(frame)
+      recordScrubPerf(frame, 'full', scrubPerfStartMs)
+    },
+
+    async prewarmFrame(frame: number) {
+      // Lightweight decoder warm-up path for scrubbing:
+      // decode only nearby video items into a 1x1 target without running full composition.
+      const ctx2d = getPrewarmContext()
+      if (!ctx2d) return
+
+      const candidates = collectPrewarmVideoCandidatesForFrame(frame)
+
+      const missingCandidateItemIds = candidates
+        .map((item) => item.id)
+        .filter((itemId) => !useMediabunny.has(itemId) && !mediabunnyDisabledItems.has(itemId))
+      if (missingCandidateItemIds.length > 0) {
+        await initializeMediabunnyForItems(missingCandidateItemIds)
+      }
+
+      for (const item of candidates) {
+        if (!useMediabunny.has(item.id) || mediabunnyDisabledItems.has(item.id)) continue
+        const extractor = videoExtractors.get(item.id)
+        if (!extractor) continue
+
+        const sourceTime = getPrewarmVideoSourceTimeSeconds(item, frame, fps)
+        const clampedTime = Math.max(0, Math.min(sourceTime, extractor.getDuration() - 0.01))
+
+        try {
+          const success = await extractor.drawFrame(ctx2d, clampedTime, 0, 0, 1, 1)
+          if (success) {
+            mediabunnyFailureCountByItem.set(item.id, 0)
+          } else {
+            // Skip transient "no-sample" misses (same guard as renderVideoItem).
+            const failureKind = extractor.getLastFailureKind()
+            if (failureKind !== 'no-sample') {
+              const failures = (mediabunnyFailureCountByItem.get(item.id) ?? 0) + 1
+              mediabunnyFailureCountByItem.set(item.id, failures)
+              if (failures >= PREWARM_FAILURE_DISABLE_THRESHOLD) {
+                mediabunnyDisabledItems.add(item.id)
+                useMediabunny.delete(item.id)
+              }
+            }
+          }
+        } catch (error) {
+          if (error instanceof DOMException && error.name === 'AbortError') continue
+          const failures = (mediabunnyFailureCountByItem.get(item.id) ?? 0) + 1
+          mediabunnyFailureCountByItem.set(item.id, failures)
+          getLog().warn('Prewarm decode failed', { itemId: item.id, frame, failures, error })
+          if (failures >= PREWARM_FAILURE_DISABLE_THRESHOLD) {
+            mediabunnyDisabledItems.add(item.id)
+            useMediabunny.delete(item.id)
+          }
+        }
+      }
+    },
+
+    /**
+     * Batch-prewarm multiple frames using mediabunny's samplesAtTimestamps()
+     * pipeline. Groups source timestamps by extractor and decodes each packet
+     * at most once across the batch.
+     *
+     * Falls back to sequential prewarmFrame() for extractors where batch mode
+     * has been disabled (e.g. due to "key frame required after flush" errors).
+     *
+     * @returns Number of frames that used batch path (vs fallback).
+     */
+    async prewarmFrames(frames: number[]) {
+      if (frames.length === 0) return
+      const ctx2d = getPrewarmContext()
+      if (!ctx2d) return
+
+      // Expand frames → candidate items → source timestamps grouped by extractor
+      const batchByExtractor = new Map<
+        string,
+        { extractor: ReturnType<typeof videoExtractors.get>; timestamps: number[] }
+      >()
+      const fallbackFrames: number[] = []
+
+      for (const frame of frames) {
+        const candidates = collectPrewarmVideoCandidatesForFrame(frame)
+
+        for (const item of candidates) {
+          if (!useMediabunny.has(item.id) || mediabunnyDisabledItems.has(item.id)) continue
+          const extractor = videoExtractors.get(item.id)
+          if (!extractor) continue
+
+          // Check if batch mode is available for this extractor
+          if (!extractor.isBatchPrewarmAvailable()) {
+            if (!fallbackFrames.includes(frame)) fallbackFrames.push(frame)
+            continue
+          }
+
+          const sourceTime = getPrewarmVideoSourceTimeSeconds(item, frame, fps)
+          const clampedTime = Math.max(0, Math.min(sourceTime, extractor.getDuration() - 0.01))
+
+          const existing = batchByExtractor.get(item.id)
+          if (existing) {
+            existing.timestamps.push(clampedTime)
+          } else {
+            batchByExtractor.set(item.id, { extractor, timestamps: [clampedTime] })
+          }
+        }
+      }
+
+      // Initialize any missing extractors
+      const missingIds = [...batchByExtractor.keys()].filter(
+        (id) => !useMediabunny.has(id) && !mediabunnyDisabledItems.has(id),
+      )
+      if (missingIds.length > 0) {
+        await initializeMediabunnyForItems(missingIds)
+      }
+
+      // Batch decode per extractor — sorted timestamps for optimal pipeline
+      await Promise.all(
+        [...batchByExtractor.entries()].map(async ([itemId, { extractor, timestamps }]) => {
+          if (isDisposed || !extractor) return
+          timestamps.sort((a, b) => a - b)
+          const result = await extractor.prewarmBatch(ctx2d, timestamps, 0, 0, 1, 1)
+          if (result >= 0) {
+            mediabunnyFailureCountByItem.set(itemId, 0)
+          }
+          // result === -1 means batch disabled or failed — fallback frames
+          // are handled below
+        }),
+      )
+
+      // Sequential fallback for extractors where batch is disabled
+      for (const frame of fallbackFrames) {
+        if (isDisposed) break
+        const candidates = collectPrewarmVideoCandidatesForFrame(frame)
+        for (const item of candidates) {
+          if (!useMediabunny.has(item.id) || mediabunnyDisabledItems.has(item.id)) continue
+          const extractor = videoExtractors.get(item.id)
+          if (!extractor) continue
+          const sourceTime = getPrewarmVideoSourceTimeSeconds(item, frame, fps)
+          const clampedTime = Math.max(0, Math.min(sourceTime, extractor.getDuration() - 0.01))
+          try {
+            await extractor.drawFrame(ctx2d, clampedTime, 0, 0, 1, 1)
+          } catch {
+            /* best-effort fallback */
+          }
+        }
+      }
+    },
+
+    setDomVideoElementProvider(
+      provider: ((itemId: string) => HTMLVideoElement | null) | undefined,
+    ) {
+      itemRenderContext.domVideoElementProvider = provider
+    },
+
+    /**
+     * Pre-initialize mediabunny decoders for specific item IDs and optionally
+     * seek them to a target frame. This warms up the WASM decoder and positions
+     * the decode cursor so the first real render is fast (~1ms instead of 300-500ms).
+     *
+     * For variable-speed clips, also advances the decoder up to ~2.5s ahead of
+     * the target frame in sequential 0.5s steps. This ensures the decoder cursor
+     * is within the 3s forward-jump threshold of any frame that might be rendered
+     * in the near future — preventing 400-500ms keyframe seeks when occluded clips
+     * become visible mid-playback.
+     */
+    async prewarmItems(itemIds: string[], targetFrame?: number) {
+      const unready = itemIds.filter(
+        (id) =>
+          videoExtractors.has(id) && !useMediabunny.has(id) && !mediabunnyDisabledItems.has(id),
+      )
+      if (unready.length > 0) {
+        await initializeMediabunnyForItems(unready)
+      }
+      // Seek decoders to the target frame position using a 1x1 draw.
+      // Run all clips in parallel — each has its own decoder lane.
+      // NOTE: localFrame may be negative for incoming transition clips whose
+      // timeline `from` is after targetFrame — the transition renderer will
+      // still render them. We allow negative localFrame and clamp sourceTime
+      // to zero so the decoder is positioned at the clip's start.
+      if (targetFrame !== undefined) {
+        const ctx2d = getPrewarmContext()
+        if (!ctx2d) return
+        await Promise.all(
+          itemIds.map(async (itemId) => {
+            if (isDisposed) return
+            const extractor = videoExtractors.get(itemId)
+            if (!extractor || !useMediabunny.has(itemId)) return
+            const item = videoItemsById.get(itemId)
+            if (!item || item.type !== 'video') return
+            const localFrame = targetFrame - item.from
+            if (localFrame >= item.durationInFrames) return
+            const baseSourceTime = getPrewarmVideoSourceTimeSeconds(item, targetFrame, fps)
+            try {
+              await extractor.drawFrame(ctx2d, Math.max(0, baseSourceTime), 0, 0, 1, 1)
+            } catch {
+              // Best-effort prewarm — ignore failures.
+            }
+          }),
+        )
+      }
+    },
+
+    /** Evict cached render frames or cached frame ranges after visual edits. */
+    invalidateFrameCache(request?: FrameInvalidationRequest) {
+      frameSceneRevision += 1
+      frameSceneCache.invalidate(request)
+      scrubbingCache?.invalidate(request)
+    },
+
+    /** Get the scrubbing cache instance for stats/GPU wiring. */
+    getScrubbingCache(): ScrubbingCache | null {
+      return scrubbingCache
+    },
+
+    /** Get the offscreen canvas this renderer draws into. */
+    getCanvas(): OffscreenCanvas {
+      return canvas
+    },
+
+    /**
+     * Eagerly initialize the GPU effects + transition pipelines so the first
+     * transition frame doesn't pay the ~100-150ms WebGPU device + shader
+     * compilation cost. Safe to call multiple times — no-ops if already warm.
+     */
+    async warmGpuPipeline(): Promise<void> {
+      const pipeline = await gpu.ensureEffects()
+      if (pipeline) {
+        gpu.ensureTransition()
+        gpu.ensureMedia()
+        gpu.ensureMediaBlend()
+        gpu.ensureShape()
+        gpu.ensureText()
+        gpu.ensureMaskCombine()
+        itemRenderContext.gpuPipeline = pipeline
+        itemRenderContext.gpuTransitionPipeline = gpu.transition
+        itemRenderContext.gpuMediaPipeline = gpu.media
+        itemRenderContext.gpuMediaBlendPipeline = gpu.mediaBlend
+        itemRenderContext.gpuShapePipeline = gpu.shape
+        itemRenderContext.gpuTextPipeline = gpu.text
+        itemRenderContext.gpuMaskCombinePipeline = gpu.maskCombine
+      }
+    },
+
+    dispose() {
+      isDisposed = true
+      inFlightInitByItem.clear()
+
+      // Clean up mediabunny video extractors
+      for (const itemId of videoExtractors.keys()) {
+        sharedVideoExtractors.releaseItem(itemId)
+      }
+      sharedVideoExtractors.dispose()
+      videoExtractors.clear()
+      videoSourceByItemId.clear()
+      videoItemIdsBySource.clear()
+      videoItemsById.clear()
+      useMediabunny.clear()
+      mediabunnyFailureCountByItem.clear()
+      mediabunnyInitFailureCountByItem.clear()
+      mediabunnyDisabledItems.clear()
+
+      // Clean up fallback video pool and references.
+      // In this renderer, fallback video elements are only bound when a DOM is
+      // available, which is also when fallbackVideoPool exists.
+      if (fallbackVideoPool) {
+        for (const clipId of fallbackVideoClipIdByItem.values()) {
+          fallbackVideoPool.releaseClip(clipId)
+        }
+        fallbackVideoPool.dispose()
+      }
+      fallbackVideoBySrc.clear()
+      fallbackVideoClipIdByItem.clear()
+      videoElements.clear()
+      for (const image of imageElements.values()) {
+        if ('close' in image.source && typeof image.source.close === 'function') {
+          image.source.close()
+        }
+      }
+      imageElements.clear()
+      gifFramesMap.clear() // Clear GIF frame references (actual frames are managed by gifFrameCache)
+      subCompRenderData.clear() // Release sub-composition render data references
+      subCompRenderDataSource.clear()
+      prewarmCtx = null
+      prewarmCanvas = null
+      prewarmAttempted = false
+
+      // === PERFORMANCE: Clean up optimization resources ===
+      scrubbingCache?.dispose()
+      reverseVideoFrameCache?.dispose()
+      // Preview-only cross-frame caches hold canvas backing stores (hundreds of
+      // MB for text rasters / corner-pin warps); drop them now instead of at GC.
+      itemRenderContext.textRasterCache?.clear()
+      itemRenderContext.cornerPinWarpCache?.clear()
+
+      gpu.dispose()
+      frameSceneCache.invalidate()
+      canvasPool.dispose()
+      textMeasureCache.clear()
+
+      // Log pool stats in development
+      if (import.meta.env.DEV) {
+        getLog().debug('Canvas pool disposed', canvasPool.getStats())
+      }
+    },
+  }
+}

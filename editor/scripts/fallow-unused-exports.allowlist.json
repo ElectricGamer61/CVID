@@ -1,0 +1,134 @@
+{
+  "unusedExports": [
+    {
+      "path": "src/features/editor/deps/composition-runtime-contract.ts",
+      "exportName": "deletePreviewAudioConform",
+      "reason": "Re-exported deps contract API used through a dynamic composition-runtime import in the editor settings dialog."
+    },
+    {
+      "path": "src/features/export/components/exports-dialog.tsx",
+      "exportName": "ExportsDialog",
+      "reason": "Lazy-loaded from the editor export deps contract."
+    },
+    {
+      "path": "src/features/export/utils/canvas-audio.ts",
+      "exportName": "clearAudioDecodeCache",
+      "reason": "Called through the canvas-audio namespace from the render orchestrator."
+    },
+    {
+      "path": "src/features/export/utils/canvas-audio.ts",
+      "exportName": "createAudioBuffer",
+      "reason": "Called through the canvas-audio namespace from export rendering."
+    },
+    {
+      "path": "src/features/export/utils/canvas-audio.ts",
+      "exportName": "hasAudioContent",
+      "reason": "Called through the canvas-audio namespace from export rendering."
+    },
+    {
+      "path": "src/features/export/utils/canvas-render-orchestrator.ts",
+      "exportName": "renderSingleFrame",
+      "reason": "Dynamically imported by thumbnail and timeline persistence flows."
+    },
+    {
+      "path": "src/features/media-library/components/embedded-subtitle-track-picker-host.tsx",
+      "exportName": "EmbeddedSubtitleTrackPickerHost",
+      "reason": "Lazy-loaded through the editor media-library import helper."
+    },
+    {
+      "path": "src/features/media-library/components/subtitle-scan-progress-dialog.tsx",
+      "exportName": "SubtitleScanProgressDialog",
+      "reason": "Lazy-loaded through the editor media-library import helper."
+    },
+    {
+      "path": "src/features/preview/components/color-scopes-monitor.tsx",
+      "exportName": "ColorScopesMonitor",
+      "reason": "Lazy-loaded from the preview area."
+    },
+    {
+      "path": "src/features/preview/components/inline-source-preview.tsx",
+      "exportName": "InlineSourcePreview",
+      "reason": "Lazy-loaded from the preview area."
+    },
+    {
+      "path": "src/features/preview/deps/media-library-contract.ts",
+      "exportName": "resolveProxyUrl",
+      "reason": "Re-exported through preview media resolution helpers for preview component callers."
+    },
+    {
+      "path": "src/features/preview/deps/media-library-contract.ts",
+      "exportName": "cleanupBlobUrls",
+      "reason": "Re-exported through preview media resolution helpers for tests and route cleanup."
+    },
+    {
+      "path": "src/features/project-bundle/components/bundle-export-dialog.tsx",
+      "exportName": "BundleExportDialog",
+      "reason": "Lazy-loaded through the editor project-bundle deps contract."
+    },
+    {
+      "path": "src/features/project-bundle/services/json-export-service.ts",
+      "exportName": "downloadSnapshotJson",
+      "reason": "Dynamically imported by the project debug panel."
+    },
+    {
+      "path": "src/features/scene-browser/components/scene-browser-panel.tsx",
+      "exportName": "SceneBrowserPanel",
+      "reason": "Lazy-loaded through the scene-browser contract from media-library UI."
+    },
+    {
+      "path": "src/features/timeline/components/bento-layout-dialog.tsx",
+      "exportName": "BentoLayoutDialog",
+      "reason": "Lazy-loaded through the editor timeline import helper."
+    },
+    {
+      "path": "src/features/timeline/components/filler-removal-dialog.tsx",
+      "exportName": "FillerRemovalDialog",
+      "reason": "Lazy-loaded through the editor timeline import helper."
+    },
+    {
+      "path": "src/features/timeline/components/reverse-conform-dialog.tsx",
+      "exportName": "ReverseConformDialog",
+      "reason": "Lazy-loaded through the editor timeline import helper."
+    },
+    {
+      "path": "src/features/timeline/components/silence-removal-dialog.tsx",
+      "exportName": "SilenceRemovalDialog",
+      "reason": "Lazy-loaded through the editor timeline import helper."
+    },
+    {
+      "path": "src/features/timeline/utils/collision-utils.ts",
+      "exportName": "detectOverlappingItems",
+      "reason": "Dynamically imported by the project debug utilities."
+    },
+    {
+      "path": "src/infrastructure/analysis/scene-detection.ts",
+      "exportName": "detectScenes",
+      "reason": "Dynamically imported by the scene detection loader."
+    },
+    {
+      "path": "src/infrastructure/storage/index.ts",
+      "exportName": "saveExportFile",
+      "reason": "Re-exported storage API reached by the render queue dynamic import."
+    },
+    {
+      "path": "src/infrastructure/storage/workspace-fs/ai-outputs/index.ts",
+      "exportName": "AI_OUTPUT_SCHEMA_VERSION",
+      "reason": "Intentional AI-output workspace API surface covered by storage tests."
+    },
+    {
+      "path": "src/infrastructure/storage/workspace-fs/ai-outputs/index.ts",
+      "exportName": "listAiOutputs",
+      "reason": "Intentional AI-output workspace API surface covered by storage tests."
+    },
+    {
+      "path": "src/infrastructure/storage/workspace-fs/exports.ts",
+      "exportName": "saveExportFile",
+      "reason": "Storage implementation exported through the indexed storage API and dynamic render queue path."
+    },
+    {
+      "path": "src/shared/logging/preview-trace.ts",
+      "exportName": "getPreviewTraceEvents",
+      "reason": "Called by project debug utilities through the preview-trace namespace."
+    }
+  ]
+}

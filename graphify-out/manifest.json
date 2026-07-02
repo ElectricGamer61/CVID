@@ -1,0 +1,207 @@
+{
+  "C:\\Users\\Dennis\\Documents\\VsCode\\Cvideo\\backend\\app\\__init__.py": {
+    "mtime": 1782423310.5881371,
+    "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
+    "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
+  },
+  "C:\\Users\\Dennis\\Documents\\VsCode\\Cvideo\\backend\\app\\ai.py": {
+    "mtime": 1782696998.559551,
+    "ast_hash": "ea5212383a6410a71abc4300bd67c49e",
+    "semantic_hash": "ea5212383a6410a71abc4300bd67c49e"
+  },
+  "C:\\Users\\Dennis\\Documents\\VsCode\\Cvideo\\backend\\app\\db.py": {
+    "mtime": 1782916186.0570567,
+    "ast_hash": "3f371105c2b3421c79ed76092db7dba8",
+    "semantic_hash": "3f371105c2b3421c79ed76092db7dba8"
+  },
+  "C:\\Users\\Dennis\\Documents\\VsCode\\Cvideo\\backend\\app\\intake.py": {
+    "mtime": 1782508017.0680952,
+    "ast_hash": "25151ff6da01ea3ec3a03bbab81c0082",
+    "semantic_hash": "25151ff6da01ea3ec3a03bbab81c0082"
+  },
+  "C:\\Users\\Dennis\\Documents\\VsCode\\Cvideo\\backend\\app\\jobs.py": {
+    "mtime": 1782574213.7707806,
+    "ast_hash": "9f03e76071304a0d3d994844b58f19c3",
+    "semantic_hash": "9f03e76071304a0d3d994844b58f19c3"
+  },
+  "C:\\Users\\Dennis\\Documents\\VsCode\\Cvideo\\backend\\app\\learn.py": {
+    "mtime": 1782696971.9151988,
+    "ast_hash": "a8e27edf74d1b70135fffbcc002a0bcd",
+    "semantic_hash": "a8e27edf74d1b70135fffbcc002a0bcd"
+  },
+  "C:\\Users\\Dennis\\Documents\\VsCode\\Cvideo\\backend\\app\\main.py": {
+    "mtime": 1782943290.2177382,
+    "ast_hash": "6563e4b2dcfea20e15d213f9dea4ea94",
+    "semantic_hash": "6563e4b2dcfea20e15d213f9dea4ea94"
+  },
+  "C:\\Users\\Dennis\\Documents\\VsCode\\Cvideo\\backend\\app\\pipeline\\__init__.py": {
+    "mtime": 1782423317.7204814,
+    "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
+    "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
+  },
+  "C:\\Users\\Dennis\\Documents\\VsCode\\Cvideo\\backend\\app\\pipeline\\assemble.py": {
+    "mtime": 1782837082.1958957,
+    "ast_hash": "9edd348b0f8ac089731d6fa041b1a6e0",
+    "semantic_hash": "9edd348b0f8ac089731d6fa041b1a6e0"
+  },
+  "C:\\Users\\Dennis\\Documents\\VsCode\\Cvideo\\backend\\app\\pipeline\\brain.py": {
+    "mtime": 1782782796.1425366,
+    "ast_hash": "0bbf1c56e2fdca0b4ab2d9fe1e6c7544",
+    "semantic_hash": "0bbf1c56e2fdca0b4ab2d9fe1e6c7544"
+  },
+  "C:\\Users\\Dennis\\Documents\\VsCode\\Cvideo\\backend\\app\\pipeline\\captions.py": {
+    "mtime": 1782452650.782136,
+    "ast_hash": "3de1afdf6a32de4b203ff6a4b0ed31a0",
+    "semantic_hash": "3de1afdf6a32de4b203ff6a4b0ed31a0"
+  },
+  "C:\\Users\\Dennis\\Documents\\VsCode\\Cvideo\\backend\\app\\pipeline\\ingest.py": {
+    "mtime": 1782588571.9610133,
+    "ast_hash": "8df1b4960c064b2bba04bc21ac3f2d7c",
+    "semantic_hash": "8df1b4960c064b2bba04bc21ac3f2d7c"
+  },
+  "C:\\Users\\Dennis\\Documents\\VsCode\\Cvideo\\backend\\app\\pipeline\\poster.py": {
+    "mtime": 1782617705.9135647,
+    "ast_hash": "434b1b035c6ca28c314f055e1a812dbd",
+    "semantic_hash": "434b1b035c6ca28c314f055e1a812dbd"
+  },
+  "C:\\Users\\Dennis\\Documents\\VsCode\\Cvideo\\backend\\app\\pipeline\\reframe.py": {
+    "mtime": 1782458025.0618062,
+    "ast_hash": "8a3db201a589c593dd9525224f3d6ffc",
+    "semantic_hash": "8a3db201a589c593dd9525224f3d6ffc"
+  },
+  "C:\\Users\\Dennis\\Documents\\VsCode\\Cvideo\\backend\\app\\pipeline\\render.py": {
+    "mtime": 1782783261.4170344,
+    "ast_hash": "ae9e9ec1e0c4d7d33be8f2ab86d8d35b",
+    "semantic_hash": "ae9e9ec1e0c4d7d33be8f2ab86d8d35b"
+  },
+  "C:\\Users\\Dennis\\Documents\\VsCode\\Cvideo\\backend\\app\\pipeline\\transcribe.py": {
+    "mtime": 1782457850.265655,
+    "ast_hash": "5ffa03ca70d0eca06e0e39165a2c3f41",
+    "semantic_hash": "5ffa03ca70d0eca06e0e39165a2c3f41"
+  },
+  "C:\\Users\\Dennis\\Documents\\VsCode\\Cvideo\\backend\\app\\sheets.py": {
+    "mtime": 1782778071.67199,
+    "ast_hash": "d0ebc526c3da9c8bae80f932ad1a9fdc",
+    "semantic_hash": "d0ebc526c3da9c8bae80f932ad1a9fdc"
+  },
+  "C:\\Users\\Dennis\\Documents\\VsCode\\Cvideo\\backend\\diag_captions.py": {
+    "mtime": 1782452560.8135877,
+    "ast_hash": "c1514430d84e186dd62b2f1b85c531b4",
+    "semantic_hash": "c1514430d84e186dd62b2f1b85c531b4"
+  },
+  "C:\\Users\\Dennis\\Documents\\VsCode\\Cvideo\\backend\\settings.py": {
+    "mtime": 1782776036.5754094,
+    "ast_hash": "e580bf4119646d29a58426c4ba8691e3",
+    "semantic_hash": "e580bf4119646d29a58426c4ba8691e3"
+  },
+  "C:\\Users\\Dennis\\Documents\\VsCode\\Cvideo\\backend\\test_api.py": {
+    "mtime": 1782426424.745729,
+    "ast_hash": "b452550656ed0e730607691de637825f",
+    "semantic_hash": "b452550656ed0e730607691de637825f"
+  },
+  "C:\\Users\\Dennis\\Documents\\VsCode\\Cvideo\\backend\\test_api2.py": {
+    "mtime": 1782453289.0315602,
+    "ast_hash": "eea573bbaeebb641bd8d35f99ea6011b",
+    "semantic_hash": "eea573bbaeebb641bd8d35f99ea6011b"
+  },
+  "C:\\Users\\Dennis\\Documents\\VsCode\\Cvideo\\backend\\test_brain.py": {
+    "mtime": 1782426249.3848486,
+    "ast_hash": "23dab1983282aaac6b07d4bd8868063e",
+    "semantic_hash": "23dab1983282aaac6b07d4bd8868063e"
+  },
+  "C:\\Users\\Dennis\\Documents\\VsCode\\Cvideo\\backend\\test_full.py": {
+    "mtime": 1782426181.1525364,
+    "ast_hash": "920c592e0e7c85b96c53eaf122b5180c",
+    "semantic_hash": "920c592e0e7c85b96c53eaf122b5180c"
+  },
+  "C:\\Users\\Dennis\\Documents\\VsCode\\Cvideo\\backend\\verify_pt4.py": {
+    "mtime": 1782458161.0412838,
+    "ast_hash": "f9ee2b5ff11ae9135cde841e4a307246",
+    "semantic_hash": "f9ee2b5ff11ae9135cde841e4a307246"
+  },
+  "C:\\Users\\Dennis\\Documents\\VsCode\\Cvideo\\backend\\verify_render.py": {
+    "mtime": 1782423716.4059968,
+    "ast_hash": "ac08f87a893f9f815373c5561e0b6af9",
+    "semantic_hash": "ac08f87a893f9f815373c5561e0b6af9"
+  },
+  "C:\\Users\\Dennis\\Documents\\VsCode\\Cvideo\\frontend\\package.json": {
+    "mtime": 1782423532.802103,
+    "ast_hash": "3a79b1c48c46a96ad2f5814aba037f8f",
+    "semantic_hash": "3a79b1c48c46a96ad2f5814aba037f8f"
+  },
+  "C:\\Users\\Dennis\\Documents\\VsCode\\Cvideo\\frontend\\src\\App.tsx": {
+    "mtime": 1782944187.9502814,
+    "ast_hash": "cc620b3c71d0cf0fdf6ee6e1f6cac2a2",
+    "semantic_hash": "cc620b3c71d0cf0fdf6ee6e1f6cac2a2"
+  },
+  "C:\\Users\\Dennis\\Documents\\VsCode\\Cvideo\\frontend\\src\\CaptionOverlay.tsx": {
+    "mtime": 1782452933.610324,
+    "ast_hash": "8b6e885ee487064c25b7c474e7f24184",
+    "semantic_hash": "8b6e885ee487064c25b7c474e7f24184"
+  },
+  "C:\\Users\\Dennis\\Documents\\VsCode\\Cvideo\\frontend\\src\\Dialog.tsx": {
+    "mtime": 1782675774.4796493,
+    "ast_hash": "fcbf33bb83161ccd4e3a29a8fc72d158",
+    "semantic_hash": "fcbf33bb83161ccd4e3a29a8fc72d158"
+  },
+  "C:\\Users\\Dennis\\Documents\\VsCode\\Cvideo\\frontend\\src\\Sidebar.tsx": {
+    "mtime": 1782943318.2150607,
+    "ast_hash": "9872cbe7cc0d45e6de155e6ca2f4ad5c",
+    "semantic_hash": "9872cbe7cc0d45e6de155e6ca2f4ad5c"
+  },
+  "C:\\Users\\Dennis\\Documents\\VsCode\\Cvideo\\frontend\\src\\Toast.tsx": {
+    "mtime": 1782455311.8409903,
+    "ast_hash": "cf2e5e41975e904fc4a956853b301fbe",
+    "semantic_hash": "cf2e5e41975e904fc4a956853b301fbe"
+  },
+  "C:\\Users\\Dennis\\Documents\\VsCode\\Cvideo\\frontend\\src\\VideoModal.tsx": {
+    "mtime": 1782578720.38799,
+    "ast_hash": "83c6162af993da82830c60e2cca8732b",
+    "semantic_hash": "83c6162af993da82830c60e2cca8732b"
+  },
+  "C:\\Users\\Dennis\\Documents\\VsCode\\Cvideo\\frontend\\src\\api.ts": {
+    "mtime": 1782916294.2717793,
+    "ast_hash": "65697fcaad3d7b45ba8df6e7d78823d2",
+    "semantic_hash": "65697fcaad3d7b45ba8df6e7d78823d2"
+  },
+  "C:\\Users\\Dennis\\Documents\\VsCode\\Cvideo\\frontend\\src\\captionStyles.ts": {
+    "mtime": 1782453049.8012805,
+    "ast_hash": "bb1a40c958e65104101179841086040d",
+    "semantic_hash": "bb1a40c958e65104101179841086040d"
+  },
+  "C:\\Users\\Dennis\\Documents\\VsCode\\Cvideo\\frontend\\src\\exportDir.ts": {
+    "mtime": 1782493911.9233732,
+    "ast_hash": "77f5b82017fc8f27fa7b2d0c6666579d",
+    "semantic_hash": "77f5b82017fc8f27fa7b2d0c6666579d"
+  },
+  "C:\\Users\\Dennis\\Documents\\VsCode\\Cvideo\\frontend\\src\\main.tsx": {
+    "mtime": 1782675818.281735,
+    "ast_hash": "33d76cc63541731dac65f4111831fadb",
+    "semantic_hash": "33d76cc63541731dac65f4111831fadb"
+  },
+  "C:\\Users\\Dennis\\Documents\\VsCode\\Cvideo\\frontend\\src\\useRecorder.ts": {
+    "mtime": 1782584421.0602407,
+    "ast_hash": "0a647eabf9d62ecf20ed94344c13f36b",
+    "semantic_hash": "0a647eabf9d62ecf20ed94344c13f36b"
+  },
+  "C:\\Users\\Dennis\\Documents\\VsCode\\Cvideo\\frontend\\tsconfig.json": {
+    "mtime": 1782423537.0233529,
+    "ast_hash": "620df52e6bcb5690368030524e3c52fb",
+    "semantic_hash": "620df52e6bcb5690368030524e3c52fb"
+  },
+  "C:\\Users\\Dennis\\Documents\\VsCode\\Cvideo\\frontend\\vite.config.ts": {
+    "mtime": 1782943268.8301427,
+    "ast_hash": "b206a4322f0f018dd3574317b87e9306",
+    "semantic_hash": "b206a4322f0f018dd3574317b87e9306"
+  },
+  "C:\\Users\\Dennis\\Documents\\VsCode\\Cvideo\\backend\\requirements.txt": {
+    "mtime": 1782458027.5067632,
+    "ast_hash": "fb0bba88fd62102d054d8385ab3abee6",
+    "semantic_hash": "fb0bba88fd62102d054d8385ab3abee6"
+  },
+  "C:\\Users\\Dennis\\Documents\\VsCode\\Cvideo\\frontend\\index.html": {
+    "mtime": 1782423538.9300654,
+    "ast_hash": "c6b2376bfe09b1249be739ecdd130285",
+    "semantic_hash": "c6b2376bfe09b1249be739ecdd130285"
+  }
+}

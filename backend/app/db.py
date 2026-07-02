@@ -28,6 +28,10 @@ class Project(SQLModel, table=True):
     # User-assigned Home folder (drag-to-move). None -> loose, except mode="caption"
     # projects which fall into the virtual "Reels" folder by default.
     folder: Optional[str] = None
+    # Brand for this project's reel (caption mode) — chosen on New project / Results, and
+    # the source of truth for reel brand attribution. None -> resolve from the clip/linked
+    # ticket, else blank (NEVER a silent default).
+    brand: Optional[str] = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
@@ -223,16 +227,25 @@ def _migrate() -> None:
                  "resolution": f"TEXT DEFAULT '{settings.DEFAULT_RESOLUTION}'",
                  "folder": "TEXT", "brand": "TEXT"},
         "project": {"transcribe_backend": "TEXT DEFAULT 'local'",
-                    "mode": "TEXT DEFAULT 'moments'", "folder": "TEXT"},
+                    "mode": "TEXT DEFAULT 'moments'", "folder": "TEXT", "brand": "TEXT"},
         "ticket": {"folder": "TEXT", "post_meta": "TEXT", "ai_generated": "INTEGER DEFAULT 0"},
         "beat": {"caption_timings": "TEXT"},
     }
     with _engine.connect() as conn:
+        added: set[tuple[str, str]] = set()
         for table, cols in wanted.items():
             existing = {row[1] for row in conn.execute(text(f"PRAGMA table_info({table})"))}
             for col, decl in cols.items():
                 if col not in existing:
                     conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col} {decl}"))
+                    added.add((table, col))
+        # One-time backfill: the user's existing reels are all NoCrapDiet. Stamp blank
+        # caption projects ONCE — gated on the brand column being freshly added, so a brand
+        # the user later clears in the UI is never silently re-stamped on the next boot.
+        if ("project", "brand") in added:
+            conn.execute(text(
+                "UPDATE project SET brand='NoCrapDiet' "
+                "WHERE mode='caption' AND (brand IS NULL OR brand='')"))
         conn.commit()
 
 

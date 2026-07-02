@@ -17,6 +17,13 @@ frontend/node_modules/
 frontend/dist/
 *.tsbuildinfo
 
+# vendored FreeCut editor (source IS committed; only deps/build artifacts ignored)
+editor/node_modules/
+editor/dist/
+editor/.vite/
+editor/headless/output/
+editor/test-results/
+
 # os
 .DS_Store
 Thumbs.db

@@ -13,7 +13,7 @@ Start-Process powershell -ArgumentList @(
   "$refresh; Set-Location '$root\backend'; .\.venv\Scripts\python.exe -m uvicorn app.main:app --port 8000"
 )
 
-Write-Host "Starting Cvideo frontend (http://localhost:5173)..." -ForegroundColor Cyan
+Write-Host "Starting Cvideo frontend (http://localhost:3000)..." -ForegroundColor Cyan
 Start-Process powershell -ArgumentList @(
   "-NoExit", "-Command",
   "Set-Location '$root\frontend'; npm run dev"
@@ -21,5 +21,5 @@ Start-Process powershell -ArgumentList @(
 
 Start-Sleep -Seconds 4
 Write-Host "Opening the app in your browser..." -ForegroundColor Green
-Start-Process "http://localhost:5173"
+Start-Process "http://localhost:3000"
 Write-Host "`nTip: make sure Ollama is running (it starts on login). Two terminal windows opened -- close them to stop Cvideo." -ForegroundColor DarkGray

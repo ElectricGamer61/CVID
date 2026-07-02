@@ -232,6 +232,7 @@ export const api = {
     aspect: string;
     caption_preset: string;
     mode: string;
+    brand?: string;
   }): Promise<{ id: number }> =>
     req("/api/projects", jsonInit("POST", body)),
   createFromUpload: (form: FormData): Promise<{ id: number }> =>
@@ -326,6 +327,8 @@ export const api = {
   getInsights: (): Promise<InsightsData> => req("/api/insights"),
   logPerf: (body: { video_kind: "clip" | "reel"; video_id: number; platform: string; brand?: string; views: number; follows: number; saves: number; sends: number }): Promise<{ ok: boolean }> =>
     req("/api/perf", jsonInit("POST", body)),
+  setVideoBrand: (kind: "clip" | "reel", id: number, brand: string): Promise<{ ok: boolean; brand: string }> =>
+    req(`/api/videos/${kind}/${id}/brand`, jsonInit("POST", { brand })),
   syncSheet: (): Promise<{ ok: boolean; pushed: number }> =>
     req("/api/perf/sync-sheet", { method: "POST" }),
 

@@ -24,9 +24,19 @@ from .pipeline import ingest, reframe, render
 app = FastAPI(title="Cvideo")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173",
+                   "http://localhost:3000", "http://127.0.0.1:3000"],
     allow_methods=["*"], allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def _corp_header(request, call_next):
+    """Cvideo's frontend runs cross-origin-isolated (to embed the FreeCut editor). Tag every
+    response so its thumbnails/videos/API can still be loaded by that isolated document."""
+    resp = await call_next(request)
+    resp.headers.setdefault("Cross-Origin-Resource-Policy", "cross-origin")
+    return resp
 
 _render_pool = ThreadPoolExecutor(max_workers=2)
 # Transient assemble progress per ticket (no schema change needed): id -> {state,stage,error}
@@ -49,6 +59,7 @@ class CreateProject(BaseModel):
     aspect: str = "9:16"
     caption_preset: str = "capcut"
     mode: str = "moments"             # moments | caption
+    brand: Optional[str] = None       # reel brand (caption mode); None -> unset
 
 
 class ClipPatch(BaseModel):
@@ -161,7 +172,7 @@ def create_project(body: CreateProject):
         proj = Project(name=body.name, source_type="url", source_url=body.source_url,
                         brain=body.brain, transcribe_backend=body.transcribe_backend,
                         aspect=body.aspect, caption_preset=body.caption_preset,
-                        mode=body.mode, status="created")
+                        mode=body.mode, brand=(body.brand or None), status="created")
         s.add(proj)
         s.commit()
         s.refresh(proj)
@@ -175,7 +186,7 @@ async def create_project_upload(
     name: str = Form(...), brain: str = Form(settings.DEFAULT_BRAIN),
     transcribe_backend: str = Form(settings.DEFAULT_TRANSCRIBE),
     aspect: str = Form("9:16"), caption_preset: str = Form("capcut"),
-    mode: str = Form("moments"),
+    mode: str = Form("moments"), brand: str = Form(""),
     file: UploadFile = File(...),
 ):
     tmp = Path(tempfile.gettempdir()) / f"cvideo_upload_{file.filename}"
@@ -184,7 +195,8 @@ async def create_project_upload(
     with get_session() as s:
         proj = Project(name=name, source_type="file", brain=brain,
                         transcribe_backend=transcribe_backend, aspect=aspect,
-                        caption_preset=caption_preset, mode=mode, status="created")
+                        caption_preset=caption_preset, mode=mode,
+                        brand=(brand.strip() or None), status="created")
         s.add(proj)
         s.commit()
         s.refresh(proj)
@@ -496,28 +508,41 @@ def _safe_name(s: str, fallback: str) -> str:
 @app.get("/api/exports")
 def list_exports():
     """Every rendered output across the app — project clips + assembled ticket reels.
-    Powers the Downloads screen. Items carry folder metadata: `group` (brand for reels,
-    project for clips) → `subgroup` ("Reels"/"Clips") → cards; reels are named by hook."""
+    Powers the Downloads screen. Items carry folder metadata: `group` (top folder) →
+    `subgroup` → cards. REELS all live under one "Reels" folder, split into brand
+    subfolders (NoCrapDiet / SemSeo / …); plain clips stay grouped by their project.
+    Names are the ONE canonical `_video_name` so Downloads matches the editor & Results."""
     from sqlmodel import select
+    REELS = "Reels"
     out = []
     with get_session() as s:
         for c in s.exec(select(Clip).where(Clip.status == "rendered")).all():
-            proj = s.get(Project, c.project_id)
-            pname = proj.name if proj else "Clips"
-            title = c.title or f"Clip {c.idx + 1}"
-            out.append({"kind": "clip", "id": c.id, "title": title,
-                        "subtitle": pname,
-                        "group": (c.folder or pname), "subgroup": "Clips",
-                        "hook": c.hook or "", "filename": _safe_name(title, f"clip_{c.id}"),
-                        "score": round(c.score), "download": f"/api/clips/{c.id}/download",
-                        "thumb": f"/api/clips/{c.id}/thumb"})
+            title = _video_name(s, "clip", c.id)
+            if _is_reel_clip(s, c):   # a caption-mode reel → Reels/<brand>
+                brand = _video_brand(s, "clip", c.id) or "Unsorted"
+                out.append({"kind": "clip", "id": c.id, "title": title,
+                            "subtitle": f"{brand} · reel",
+                            "group": (c.folder or REELS), "subgroup": brand,
+                            "hook": c.hook or "", "filename": _safe_name(title, f"reel_{c.id}"),
+                            "score": round(c.score), "download": f"/api/clips/{c.id}/download",
+                            "thumb": f"/api/clips/{c.id}/thumb"})
+            else:                     # a plain moment clip → grouped by its project
+                proj = s.get(Project, c.project_id)
+                pname = proj.name if proj else "Clips"
+                out.append({"kind": "clip", "id": c.id, "title": title,
+                            "subtitle": pname,
+                            "group": (c.folder or pname), "subgroup": "Clips",
+                            "hook": c.hook or "", "filename": _safe_name(title, f"clip_{c.id}"),
+                            "score": round(c.score), "download": f"/api/clips/{c.id}/download",
+                            "thumb": f"/api/clips/{c.id}/thumb"})
         for t in s.exec(select(Ticket).where(Ticket.clip_url.is_not(None))).all():
-            hook = (t.hook_text or t.angle or "").strip()
-            title = hook or t.angle or f"Reel {t.id}"
+            title = _video_name(s, "reel", t.id)
+            brand = _video_brand(s, "reel", t.id) or t.brand or "Unsorted"
             out.append({"kind": "reel", "id": t.id, "title": title,
-                        "subtitle": f"{t.brand} · reel",
-                        "group": (t.folder or t.brand or "Reels"), "subgroup": "Reels",
-                        "hook": hook, "filename": _safe_name(title, f"reel_{t.id}"),
+                        "subtitle": f"{brand} · reel",
+                        "group": (t.folder or REELS), "subgroup": brand,
+                        "hook": (t.hook_text or t.angle or "").strip(),
+                        "filename": _safe_name(title, f"reel_{t.id}"),
                         "score": None,
                         "download": f"/api/tickets/{t.id}/download",
                         "thumb": f"/api/tickets/{t.id}/thumb"})
@@ -541,6 +566,25 @@ def set_export_folder(kind: str, item_id: int, body: SetFolder):
         obj.folder = folder
         s.add(obj); s.commit()
     return {"ok": True, "folder": folder}
+
+
+class SetBrand(BaseModel):
+    brand: str = ""                        # "" clears the brand
+
+
+@app.post("/api/videos/{kind}/{item_id}/brand")
+def set_video_brand(kind: str, item_id: int, body: SetBrand):
+    """Set a video's brand on its own — no metrics needed. Lets you brand a reel straight
+    from Results (or fix one) without logging performance numbers."""
+    if kind not in ("clip", "reel"):
+        raise HTTPException(400, f"unknown kind {kind!r}")
+    with get_session() as s:
+        obj = s.get(Clip, item_id) if kind == "clip" else s.get(Ticket, item_id)
+        if not obj:
+            raise HTTPException(404, "item not found")
+        _set_video_brand(s, kind, item_id, body.brand)
+        s.commit()
+    return {"ok": True, "brand": body.brand.strip()}
 
 
 @app.post("/api/tickets/{tid}/beats")
@@ -639,20 +683,75 @@ def _recompute_angle(s, angle_name: str) -> None:
     s.add(a)
 
 
+def _is_reel_clip(s, c: "Clip") -> bool:
+    """A caption-mode project's clip IS a reel (that's what lands in Home's 'Reels'
+    folder). Also treat any scene-stitched clip (has markers) as a reel."""
+    if c is None:
+        return False
+    if c.markers_json:
+        return True
+    proj = s.get(Project, c.project_id)
+    return bool(proj and proj.mode == "caption")
+
+
+def _video_name(s, kind: str, vid: int) -> str:
+    """The ONE display name for a video, identical across the editor, Results, Downloads
+    and the Sheet. A reel is a caption-mode project — named by the PROJECT (the name the
+    user gave it and sees in the Reels folder), so it never disagrees with itself. Regular
+    clips keep their clip title; assembled ticket-reels keep their hook."""
+    if kind == "clip":
+        c = s.get(Clip, vid)
+        if c is None:
+            return f"Clip {vid}"
+        if _is_reel_clip(s, c):
+            proj = s.get(Project, c.project_id)
+            return ((proj.name if proj else "") or "").strip() or f"Reel {vid}"
+        return (c.title or "").strip() or f"Clip {c.idx + 1}"
+    t = s.get(Ticket, vid)
+    return ((t.hook_text or t.angle) if t else "").strip() or f"Reel {vid}"
+
+
+def _set_video_brand(s, kind: str, vid: int, brand: str) -> None:
+    """Persist a video's chosen brand to its canonical home so every screen agrees:
+    ticket-reel -> Ticket.brand; caption reel -> its Project.brand (and clear any per-clip
+    override); plain clip -> Clip.brand. Blank clears it (None) — never a silent default."""
+    b = (brand or "").strip() or None
+    if kind == "reel":
+        t = s.get(Ticket, vid)
+        if t:
+            t.brand = b or ""            # Ticket.brand is non-null
+            s.add(t)
+        return
+    c = s.get(Clip, vid)
+    if not c:
+        return
+    if _is_reel_clip(s, c):
+        proj = s.get(Project, c.project_id)
+        if proj:
+            proj.brand = b
+            s.add(proj)
+        c.brand = None                   # reel brand lives on the project — drop stale override
+        s.add(c)
+    else:
+        c.brand = b
+        s.add(c)
+
+
 def _video_label(s, kind: str, vid: int) -> dict:
     """Resolve a (kind, id) video to its fields — hook is the learnable signal; angle/
-    caption_preset/score round out the row pushed to the Google Sheet."""
+    caption_preset/score round out the row pushed to the Google Sheet. `title` is the ONE
+    canonical name (see `_video_name`) so every screen agrees."""
     if kind == "clip":
         c = s.get(Clip, vid)
         return {"video_kind": "clip", "video_id": vid,
                 "hook": (c.hook if c else "") or "",
-                "title": (c.title if c else "") or f"Clip {vid}",
+                "title": _video_name(s, kind, vid),
                 "angle": "", "caption_preset": (c.caption_preset if c else "") or "",
                 "score": round(c.score) if (c and c.score) else 0}
     t = s.get(Ticket, vid)
     return {"video_kind": "reel", "video_id": vid,
             "hook": (t.hook_text if t else "") or "",
-            "title": (t.hook_text or t.angle if t else "") or f"Reel {vid}",
+            "title": _video_name(s, kind, vid),
             "angle": (t.angle if t else "") or "", "caption_preset": "", "score": 0}
 
 
@@ -674,6 +773,9 @@ def _video_brand(s, kind: str, vid: int) -> str:
         return ""
     if c.brand:
         return c.brand
+    proj = s.get(Project, c.project_id)
+    if proj and proj.brand:            # reel brand chosen on New project / Results
+        return proj.brand
     t = s.exec(select(Ticket).where(Ticket.project_id == c.project_id)).first()
     return (t.brand if (t and t.brand) else "") or ""
 
@@ -714,16 +816,16 @@ def log_perf(body: LogPerf):
             t.stage = "posted"
             if not t.posted_at:
                 t.posted_at = datetime.utcnow()
+            s.add(t); angle = t.angle
             # Persist the brand chosen on the logger (blank allowed; None = leave as-is).
             if body.brand is not None:
-                t.brand = body.brand
-            s.add(t); angle = t.angle
+                _set_video_brand(s, kind, vid, body.brand)
         else:  # clip
             c = s.get(Clip, vid)
             if not c:
                 raise HTTPException(404, "clip not found")
             if body.brand is not None:
-                c.brand = body.brand; s.add(c)
+                _set_video_brand(s, kind, vid, body.brand)
         # Upsert: one row per (video, platform) — re-logging UPDATES the latest numbers
         # for that platform (so the same reel tracked on TikTok/IG/YouTube stays 3 rows,
         # each editable), instead of stacking duplicate rows that double-count.
@@ -808,7 +910,7 @@ def insights():
         exported: list[tuple] = []   # (kind, id, is_reel)
         for c in s.exec(select(Clip)).all():
             if c.status == "rendered" or c.markers_json:
-                exported.append(("clip", c.id, bool(c.markers_json)))
+                exported.append(("clip", c.id, _is_reel_clip(s, c)))
         for t in s.exec(select(Ticket).where(Ticket.clip_url.is_not(None))).all():
             exported.append(("reel", t.id, True))
         videos = []

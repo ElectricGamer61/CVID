@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  quality:
+    name: Quality Checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Full history so the fallow ratchet can diff against the PR base branch.
+          fetch-depth: 0
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version: '22'
+          cache: true
+
+      - name: Install dependencies
+        run: vp install
+
+      - name: Check feature boundaries
+        run: vp run check:boundaries
+
+      - name: Check deps contract seams
+        run: vp run check:deps-contracts
+
+      - name: Check legacy lib import migration
+        run: vp run check:legacy-lib-imports
+
+      - name: Check deps wrapper health
+        run: vp run check:deps-wrapper-health
+
+      - name: Generate feature-edge report
+        run: node scripts/report-feature-edges.mjs --json > feature-edges-report.json
+
+      - name: Generate deps-wrapper health report
+        run: node scripts/check-deps-wrapper-health.mjs --json > deps-wrapper-health-report.json
+
+      - name: Check feature-edge budgets
+        run: node scripts/check-feature-edge-budgets.mjs --input feature-edges-report.json
+
+      - name: Upload feature-edge report
+        uses: actions/upload-artifact@v4
+        with:
+          name: feature-edges-report
+          path: feature-edges-report.json
+
+      - name: Upload deps-wrapper health report
+        uses: actions/upload-artifact@v4
+        with:
+          name: deps-wrapper-health-report
+          path: deps-wrapper-health-report.json
+
+      - name: Check
+        run: vp run check
+
+      - name: Unit tests (with coverage floor)
+        run: vp test run --coverage
+
+      - name: Preview Sync Stress (10x)
+        run: vp run test:preview-sync:stress -- --runs 10
+
+      - name: Build
+        run: vp build
+
+      # Self-contained render+edit regression in headless Chrome (no media,
+      # no workspace, no WebGPU). Reuses the dist/ from the Build step.
+      - name: Headless smoke test
+        run: node headless/test.mjs --skip-build
+
+      # Quality ratchet: fails only on dead code / complexity / duplication
+      # INTRODUCED by the PR (gate new-only), never on inherited issues.
+      # Advisory for now (continue-on-error) — drop that line to enforce once
+      # the current develop-vs-main delta is cleaned up.
+      - name: Fallow quality ratchet
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        run: |
+          npm install -g fallow
+          fallow audit --base "origin/${{ github.base_ref }}" --gate new-only --ci

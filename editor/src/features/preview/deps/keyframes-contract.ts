@@ -1,0 +1,13 @@
+/**
+ * Adapter exports for keyframes dependencies.
+ * Preview modules should import keyframe hooks/utilities from here.
+ */
+
+export { useAnimatedTransform } from '@/features/keyframes/hooks/use-animated-transform'
+export {
+  getAutoKeyframeOperation,
+  GIZMO_ANIMATABLE_PROPS,
+  type AutoKeyframeOperation,
+} from '@/features/keyframes/utils/auto-keyframe'
+export { isFrameInTransitionRegion } from '@/features/keyframes/utils/transition-region'
+export { resolveAnimatedTextItem } from '@/features/keyframes/utils/animated-text-item'

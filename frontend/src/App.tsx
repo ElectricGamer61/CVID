@@ -16,8 +16,10 @@ type Route =
   | { name: "queue" }
   | { name: "insights" }
   | { name: "library" }
+  | { name: "studio" }
+  | { name: "video"; tid: number }
   | { name: "project"; pid: number }
-  | { name: "editor"; pid: number; cid: number; from?: "board" | "project" | "home" };
+  | { name: "editor"; pid: number; cid: number; from?: "board" | "project" | "home" | "video"; tid?: number };
 
 export default function App() {
   const [presets, setPresets] = useState<Presets | null>(null);
@@ -31,31 +33,40 @@ export default function App() {
   const goQueue = () => setRoute({ name: "queue" });
   const goInsights = () => setRoute({ name: "insights" });
   const goLibrary = () => setRoute({ name: "library" });
+  const goStudio = () => setRoute({ name: "studio" });
 
-  const NAMED: Record<string, string> = { board: "Create videos", intake: "Ideas", queue: "Schedule", insights: "Results", library: "Downloads" };
+  const NAMED: Record<string, string> = { board: "Create videos", intake: "Ideas", queue: "Schedule", insights: "Results", library: "Downloads", studio: "Editor" };
   const crumbLabel = NAMED[route.name] ?? null;
-  const sbView = (["board", "intake", "queue", "insights", "library"].includes(route.name) ? route.name : "home") as any;
+  const sbView = (route.name === "video" ? "board"
+    : ["board", "intake", "queue", "insights", "library", "studio"].includes(route.name) ? route.name : "home") as any;
 
   return (
     <div className="shell">
-      <Sidebar view={sbView} onHome={goHome} onBoard={goBoard} onIntake={goIntake} onQueue={goQueue} onInsights={goInsights} onLibrary={goLibrary} />
+      <Sidebar view={sbView} onHome={goHome} onBoard={goBoard} onIntake={goIntake} onQueue={goQueue} onInsights={goInsights} onLibrary={goLibrary} onStudio={goStudio} />
       <main className="main">
         <header className="topbar">
           <div className="crumbs">
-            {crumbLabel
-              ? <span className="cur">{crumbLabel}</span>
-              : <button className="back" onClick={goHome}>Projects</button>}
-            {route.name !== "home" && !crumbLabel && (<><span className="sep">/</span><span className="cur">{projName}</span></>)}
-            {route.name === "editor" && (<><span className="sep">/</span><button className="back" onClick={() => setRoute({ name: "project", pid: route.pid })}>moments</button></>)}
+            {route.name === "video"
+              ? <button className="back" onClick={goBoard}>Create videos</button>
+              : crumbLabel
+                ? <span className="cur">{crumbLabel}</span>
+                : <button className="back" onClick={goHome}>Projects</button>}
+            {route.name !== "home" && route.name !== "video" && !crumbLabel && (<><span className="sep">/</span><span className="cur">{projName}</span></>)}
+            {route.name === "editor" && route.from !== "video" && (<><span className="sep">/</span><button className="back" onClick={() => setRoute({ name: "project", pid: route.pid })}>moments</button></>)}
           </div>
           <div className="spacer" />
         </header>
 
-        {route.name === "board" && <Board presets={presets} onOpenEditor={(pid, cid) => setRoute({ name: "editor", pid, cid, from: "board" })} />}
+        {route.name === "board" && <Board presets={presets} onOpenTicket={(tid) => setRoute({ name: "video", tid })} />}
+        {route.name === "video" && (
+          <VideoWorkspace tid={route.tid} presets={presets} onBack={goBoard}
+            onOpenEditor={(pid, cid) => setRoute({ name: "editor", pid, cid, from: "video", tid: route.tid })} />
+        )}
         {route.name === "intake" && <Intake onSpun={goBoard} />}
         {route.name === "queue" && <Queue />}
         {route.name === "insights" && <Insights />}
         {route.name === "library" && <Library />}
+        {route.name === "studio" && <Studio />}
         {route.name === "home" && <Home presets={presets} onOpen={(pid) => setRoute({ name: "project", pid })} />}
         {route.name === "project" && (
           <MomentsGrid pid={route.pid} onName={setProjName}
@@ -65,10 +76,30 @@ export default function App() {
         )}
         {route.name === "editor" && (
           <EditorPage pid={route.pid} cid={route.cid} presets={presets} onName={setProjName}
-            onBack={() => setRoute(route.from === "board" ? { name: "board" } : route.from === "home" ? { name: "home" } : { name: "project", pid: route.pid })} />
+            onBack={() => setRoute(
+              route.from === "video" && route.tid != null ? { name: "video", tid: route.tid }
+                : route.from === "board" ? { name: "board" }
+                : route.from === "home" ? { name: "home" }
+                : { name: "project", pid: route.pid })} />
         )}
       </main>
     </div>
+  );
+}
+
+/* ------------------------------- Studio -------------------------------- */
+// The vendored FreeCut editor, embedded same-origin under /editor (proxied to its dev
+// server). Same-origin is required so FreeCut's File System Access workspace picker works —
+// it's blocked in cross-origin iframes. The frontend runs cross-origin-isolated so FreeCut's
+// WebGPU/WebCodecs pipeline runs inside the frame.
+function Studio() {
+  return (
+    <iframe
+      src="/editor/"
+      title="Editor"
+      allow="cross-origin-isolated; fullscreen; clipboard-read; clipboard-write; camera; microphone"
+      style={{ width: "100%", height: "calc(100vh - 52px)", border: 0, display: "block", background: "#151515" }}
+    />
   );
 }
 
@@ -83,7 +114,6 @@ const PHASES: Phase[] = [
   { key: "posted", label: "4. Posted",  stages: ["scheduled", "posted"] },
 ];
 const phaseOf = (stage: string) => Math.max(0, PHASES.findIndex((p) => p.stages.includes(stage)));
-const phaseLabel = (stage: string) => PHASES[phaseOf(stage)].label;
 const PHASE_HINT: Record<string, string> = {
   idea: "New videos start here", make: "Write & film your scenes",
   ready: "Made — ready to post", posted: "Posted videos land here",
@@ -98,9 +128,8 @@ const MODE_ICONS: Record<string, string> = {
 const modeLabel = (m: string) => MODE_LABELS[m] ?? m;
 const modeIcon = (m: string) => MODE_ICONS[m] ?? "🎬";
 
-function Board({ presets, onOpenEditor }: { presets: Presets | null; onOpenEditor: (pid: number, cid: number) => void }) {
+function Board({ presets, onOpenTicket }: { presets: Presets | null; onOpenTicket: (tid: number) => void }) {
   const [tickets, setTickets] = useState<Ticket[] | null>(null);
-  const [openId, setOpenId] = useState<number | null>(null);
   const [showNew, setShowNew] = useState(false);
   const toast = useToast();
   const confirm = useConfirm();
@@ -116,7 +145,7 @@ function Board({ presets, onOpenEditor }: { presets: Presets | null; onOpenEdito
   };
   const del = async (t: Ticket) => {
     if (!await confirm({ title: "Delete this video?", body: t.angle ? `“${t.angle}” and its scenes will be removed.` : "Its scenes will be removed.", confirmLabel: "Delete", danger: true })) return;
-    try { await api.deleteTicket(t.id); if (openId === t.id) setOpenId(null); toast("Video deleted", "ok"); refresh(); }
+    try { await api.deleteTicket(t.id); toast("Video deleted", "ok"); refresh(); }
     catch (e: any) { toast(`Delete failed: ${e?.message || e}`, "err"); }
   };
 
@@ -141,7 +170,7 @@ function Board({ presets, onOpenEditor }: { presets: Presets | null; onOpenEdito
               <div className={"board-col cv-lane cv-" + ph.key} key={ph.key}>
                 <div className="board-col-head"><span className="cv-lane-dot" /><span>{ph.label}</span><span className="board-count">{col.length}</span></div>
                 <div className="board-col-body">
-                  {col.map((t) => <TicketCard key={t.id} t={t} onOpen={() => setOpenId(t.id)} onMove={move} onDelete={del} />)}
+                  {col.map((t) => <TicketCard key={t.id} t={t} onOpen={() => onOpenTicket(t.id)} onMove={move} onDelete={del} />)}
                   {col.length === 0 && <div className="cv-lane-empty">{PHASE_HINT[ph.key]}</div>}
                 </div>
               </div>
@@ -149,8 +178,7 @@ function Board({ presets, onOpenEditor }: { presets: Presets | null; onOpenEdito
           })}
         </div>
       )}
-      {showNew && <NewTicketModal presets={presets} onClose={() => setShowNew(false)} onCreated={() => { setShowNew(false); refresh(); }} />}
-      {openId != null && <TicketDetail tid={openId} presets={presets} onClose={() => setOpenId(null)} onChanged={refresh} onOpenEditor={onOpenEditor} />}
+      {showNew && <NewTicketModal presets={presets} onClose={() => setShowNew(false)} onCreated={(tid) => { setShowNew(false); onOpenTicket(tid); }} />}
     </div>
   );
 }
@@ -186,90 +214,98 @@ function TicketCard({ t, onOpen, onMove, onDelete }: {
   );
 }
 
-function NewTicketModal({ presets, onClose, onCreated }: { presets: Presets | null; onClose: () => void; onCreated: () => void }) {
-  const brand = "NoCrapDiet";
+// Slim starter: 3 choices, then straight into the full-page workspace (no bounce back to the board).
+function NewTicketModal({ presets, onClose, onCreated }: { presets: Presets | null; onClose: () => void; onCreated: (tid: number) => void }) {
+  const [brand, setBrand] = useState("NoCrapDiet");
   const [angle, setAngle] = useState("");
   const [format, setFormat] = useState("reel");
   const [capture, setCapture] = useState("native-short");
-  const [script, setScript] = useState("");
   const [busy, setBusy] = useState<"" | "create" | "ai">("");
   const toast = useToast();
   const formats = presets?.formats ?? ["reel", "carousel"];
   const modes = presets?.capture_modes ?? ["longform-clip", "native-short", "repurpose"];
 
-  const create = async () => {
+  const startBlank = async () => {
     setBusy("create");
     try {
-      const body = { brand, angle, format, capture_mode: capture, script: script.trim() || undefined };
-      const res = script.trim() ? await api.createTicketFromScript(body) : await api.createTicket(body);
-      const n = res.beats?.length ?? 0;
-      toast(n ? `Ticket created — ${n} beats from script` : "Ticket created", "ok");
-      onCreated();
-    } catch (e: any) { toast(`Failed: ${e?.message || e}`, "err"); } finally { setBusy(""); }
+      const res = await api.createTicket({ brand, angle, format, capture_mode: capture });
+      toast("Video created — write your script", "ok");
+      onCreated(res.ticket.id);
+    } catch (e: any) { toast(`Failed: ${e?.message || e}`, "err"); setBusy(""); }
   };
 
-  // ✨ One-step AI path: create the ticket, then fill its scenes via Script Factory.
+  // ✨ One-step AI path: create the ticket, fill its scenes, then open the workspace.
   const generateWithAI = async () => {
     setBusy("ai");
+    let tid: number | null = null;
     try {
       const res = await api.createTicket({ brand, angle, format, capture_mode: capture });
-      const sf = await api.scriptFactory(res.ticket.id);
-      toast(`Created + AI script — ${sf.beats.length} scenes`, "ok");
-      onCreated();
-    } catch (e: any) { toast(`AI generate failed: ${e?.message || e}`, "err"); } finally { setBusy(""); }
+      tid = res.ticket.id;
+      const sf = await api.scriptFactory(tid);
+      toast(`AI wrote ${sf.beats.length} scenes`, "ok");
+    } catch (e: any) {
+      toast(tid == null ? `Failed: ${e?.message || e}` : `AI script failed — write it in the workspace: ${e?.message || e}`, "err");
+      if (tid == null) { setBusy(""); return; }
+    }
+    onCreated(tid);
   };
 
   return (
     <div className="modal-back" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
+      <div className="modal modal-slim" onClick={(e) => e.stopPropagation()}>
         <h3>New video</h3>
         <label className="field">What's it about?
-          <input value={angle} placeholder="e.g. hidden sugar in sauces" onChange={(e) => setAngle(e.target.value)} />
+          <input value={angle} autoFocus placeholder="e.g. hidden sugar in sauces" onChange={(e) => setAngle(e.target.value)} />
         </label>
         <div className="form-row">
+          <label className="field">Brand
+            <select value={brand} onChange={(e) => setBrand(e.target.value)}>{BRANDS.map((b) => <option key={b} value={b}>{b}</option>)}</select>
+          </label>
           <label className="field">How will you make it?
             <select value={capture} onChange={(e) => setCapture(e.target.value)}>{modes.map((m) => <option key={m} value={m}>{modeLabel(m)}</option>)}</select>
           </label>
-          <label className="field">Video type
-            <select value={format} onChange={(e) => setFormat(e.target.value)}>{formats.map((f) => <option key={f} value={f}>{f === "reel" ? "Reel (tall video)" : f === "carousel" ? "Carousel (photos)" : f}</option>)}</select>
-          </label>
+          {formats.length > 1 && (
+            <label className="field">Video type
+              <select value={format} onChange={(e) => setFormat(e.target.value)}>{formats.map((f) => <option key={f} value={f}>{f === "reel" ? "Reel (tall video)" : f === "carousel" ? "Carousel (photos)" : f}</option>)}</select>
+            </label>
+          )}
         </div>
-        <label className="field">Paste your script here <span className="muted">(optional — or leave blank and write it later)</span>
-          <textarea rows={8} value={script} placeholder={"HOOK: the line that stops people scrolling\n\nBEAT\nSpoken: what you say out loud\nOn-screen: BIG TEXT\nShot: what to film\n\nBEAT\nSpoken: the next thing you say"} onChange={(e) => setScript(e.target.value)} />
-        </label>
-        <div className="muted" style={{ fontSize: 12.5 }}>Enter the topic above, then let AI write the script — or write it yourself below.</div>
+        <div className="muted" style={{ fontSize: 12.5 }}>Next you'll land in the workspace — script, scenes, and “make my video” all live there.</div>
         <div className="modal-actions">
           <button onClick={onClose} disabled={!!busy}>Cancel</button>
-          <button onClick={generateWithAI} disabled={!!busy || !angle.trim()} title={!angle.trim() ? "Enter a topic first" : "Create + write the script with AI"}>{busy === "ai" ? "Generating…" : "✨ Generate with AI"}</button>
-          <button className="primary" onClick={create} disabled={!!busy}>{busy === "create" ? "Creating…" : "Create video"}</button>
+          <button onClick={startBlank} disabled={!!busy}>{busy === "create" ? "Creating…" : "Start writing myself"}</button>
+          <button className="primary" onClick={generateWithAI} disabled={!!busy || !angle.trim()} title={!angle.trim() ? "Enter a topic first" : "Create + write the script with AI"}>{busy === "ai" ? "Writing your script…" : "✨ Write it with AI"}</button>
         </div>
       </div>
     </div>
   );
 }
 
-function TicketDetail({ tid, presets, onClose, onChanged, onOpenEditor }: { tid: number; presets: Presets | null; onClose: () => void; onChanged: () => void; onOpenEditor: (pid: number, cid: number) => void }) {
+/* ------------------------- Video workspace ------------------------------ */
+// Full-page home for one video (replaces the old cramped TicketDetail drawer):
+// header band (hook + angle + brand + stage stepper), scenes in the main column,
+// AI actions + "make it" in a sticky right rail.
+function VideoWorkspace({ tid, presets, onBack, onOpenEditor }: { tid: number; presets: Presets | null; onBack: () => void; onOpenEditor: (pid: number, cid: number) => void }) {
   const [data, setData] = useState<{ ticket: Ticket; beats: Beat[] } | null>(null);
   const toast = useToast();
   const confirm = useConfirm();
   const load = () => api.getTicket(tid).then(setData).catch(() => {});
   useEffect(() => { load(); }, [tid]);
 
-  const patchT = async (body: Partial<Ticket>) => { await api.patchTicket(tid, body); load(); onChanged(); };
-  const move = async (dir: 1 | -1) => {
-    if (!data) return;
-    const j = phaseOf(data.ticket.stage) + dir;
-    if (j < 0 || j >= PHASES.length) return;
-    patchT({ stage: PHASES[j].stages[0] });
+  const patchT = async (body: Partial<Ticket>) => { await api.patchTicket(tid, body); load(); };
+  const setPhase = async (j: number) => {
+    if (!data || j === phaseOf(data.ticket.stage)) return;
+    try { await patchT({ stage: PHASES[j].stages[0] }); }
+    catch (e: any) { toast(`Couldn't move it: ${e?.message || e}`, "err"); }
   };
-  const addBeat = async () => { await api.addBeat(tid); load(); onChanged(); };
+  const addBeat = async () => { await api.addBeat(tid); load(); };
   const reorder = async (b: Beat, dir: 1 | -1) => {
     if (!data) return;
     const ids = data.beats.map((x) => x.id);
     const i = ids.indexOf(b.id), j = i + dir;
     if (j < 0 || j >= ids.length) return;
     [ids[i], ids[j]] = [ids[j], ids[i]];
-    await api.reorderBeats(tid, ids); load(); onChanged();
+    await api.reorderBeats(tid, ids); load();
   };
 
   const [building, setBuilding] = useState(false);
@@ -285,7 +321,7 @@ function TicketDetail({ tid, presets, onClose, onChanged, onOpenEditor }: { tid:
   const runScript = async () => {
     if (data && data.beats.length && !await confirm({ title: "Rewrite the whole script?", body: "AI will replace all current scenes with a fresh script.", confirmLabel: "Rewrite" })) return;
     setAiBusy("script");
-    try { const r = await api.scriptFactory(tid); toast(`Script: ${r.beats.length} beats`, "ok"); setData(r); onChanged(); }
+    try { const r = await api.scriptFactory(tid); toast(`Script: ${r.beats.length} beats`, "ok"); setData(r); }
     catch (e: any) { toast(`Script Factory failed: ${e?.message || e}`, "err"); } finally { setAiBusy(""); }
   };
   const runHooks = async () => {
@@ -304,7 +340,7 @@ function TicketDetail({ tid, presets, onClose, onChanged, onOpenEditor }: { tid:
         const st = await api.assembleStatus(tid);
         setAsm(st);
         if (st.state === "done" || st.state === "error" || st.state === "idle") {
-          clearInterval(poll); load(); onChanged();
+          clearInterval(poll); load();
           if (st.state === "done") toast("Reel assembled", "ok");
           if (st.state === "error") toast(`Assemble failed: ${st.error}`, "err");
         }
@@ -315,89 +351,116 @@ function TicketDetail({ tid, presets, onClose, onChanged, onOpenEditor }: { tid:
   const modes = presets?.capture_modes ?? ["longform-clip", "native-short", "repurpose"];
 
   return (
-    <div className="drawer-back" onClick={onClose}>
-      <div className="drawer" onClick={(e) => e.stopPropagation()}>
-        {!data ? <div className="muted">Loading…</div> : (() => {
-          const { ticket, beats } = data;
-          const proofGaps = beats.filter((b) => b.is_proof_beat && !b.clip_path).length;
-          return (
-            <>
-              <div className="drawer-head">
-                <input className="drawer-angle-input" defaultValue={ticket.angle} placeholder="What's it about?"
-                  onBlur={(e) => e.target.value !== ticket.angle && patchT({ angle: e.target.value })} />
-                <button className="icon-btn" onClick={onClose} title="Close">✕</button>
-              </div>
-              <div className="drawer-meta-row">
-                <span className="muted" style={{ fontSize: 12.5 }}>How you'll make it:</span>
-                <select value={ticket.capture_mode} onChange={(e) => patchT({ capture_mode: e.target.value })}>{modes.map((m) => <option key={m} value={m}>{modeLabel(m)}</option>)}</select>
-              </div>
-              <div className="drawer-stage">
-                <button className="icon-btn" onClick={() => move(-1)} disabled={phaseOf(ticket.stage) <= 0} title="Back a step">◀</button>
-                <span className="stage-pill">{phaseLabel(ticket.stage)}</span>
-                <button className="icon-btn" onClick={() => move(1)} disabled={phaseOf(ticket.stage) >= PHASES.length - 1} title="Forward a step">▶</button>
-              </div>
-              <label className="field">First line (the hook)
-                <input key={ticket.hook_text} defaultValue={ticket.hook_text} placeholder="the line that stops people scrolling"
+    <div className="page vw-page">
+      {!data ? <div className="muted">Loading…</div> : (() => {
+        const { ticket, beats } = data;
+        const proofGaps = beats.filter((b) => b.is_proof_beat && !b.clip_path).length;
+        const phase = phaseOf(ticket.stage);
+        return (
+          <>
+            <div className="vw-head">
+              <button className="icon-btn vw-back" onClick={onBack} title="Back to Create videos">←</button>
+              <div className="vw-title">
+                <input className="vw-hook-input" key={"h" + ticket.hook_text} defaultValue={ticket.hook_text}
+                  placeholder="First line (the hook) — the line that stops people scrolling"
                   onBlur={(e) => e.target.value !== ticket.hook_text && patchT({ hook_text: e.target.value })} />
-              </label>
-
-              <div className="ai-row">
-                <button onClick={runScript} disabled={!!aiBusy}>{aiBusy === "script" ? "Writing…" : "✨ Write my script"}</button>
-                <button onClick={runHooks} disabled={!!aiBusy}>{aiBusy === "hook" ? "Thinking…" : "✨ Suggest first lines"}</button>
+                <input className="vw-angle-input" key={"a" + ticket.angle} defaultValue={ticket.angle} placeholder="What's it about?"
+                  onBlur={(e) => e.target.value !== ticket.angle && patchT({ angle: e.target.value })} />
               </div>
-              {hooks && (
-                <div className="hook-options">
-                  <div className="muted" style={{ fontSize: 12.5, marginBottom: 4 }}>Tap one to use it:</div>
-                  {hooks.map((h, i) => <button key={i} className="hook-chip" onClick={() => pickHook(h)}>{h}</button>)}
+              <div className="vw-meta">
+                {ticket.brand && <span className="vw-brand-chip">{ticket.brand}</span>}
+                <select value={ticket.capture_mode} title="How you'll make it"
+                  onChange={(e) => patchT({ capture_mode: e.target.value })}>
+                  {modes.map((m) => <option key={m} value={m}>{modeLabel(m)}</option>)}
+                </select>
+              </div>
+            </div>
+
+            <div className="vw-stepper">
+              {PHASES.map((p, j) => (
+                <button key={p.key} className={"vw-step" + (j === phase ? " cur" : j < phase ? " done" : "")}
+                  onClick={() => setPhase(j)} title={PHASE_HINT[p.key]}>
+                  {j < phase ? "✓ " : ""}{p.label}
+                </button>
+              ))}
+            </div>
+
+            <div className="vw-grid">
+              <div className="vw-main">
+                <div className="vw-sec-head">
+                  <h4>Scenes ({beats.length})</h4>
+                  {proofGaps > 0 && <span className="warn-chip">⚠ {proofGaps} scene{proofGaps > 1 ? "s" : ""} need a video showing proof</span>}
                 </div>
-              )}
-
-              <div className="drawer-sec-head">
-                <h4>Scenes ({beats.length})</h4>
-                {proofGaps > 0 && <span className="warn-chip">⚠ {proofGaps} scene{proofGaps > 1 ? "s" : ""} need a video showing proof</span>}
+                {beats.length === 0 ? (
+                  <div className="vw-empty">
+                    <div className="muted" style={{ fontSize: 13 }}>No scenes yet — paste a script below, or let AI write one (right side).</div>
+                    <ReimportBox tid={tid} empty onDone={load} />
+                  </div>
+                ) : (
+                  <>
+                    <div className="beats">
+                      {beats.map((b, i) => (
+                        <BeatRow key={b.id} b={b} first={i === 0} last={i === beats.length - 1}
+                          onChanged={load} onReorder={reorder} toast={toast} />
+                      ))}
+                    </div>
+                    <div className="beat-add-row">
+                      <button onClick={addBeat}>+ Add scene</button>
+                      <ReimportBox tid={tid} onDone={load} />
+                    </div>
+                  </>
+                )}
               </div>
 
-              {beats.length === 0 ? (
-                <ReimportBox tid={tid} empty onDone={() => { load(); onChanged(); }} />
-              ) : (
-                <>
-                  <div className="beats">
-                    {beats.map((b, i) => (
-                      <BeatRow key={b.id} b={b} first={i === 0} last={i === beats.length - 1}
-                        onChanged={() => { load(); onChanged(); }} onReorder={reorder} toast={toast} />
-                    ))}
+              <div className="vw-rail">
+                <div className="vw-card">
+                  <h4>✨ AI writer</h4>
+                  <div className="ai-row" style={{ margin: 0 }}>
+                    <button onClick={runScript} disabled={!!aiBusy}>{aiBusy === "script" ? "Writing…" : "✨ Write my script"}</button>
+                    <button onClick={runHooks} disabled={!!aiBusy}>{aiBusy === "hook" ? "Thinking…" : "✨ Suggest first lines"}</button>
                   </div>
-                  <div className="beat-add-row">
-                    <button onClick={addBeat}>+ Add scene</button>
-                    <ReimportBox tid={tid} onDone={() => { load(); onChanged(); }} />
-                  </div>
-                </>
-              )}
-
-              {ticket.capture_mode === "native-short" && beats.length > 0 && (
-                <div className="assemble-box">
-                  <div className="muted" style={{ fontSize: 12.5, marginBottom: 8 }}>Open your scenes as one video — preview it, record your voice, add captions and cut:</div>
-                  <button className="primary big-btn" onClick={openEditor} disabled={building}>
-                    {building ? "Opening editor…" : "✏️ Open in editor"}
-                  </button>
-                  <div className="muted" style={{ fontSize: 12, margin: "10px 0 8px" }}>…or make the final video right away:</div>
-                  <button className="big-btn" onClick={assembleReel} disabled={asm?.state === "running"}>
-                    {asm?.state === "running" ? `⏳ ${asm.stage}…` : ticket.clip_url ? "↻ Make it again" : "🎬 Make my video"}
-                  </button>
-                  {asm?.state === "error" && <div className="err">{asm.error}</div>}
-                  {ticket.clip_url && asm?.state !== "running" && (
-                    <div className="reel-out">
-                      <div className="muted" style={{ fontSize: 12.5 }}>Done! Here's your video:</div>
-                      <video src={api.ticketDownloadUrl(tid)} controls playsInline className="reel-video" />
-                      <button className="primary" onClick={() => downloadFile(api.ticketDownloadUrl(tid), safeFileName(ticket.angle || "reel"), toast)}>⬇ Save video</button>
+                  {hooks && (
+                    <div className="hook-options">
+                      <div className="muted" style={{ fontSize: 12.5, marginBottom: 4 }}>Tap one to use it:</div>
+                      {hooks.map((h, i) => <button key={i} className="hook-chip" onClick={() => pickHook(h)}>{h}</button>)}
                     </div>
                   )}
                 </div>
-              )}
-            </>
-          );
-        })()}
-      </div>
+
+                <div className="vw-card">
+                  <h4>🎬 Make the video</h4>
+                  {ticket.capture_mode !== "native-short" ? (
+                    <div className="muted" style={{ fontSize: 12.5 }}>
+                      This video comes from existing footage — ingest it on <b>Home</b>, then edit and export from there.
+                    </div>
+                  ) : beats.length === 0 ? (
+                    <div className="muted" style={{ fontSize: 12.5 }}>Add scenes first — then preview, record your voice, and make the final video here.</div>
+                  ) : (
+                    <div className="assemble-box">
+                      <div className="muted" style={{ fontSize: 12.5, marginBottom: 8 }}>Open your scenes as one video — preview it, record your voice, add captions and cut:</div>
+                      <button className="primary big-btn" onClick={openEditor} disabled={building}>
+                        {building ? "Opening editor…" : "✏️ Open in editor"}
+                      </button>
+                      <div className="muted" style={{ fontSize: 12, margin: "10px 0 8px" }}>…or make the final video right away:</div>
+                      <button className="big-btn" onClick={assembleReel} disabled={asm?.state === "running"}>
+                        {asm?.state === "running" ? `⏳ ${asm.stage}…` : ticket.clip_url ? "↻ Make it again" : "🎬 Make my video"}
+                      </button>
+                      {asm?.state === "error" && <div className="err">{asm.error}</div>}
+                      {ticket.clip_url && asm?.state !== "running" && (
+                        <div className="reel-out">
+                          <div className="muted" style={{ fontSize: 12.5 }}>Done! Here's your video:</div>
+                          <video src={api.ticketDownloadUrl(tid)} controls playsInline className="reel-video" />
+                          <button className="primary" onClick={() => downloadFile(api.ticketDownloadUrl(tid), safeFileName(ticket.angle || "reel"), toast)}>⬇ Save video</button>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          </>
+        );
+      })()}
     </div>
   );
 }
@@ -902,9 +965,8 @@ function TrendChart({ trend }: { trend: InsightsData["trend"] }) {
 function VideoTracker({ videos, onLogged }: { videos: VideoPerf[]; onLogged: () => void }) {
   const [sel, setSel] = useState<string>("");
   const [q, setQ] = useState("");
-  const chosen = videos.find((v) => `${v.video_kind}:${v.video_id}` === sel);
   const shown = q.trim()
-    ? videos.filter((v) => (v.hook || v.title).toLowerCase().includes(q.trim().toLowerCase()))
+    ? videos.filter((v) => v.title.toLowerCase().includes(q.trim().toLowerCase()))
     : videos;
   const cell = (v: VideoPerf, pf: "tt" | "ig" | "yt") => {
     const d = v.platforms[pf];
@@ -923,22 +985,33 @@ function VideoTracker({ videos, onLogged }: { videos: VideoPerf[]; onLogged: () 
       ) : (
         <table className="ins-table vid-table">
           <thead><tr><th>Video</th><th>Brand</th><th>🎵 TikTok</th><th>📸 Instagram</th><th>▶ YouTube</th><th>Saves+Follows</th><th></th></tr></thead>
-          <tbody>{shown.map((v) => {
+          <tbody>{shown.flatMap((v) => {
             const key = `${v.video_kind}:${v.video_id}`;
             const open = sel === key;
-            return (
+            const rows = [
               <tr key={key} className={"vid-row" + (open ? " sel" : "")} onClick={() => setSel(open ? "" : key)}>
-                <td><span className={"exp-kind-tag " + (v.is_reel ? "reel" : "clip")}>{v.is_reel ? "reel" : "clip"}</span> {v.hook || v.title}</td>
+                <td><span className={"exp-kind-tag " + (v.is_reel ? "reel" : "clip")}>{v.is_reel ? "reel" : "clip"}</span> {v.title}</td>
                 <td>{v.brand ? <span className="brand-tag">{v.brand}</span> : <span className="brand-tag none" title="No brand set — pick one so it logs correctly">— set —</span>}</td>
                 <td>{cell(v, "tt")}</td><td>{cell(v, "ig")}</td><td>{cell(v, "yt")}</td>
                 <td><b>{v.score}</b></td>
                 <td><button className="sm" onClick={(e) => { e.stopPropagation(); setSel(open ? "" : key); }}>{open ? "Close" : "Track"}</button></td>
-              </tr>
-            );
+              </tr>,
+            ];
+            if (open) {
+              // The number inputs expand INLINE right under the row you clicked (not at the
+              // bottom of the table) so the panel is always in view.
+              rows.push(
+                <tr key={key + ":edit"} className="vid-edit-row">
+                  <td colSpan={7} style={{ padding: 0 }}>
+                    <PlatformEditor key={sel} video={v} onLogged={onLogged} />
+                  </td>
+                </tr>
+              );
+            }
+            return rows;
           })}</tbody>
         </table>
       )}
-      {chosen && <PlatformEditor key={sel} video={chosen} onLogged={onLogged} />}
     </div>
   );
 }
@@ -954,6 +1027,12 @@ function PlatformEditor({ video, onLogged }: { video: VideoPerf; onLogged: () =>
   const toast = useToast();
   const set = (pf: "tt" | "ig" | "yt", k: keyof typeof zero, val: number) =>
     setM((prev) => ({ ...prev, [pf]: { ...prev[pf], [k]: val } }));
+  // Brand saves the moment you pick it — no need to also enter numbers just to brand a reel.
+  const changeBrand = async (b: string) => {
+    setBrand(b);
+    try { await api.setVideoBrand(video.video_kind, video.video_id, b); toast(b ? `Brand set to ${b}` : "Brand cleared", "ok"); onLogged(); }
+    catch (e: any) { toast(`Couldn't set brand: ${e?.message || e}`, "err"); }
+  };
   const save = async () => {
     setBusy(true);
     try {
@@ -983,10 +1062,10 @@ function PlatformEditor({ video, onLogged }: { video: VideoPerf; onLogged: () =>
   return (
     <div className="plat-editor">
       <div className="muted" style={{ fontSize: 12.5, marginBottom: 8 }}>
-        Enter each platform's numbers for <b>“{video.hook || video.title}”</b> — leave a platform at 0 if you didn't post there. Re-saving updates it.
+        Enter each platform's numbers for <b>“{video.title}”</b> — leave a platform at 0 if you didn't post there. Re-saving updates it.
       </div>
       <label className="plat-brand">Brand
-        <select value={brand} onChange={(e) => setBrand(e.target.value)}>
+        <select value={brand} onChange={(e) => changeBrand(e.target.value)}>
           <option value="">— select brand —</option>
           {BRANDS.map((b) => <option key={b} value={b}>{b}</option>)}
         </select>
@@ -1214,19 +1293,22 @@ function NewProject({ presets, onCreated }: { presets: Presets | null; onCreated
   const [name, setName] = useState(""); const [url, setUrl] = useState(""); const [file, setFile] = useState<File | null>(null);
   const [brain, setBrain] = useState("ollama"); const [aspect, setAspect] = useState("9:16"); const [preset, setPreset] = useState("capcut");
   const [transcribe, setTranscribe] = useState("local");
+  const [brand, setBrand] = useState("NoCrapDiet");
   const [busy, setBusy] = useState(false); const toast = useToast();
 
   const submit = async () => {
     if (!name.trim()) { toast("Give your project a name", "err"); return; }
     setBusy(true);
     try {
+      // Brand only applies to a reel (caption mode) — moments projects aren't brand-owned.
+      const reelBrand = genMode === "caption" ? brand : "";
       if (mode === "url") {
         if (!url.trim()) { toast("Paste a YouTube URL", "err"); return; }
-        await api.createFromUrl({ name, source_url: url, brain, transcribe_backend: transcribe, aspect, caption_preset: preset, mode: genMode });
+        await api.createFromUrl({ name, source_url: url, brain, transcribe_backend: transcribe, aspect, caption_preset: preset, mode: genMode, brand: reelBrand });
       } else {
         if (!file) { toast("Choose a video file", "err"); return; }
         const fd = new FormData();
-        fd.append("name", name); fd.append("brain", brain); fd.append("transcribe_backend", transcribe); fd.append("aspect", aspect); fd.append("caption_preset", preset); fd.append("mode", genMode); fd.append("file", file);
+        fd.append("name", name); fd.append("brain", brain); fd.append("transcribe_backend", transcribe); fd.append("aspect", aspect); fd.append("caption_preset", preset); fd.append("mode", genMode); fd.append("brand", reelBrand); fd.append("file", file);
         await api.createFromUpload(fd);
       }
       setName(""); setUrl(""); setFile(null);
@@ -1261,6 +1343,7 @@ function NewProject({ presets, onCreated }: { presets: Presets | null; onCreated
         </label>
       </div>
       <div className="row" style={{ marginTop: 14, alignItems: "flex-end" }}>
+        {genMode === "caption" && <label className="field">Brand<select value={brand} onChange={(e) => setBrand(e.target.value)}>{BRANDS.map((b) => <option key={b} value={b}>{b}</option>)}</select></label>}
         {genMode === "moments" && <label className="field">Brain<select value={brain} onChange={(e) => setBrain(e.target.value)}>{(presets?.brains ?? ["ollama"]).map((b) => <option key={b}>{b}</option>)}</select></label>}
         <label className="field">Transcription<select value={transcribe} onChange={(e) => setTranscribe(e.target.value)}>{(presets?.transcribe ?? ["local"]).map((t) => <option key={t} value={t}>{t === "local" ? "Local (free)" : "ElevenLabs"}</option>)}</select></label>
         <label className="field">Aspect<select value={aspect} onChange={(e) => setAspect(e.target.value)}>{(presets?.aspects ?? ["9:16"]).map((a) => <option key={a}>{a}</option>)}</select></label>

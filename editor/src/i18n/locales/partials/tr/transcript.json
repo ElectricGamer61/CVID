@@ -1,0 +1,23 @@
+{
+  "transcript": {
+    "title": "Transkript",
+    "tabLabel": "Transkript",
+    "emptySelection": "Transkriptini düzenlemek için bir video veya ses klibi seçin.",
+    "searchPlaceholder": "Transkriptte ara",
+    "nextMatch": "Sonraki eşleşme",
+    "previousMatch": "Önceki eşleşme",
+    "clearSearch": "Aramayı temizle",
+    "noTranscript": "Bu klibin henüz transkripti yok.",
+    "generate": "Transkript oluştur",
+    "transcribing": "Yazıya dökülüyor…",
+    "loading": "Transkript yükleniyor…",
+    "wordsSelected_one": "{{count}} kelime seçildi",
+    "wordsSelected_other": "{{count}} kelime seçildi",
+    "selectHint": "Bir kelimeye gitmek için tıklayın; seçmek için sürükleyin.",
+    "deleteSelection": "Sil",
+    "toastRemoved": "{{count}} klip kaldırıldı",
+    "toastNothingRemoved": "Hiçbir şey kaldırılmadı",
+    "toastRemoveFailed": "Seçili kelimeler kaldırılamadı",
+    "toastTranscribeFailed": "Yazıya dökme başarısız oldu"
+  }
+}
