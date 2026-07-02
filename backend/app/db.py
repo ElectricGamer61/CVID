@@ -137,6 +137,11 @@ class Ticket(SQLModel, table=True):
     # True when the script was written by the app's AI (Script Factory) — drives the reel's
     # quality score floor (AI scripts always rate 90+).
     ai_generated: bool = False
+    # --- Autopilot orchestration (the autonomous driver owns this row when True) ---
+    autopilot: bool = False            # the orchestrator advances this ticket automatically
+    gate: Optional[str] = None         # None|awaiting_approval|awaiting_footage|parked|done
+    gate_reason: Optional[str] = None  # why it's parked / what's needed (shown on the card)
+    attempts_json: Optional[str] = None  # JSON retry log per stage: {stage: {tries, last_error}}
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
@@ -232,7 +237,9 @@ def _migrate() -> None:
                  "folder": "TEXT", "brand": "TEXT"},
         "project": {"transcribe_backend": "TEXT DEFAULT 'local'",
                     "mode": "TEXT DEFAULT 'moments'", "folder": "TEXT", "brand": "TEXT"},
-        "ticket": {"folder": "TEXT", "post_meta": "TEXT", "ai_generated": "INTEGER DEFAULT 0"},
+        "ticket": {"folder": "TEXT", "post_meta": "TEXT", "ai_generated": "INTEGER DEFAULT 0",
+                   "autopilot": "INTEGER DEFAULT 0", "gate": "TEXT", "gate_reason": "TEXT",
+                   "attempts_json": "TEXT"},
         "beat": {"caption_timings": "TEXT"},
     }
     with _engine.connect() as conn:

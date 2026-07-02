@@ -15,7 +15,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 import settings
-from . import ai, cartridge, intake, sheets
+from . import ai, autopilot, cartridge, intake, sheets
 from .db import Angle, Beat, Clip, Folder, Outlier, Perf, Project, Ticket, get_session, init_db
 from .jobs import get_words, submit_analyze
 from .pipeline import captions as caps
@@ -57,6 +57,62 @@ def put_brand(name: str, body: dict):
         return cartridge.save(name, body)
     except ValueError as e:
         raise HTTPException(400, str(e))
+
+
+# --------------------------------------------------------------------------- #
+# Autopilot — the autonomous orchestrator (background loop + approval queue)
+# --------------------------------------------------------------------------- #
+@app.get("/api/autopilot")
+def autopilot_status():
+    return {**autopilot.status(), "queue": autopilot.queue()}
+
+
+@app.post("/api/autopilot/start")
+def autopilot_start():
+    return {"started": autopilot.start(), **autopilot.status()}
+
+
+@app.post("/api/autopilot/stop")
+def autopilot_stop():
+    return {"stopped": autopilot.stop(), **autopilot.status()}
+
+
+@app.post("/api/autopilot/tick")
+def autopilot_tick():
+    """Advance every autopilot ticket one hop now (manual pump; the loop calls this on a timer)."""
+    return {"result": autopilot.tick()}
+
+
+@app.post("/api/autopilot/tickets/{tid}/toggle")
+def autopilot_toggle(tid: int, body: dict):
+    try:
+        return autopilot.set_autopilot(tid, bool(body.get("on", True)))
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+
+
+@app.post("/api/autopilot/tickets/{tid}/approve")
+def autopilot_approve(tid: int):
+    try:
+        return autopilot.approve(tid)
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+
+
+@app.post("/api/autopilot/tickets/{tid}/reject")
+def autopilot_reject(tid: int):
+    try:
+        return autopilot.reject(tid)
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+
+
+@app.post("/api/autopilot/tickets/{tid}/regenerate")
+def autopilot_regenerate(tid: int, body: dict):
+    try:
+        return autopilot.regenerate(tid, str(body.get("note", "")))
+    except ValueError as e:
+        raise HTTPException(404, str(e))
 
 
 # --------------------------------------------------------------------------- #

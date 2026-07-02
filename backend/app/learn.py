@@ -12,20 +12,25 @@ from __future__ import annotations
 from collections import defaultdict
 
 
-def winning_patterns(limit: int = 5) -> dict:
+def winning_patterns(limit: int = 5, brand: str | None = None, min_views: int = 0) -> dict:
     """Aggregate logged performance into the account's top hooks / angles / caption styles,
     ranked by **saves + follows** (the needle metric, never views). Returns lists (possibly
-    empty). Cheap: one pass over Perf + a lookup per winning video."""
+    empty). Cheap: one pass over Perf + a lookup per winning video.
+
+    `brand` filters to one brand's videos (per-brand learning); None = whole account.
+    `min_views` is the signal gate (the "200-view rule") — a video below it is treated as
+    noise and ignored, so cold/low-signal posts don't steer generation."""
     from .db import Clip, Perf, Ticket, get_session
     from sqlmodel import select
 
     hooks: dict[str, int] = defaultdict(int)
     angles: dict[str, int] = defaultdict(int)
     presets: dict[str, int] = defaultdict(int)
+    want = (brand or "").strip().lower() or None
     with get_session() as s:
         for p in s.exec(select(Perf)).all():
             score = (p.saves or 0) + (p.follows or 0)
-            if score <= 0:
+            if score <= 0 or (p.views or 0) < min_views:
                 continue
             kind = p.video_kind or "reel"
             vid = p.video_id if p.video_id is not None else p.ticket_id
@@ -34,6 +39,8 @@ def winning_patterns(limit: int = 5) -> dict:
             if kind == "clip":
                 c = s.get(Clip, vid)
                 if not c:
+                    continue
+                if want and (c.brand or "").strip().lower() != want:
                     continue
                 key = (c.hook or c.title or "").strip()
                 if key:
@@ -44,6 +51,8 @@ def winning_patterns(limit: int = 5) -> dict:
                 t = s.get(Ticket, vid)
                 if not t:
                     continue
+                if want and (t.brand or "").strip().lower() != want:
+                    continue
                 if (t.hook_text or "").strip():
                     hooks[t.hook_text.strip()] += score
                 if (t.angle or "").strip():
@@ -53,10 +62,10 @@ def winning_patterns(limit: int = 5) -> dict:
     return {"top_hooks": top(hooks), "top_angles": top(angles), "top_presets": top(presets)}
 
 
-def winners_prompt_block() -> str:
-    """A short prompt insert describing what's worked for this account. Empty string when
-    there's no performance data yet (so generation behaves exactly as before)."""
-    w = winning_patterns()
+def winners_prompt_block(brand: str | None = None, min_views: int = 0) -> str:
+    """A short prompt insert describing what's worked (optionally for one brand). Empty string
+    when there's no qualifying performance data yet (so generation behaves exactly as before)."""
+    w = winning_patterns(brand=brand, min_views=min_views)
     if not (w["top_hooks"] or w["top_angles"]):
         return ""
     lines = ["WHAT'S WORKED FOR THIS ACCOUNT — emulate these proven winners "
