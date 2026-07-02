@@ -26,7 +26,7 @@ WHISPER_MODEL = os.getenv("CVIDEO_WHISPER_MODEL", "large-v3")
 # Allowed: cuda (float16) -> falls back to cpu (int8) automatically if cuda fails.
 WHISPER_DEVICE = os.getenv("CVIDEO_WHISPER_DEVICE", "auto")
 
-OLLAMA_MODEL = os.getenv("CVIDEO_OLLAMA_MODEL", "qwen2.5:7b")
+OLLAMA_MODEL = os.getenv("CVIDEO_OLLAMA_MODEL", "qwen3.5:9b")
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434")
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
