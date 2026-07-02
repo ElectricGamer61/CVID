@@ -509,6 +509,17 @@ button.primary.danger-solid:hover { background: #db3a48; border-color: #db3a48; 
 .vw-ap-toggle { font-size: 12.5px; padding: 5px 11px; border: 1px solid var(--border-2); border-radius: 999px; background: var(--surface-2); cursor: pointer; white-space: nowrap; }
 .vw-ap-toggle.on { background: var(--primary); border-color: var(--primary); color: #fff; font-weight: 600; }
 
+/* ---- Transcript editor (Descript-style: edit video by editing text) ---- */
+.tw-flow { line-height: 2.05; font-size: 15px; color: var(--text); max-height: 340px; overflow: auto; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--surface-2); user-select: none; outline: none; }
+.tw-flow:focus { border-color: var(--primary); }
+.tw-word { border-radius: 4px; padding: 1px 2px; cursor: pointer; }
+.tw-word:hover { background: var(--primary-soft); }
+.tw-cut { text-decoration: line-through; color: var(--muted); opacity: .55; }
+.tw-active { background: var(--primary); color: #fff; }
+.tw-sel { background: var(--primary-soft); box-shadow: inset 0 0 0 1px var(--primary); }
+.tw-active.tw-sel { background: var(--primary); color: #fff; }
+.tw-bar { display: flex; align-items: center; justify-content: space-between; margin-top: 10px; }
+
 .beats { display: flex; flex-direction: column; gap: 8px; }
 .beat { display: flex; gap: 10px; align-items: flex-start; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-sm); padding: 10px 11px; }
 .beat.beat-warn { border-color: #f5d8a6; background: #fffaf0; }

@@ -1992,6 +1992,8 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
                 previewMode={previewMode} onPlayScene={playScene} onPlayReel={playReel} onStopPreview={stopPreview} onChanged={onChange} toast={toast} />
             : <VoicePanel cid={clip.id} voUrl={voUrl} onChanged={(u) => { setVoUrl(u); onChange(); }} toast={toast} onRecordStart={startRecordPlayback} onRecordStop={stopRecordPlayback} />)}
           {tool === "reframe" && <ReframePanel center={doc.center} set={set} autoCenter={doAutoCenter} autoBusy={autoBusy} />}
+          {tool === "text" && <TranscriptEditor words={doc.words} cuts={doc.cuts} start={doc.start} end={doc.end}
+            time={time} onSeek={seek} onCutsChange={(c) => set({ cuts: c })} />}
           {tool === "subs" && (
             <div className="panel-body">
               <div className="seg-toggle wide">
@@ -2168,6 +2170,108 @@ function remapWords(words: Word[], segs: Seg[]): Word[] {
     .sort((x, y) => x.start - y.start);
 }
 
+/* Descript-style transcript editor. Edit the video by editing its words: click a word to jump
+   there, drag to select a span and press Delete to cut it out of the video; select struck-through
+   (already-cut) words and Delete to bring them back. Reuses doc.cuts entirely — the same store
+   the Cut/Clips tools, the timeline, the caption preview and the export already honor, so an edit
+   here shows up everywhere for free (and undo/redo comes from useHistory). */
+function TranscriptEditor({ words, cuts, start, end, time, onSeek, onCutsChange }: {
+  words: Word[]; cuts: [number, number][]; start: number; end: number;
+  time: number; onSeek: (t: number) => void; onCutsChange: (cuts: [number, number][]) => void;
+}) {
+  const shown = useMemo(() => annotateWordsWithCuts(
+    words.filter((w) => w.end > start + 0.001 && w.start < end - 0.001), cuts),
+    [words, cuts, start, end]);
+  const [sel, setSel] = useState<{ a: number; b: number } | null>(null);
+  const dragging = useRef(false);
+
+  useEffect(() => {
+    const up = () => { dragging.current = false; };
+    window.addEventListener("mouseup", up); return () => window.removeEventListener("mouseup", up);
+  }, []);
+
+  const activeIdx = shown.findIndex((w) => time >= w.start && time < w.end);
+  const range = sel ? ([Math.min(sel.a, sel.b), Math.max(sel.a, sel.b)] as const) : null;
+  const anchorCut = range ? shown[range[0]].cut : false;
+  const cutCount = shown.filter((w) => w.cut).length;
+
+  const applyDelete = () => {
+    if (!range) return;
+    const span = shown.slice(range[0], range[1] + 1);
+    if (!span.length) return;
+    const lo = Math.min(...span.map((w) => w.start));
+    const hi = Math.max(...span.map((w) => w.end));
+    // The anchor word decides intent: cut a live span, or restore a struck-through one.
+    onCutsChange(shown[range[0]].cut ? subtractRange(cuts, [lo, hi]) : unionCut(cuts, [lo, hi]));
+    setSel(null);
+  };
+  const onWordDown = (i: number) => { dragging.current = true; setSel({ a: i, b: i }); onSeek(shown[i].start); };
+  const onWordEnter = (i: number) => { if (dragging.current) setSel((s) => (s ? { a: s.a, b: i } : { a: i, b: i })); };
+
+  return (
+    <div className="panel-body">
+      <div className="muted" style={{ fontSize: 12.5, marginBottom: 8 }}>
+        Edit the video by editing its words. <b>Click</b> a word to jump there; <b>drag to select</b>,
+        then press <b>Delete</b> to cut it out. Select struck-through words and Delete to bring them back.
+      </div>
+      {shown.length === 0 ? (
+        <div className="muted" style={{ fontSize: 13 }}>
+          No word-timed transcript for this clip yet. (Caption reels stitched without a transcript
+          don't carry word timings — use the Cut tool on the timeline instead.)
+        </div>
+      ) : (
+        <>
+          <div className="tw-flow" tabIndex={0}
+            onKeyDown={(e) => { if ((e.key === "Delete" || e.key === "Backspace") && range) { e.preventDefault(); applyDelete(); } }}>
+            {shown.map((w, i) => (
+              <span key={i}
+                className={"tw-word" + (w.cut ? " tw-cut" : "") + (i === activeIdx ? " tw-active" : "") + (range && i >= range[0] && i <= range[1] ? " tw-sel" : "")}
+                onMouseDown={() => onWordDown(i)} onMouseEnter={() => onWordEnter(i)}>
+                {w.word}{" "}
+              </span>
+            ))}
+          </div>
+          <div className="tw-bar">
+            <span className="muted" style={{ fontSize: 12 }}>{cutCount} word{cutCount === 1 ? "" : "s"} cut</span>
+            {range && (
+              <button className={anchorCut ? "sm" : "sm danger"} onClick={applyDelete}>
+                {anchorCut ? "↩ Restore selected" : "⌦ Cut selected"}
+              </button>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ---- Transcript-editor helpers (reuse doc.cuts — no new storage) ---- */
+// Keep EVERY word, tagged whether it falls inside a cut (unlike remapWords, which drops them).
+function annotateWordsWithCuts(words: Word[], cuts: [number, number][]): (Word & { cut: boolean })[] {
+  return words.map((w) => ({ ...w, cut: cuts.some(([a, b]) => w.end > a && w.start < b) }));
+}
+// Add a cut range, merging any overlapping/adjacent ranges so the cut set stays tidy.
+function unionCut(cuts: [number, number][], add: [number, number]): [number, number][] {
+  const all = [...cuts, add].sort((x, y) => x[0] - y[0]);
+  const out: [number, number][] = [];
+  for (const [a, b] of all) {
+    const last = out[out.length - 1];
+    if (last && a <= last[1] + 0.001) last[1] = Math.max(last[1], b);
+    else out.push([a, b]);
+  }
+  return out;
+}
+// Remove a range from the cut set (restore that span of video/text).
+function subtractRange(cuts: [number, number][], [a, b]: [number, number]): [number, number][] {
+  const out: [number, number][] = [];
+  for (const [s, e] of cuts) {
+    if (e <= a || s >= b) { out.push([s, e]); continue; }   // no overlap → keep as-is
+    if (s < a) out.push([s, a]);                            // keep the left remainder
+    if (e > b) out.push([b, e]);                            // keep the right remainder
+  }
+  return out;
+}
+
 const TOOLS: { id: string; label: string; icon: string; soon?: boolean }[] = [
   { id: "clips", label: "Clips", icon: "▭" },
   { id: "trim", label: "Trim", icon: "✂" },
@@ -2175,7 +2279,7 @@ const TOOLS: { id: string; label: string; icon: string; soon?: boolean }[] = [
   { id: "reframe", label: "Reframe", icon: "⛶" },
   { id: "subs", label: "Subtitles", icon: "CC" },
   { id: "voice", label: "Voice", icon: "🎙" },
-  { id: "text", label: "Text", icon: "T", soon: true },
+  { id: "text", label: "Transcript", icon: "T" },
   { id: "broll", label: "B-roll", icon: "▦", soon: true },
   { id: "music", label: "Music", icon: "♪", soon: true },
   { id: "transitions", label: "Transitions", icon: "⇄", soon: true },
