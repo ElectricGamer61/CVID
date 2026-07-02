@@ -325,17 +325,62 @@ def advance_ticket(ticket_id: int) -> str:
         return "gated" if entering_gate else "advanced"
 
 
-def tick() -> dict:
-    """Advance every eligible autopilot ticket by one hop. Returns a per-ticket status map."""
+def _in_flight(brand: str) -> int:
+    """Autopilot tickets for a brand that haven't posted yet (the cadence backlog)."""
     from .db import Ticket, get_session
     from sqlmodel import select
+    with get_session() as s:
+        return len([t for t in s.exec(
+            select(Ticket).where(Ticket.autopilot == True)).all()  # noqa: E712
+            if (t.brand or "") == brand and t.stage != "posted"])
+
+
+def feed() -> list[int]:
+    """Ideation feeder: for each brand whose cartridge opts in (`"feed": true`), keep the
+    pipeline topped up to its weekly cadence by minting new autopilot tickets from the brand's
+    rotating angle library. Opt-in and conservative — a brand never auto-generates unless its
+    cartridge explicitly enables it. Returns the ids of any tickets created."""
+    from .db import Ticket, get_session
+    created: list[int] = []
+    for meta in cartridge.list_brands():
+        brand = meta["name"]
+        c = cartridge.load(brand)
+        if not c.get("feed"):                      # opt-in only
+            continue
+        target = int((c.get("cadence") or {}).get("reels_per_week") or 3)
+        angles = cartridge.angle_library(brand)
+        if not angles or _in_flight(brand) >= target:
+            continue
+        with get_session() as s:
+            # Rotate the angle library by how many tickets this brand already has.
+            from sqlmodel import select
+            n = len([t for t in s.exec(select(Ticket)).all() if (t.brand or "") == brand])
+            angle = angles[n % len(angles)]
+            t = Ticket(brand=brand, angle=angle, format="reel",
+                       capture_mode="native-short", stage="outlier", autopilot=True)
+            s.add(t); s.commit(); s.refresh(t)
+            created.append(t.id)
+    return created
+
+
+def tick() -> dict:
+    """One orchestrator cycle: feed new ideas (opt-in brands), then advance every eligible
+    autopilot ticket by one hop. Returns a per-ticket status map."""
+    from .db import Ticket, get_session
+    from sqlmodel import select
+    try:
+        fed = feed()
+    except Exception:  # noqa: BLE001
+        traceback.print_exc(); fed = []
     with get_session() as s:
         ids = [t.id for t in s.exec(
             select(Ticket).where(Ticket.autopilot == True)).all()]  # noqa: E712
     out: dict[int, str] = {}
+    for fid in fed:
+        out[fid] = "fed"
     for tid in ids:
         try:
-            out[tid] = advance_ticket(tid)
+            out.setdefault(tid, advance_ticket(tid))
         except Exception as e:  # noqa: BLE001 - one bad ticket must not stall the loop
             traceback.print_exc()
             out[tid] = f"error:{e}"
