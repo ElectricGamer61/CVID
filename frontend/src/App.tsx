@@ -2056,11 +2056,18 @@ type Seg = [number, number];
    word, the end handle snaps to that word's END (keep the whole word) and the start
    handle to its START (begin on the whole word). In the silence between words we
    leave the time untouched so fine placement still works. */
+// Magnetic snap to a nearby word edge — close enough to land a clean cut on a word boundary,
+// but loose enough that dragging stays smooth everywhere else (was: snapped to the word edge
+// on ANY position inside a word, which made trimming jump ~1s at a time).
 function snapTrim(words: Word[], t: number, isEnd: boolean): number {
+  const SNAP = 0.12;   // only snap within 120ms of an edge
+  let best = t, bestDist = SNAP;
   for (const w of words) {
-    if (t > w.start && t < w.end) return isEnd ? w.end : w.start;
+    const edge = isEnd ? w.end : w.start;
+    const d = Math.abs(t - edge);
+    if (d < bestDist) { bestDist = d; best = edge; }
   }
-  return t;
+  return best;
 }
 
 /* The kept pieces of [start,end] after removing `cuts` — mirrors backend
