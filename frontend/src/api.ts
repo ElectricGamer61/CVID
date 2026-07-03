@@ -303,6 +303,12 @@ export const api = {
   buildEdit: (tid: number): Promise<{ pid: number; cid: number; reused_edits?: boolean; wiped_edits?: boolean }> =>
     req(`/api/tickets/${tid}/build-edit`, { method: "POST" }),
 
+  // Text-to-speech: read the transcript into a voiceover (ElevenLabs)
+  ttsVoices: (): Promise<{ available: boolean; default: string; voices: { voice_id: string; name: string }[] }> =>
+    req("/api/tts/voices"),
+  ttsVoiceover: (cid: number, voice_id?: string, text?: string): Promise<{ voiceover_path: string }> =>
+    req(`/api/clips/${cid}/tts-voiceover`, jsonInit("POST", { voice_id, text })),
+
   // Clip voiceover (recorded/uploaded in the editor)
   uploadClipVoiceover: (cid: number, file: Blob): Promise<{ voiceover_path: string }> => {
     const fd = new FormData(); fd.append("file", file, "voiceover.webm");

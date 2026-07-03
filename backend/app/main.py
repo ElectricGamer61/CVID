@@ -1595,6 +1595,53 @@ async def upload_clip_voiceover(cid: int, file: UploadFile = File(...)):
     return {"voiceover_path": str(wav)}
 
 
+class TTSBody(BaseModel):
+    voice_id: Optional[str] = None
+    text: Optional[str] = None       # override; default = the clip's own transcript
+
+
+@app.get("/api/tts/voices")
+def tts_voices():
+    """Available ElevenLabs voices for the editor's picker (+ whether TTS is configured)."""
+    from .pipeline import tts
+    return {"available": tts.available(), "default": settings.ELEVENLABS_VOICE_ID,
+            "voices": tts.list_voices()}
+
+
+@app.post("/api/clips/{cid}/tts-voiceover")
+def clip_tts_voiceover(cid: int, body: TTSBody):
+    """Read the clip's transcript into a voiceover via ElevenLabs and store it as the clip's
+    voice (same slot as a recorded take → render muxes it). Text defaults to the clip's caption
+    words; pass `text` to override with exactly what's on screen right now."""
+    from .pipeline import tts
+    with get_session() as s:
+        clip = s.get(Clip, cid)
+        if not clip:
+            raise HTTPException(404, "clip not found")
+        pid, start, end = clip.project_id, clip.start, clip.end
+        words = json.loads(clip.words_json) if clip.words_json else [
+            w for w in get_words(pid) if w["end"] > start and w["start"] < end]
+    text = (body.text or "").strip() or " ".join(w.get("word", "") for w in words).strip()
+    if not text:
+        raise HTTPException(400, "no transcript to read — add captions first")
+    mdir = settings.project_dir(pid); mdir.mkdir(parents=True, exist_ok=True)
+    mp3 = mdir / f"clip_{cid}_tts.mp3"
+    wav = mdir / f"clip_{cid}_voiceover.wav"
+    try:
+        tts.synthesize(text, mp3, body.voice_id)
+        ingest.extract_voiceover(mp3, wav)          # mp3 → 48k stereo wav
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(400, f"voice generation failed: {e}")
+    finally:
+        mp3.unlink(missing_ok=True)
+    with get_session() as s:
+        clip = s.get(Clip, cid)
+        clip.voiceover_path = str(wav)
+        clip.status = "suggested"
+        s.add(clip); s.commit()
+    return {"voiceover_path": str(wav)}
+
+
 @app.get("/api/clips/{cid}/voiceover-file")
 def clip_voiceover_file(cid: int):
     with get_session() as s:

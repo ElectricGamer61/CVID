@@ -37,6 +37,9 @@ DEFAULT_BRAIN = os.getenv("CVIDEO_DEFAULT_BRAIN", "ollama")  # ollama | gemini |
 # Transcription backend: local (faster-whisper, free) | elevenlabs (Scribe, paid key)
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "")
 ELEVENLABS_MODEL = os.getenv("CVIDEO_ELEVENLABS_MODEL", "scribe_v1")
+# Text-to-speech (read a transcript into a voiceover). Default voice = "Rachel" (public).
+ELEVENLABS_VOICE_ID = os.getenv("CVIDEO_ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")
+ELEVENLABS_TTS_MODEL = os.getenv("CVIDEO_ELEVENLABS_TTS_MODEL", "eleven_turbo_v2_5")
 DEFAULT_TRANSCRIBE = os.getenv("CVIDEO_DEFAULT_TRANSCRIBE", "local")
 
 # --- Posting (Phase 6 schedule/post) -----------------------------------------

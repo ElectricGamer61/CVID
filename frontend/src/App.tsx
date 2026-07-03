@@ -1993,7 +1993,7 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
                 sceneVos={sceneVos} setSceneVos={applySceneVos} readRate={readRate} setReadRate={setReadRate}
                 activeScene={activeScene!} onRecordStart={startRecordPlayback} onRecordStop={stopRecordPlayback}
                 previewMode={previewMode} onPlayScene={playScene} onPlayReel={playReel} onStopPreview={stopPreview} onChanged={onChange} toast={toast} />
-            : <VoicePanel cid={clip.id} voUrl={voUrl} onChanged={(u) => { setVoUrl(u); onChange(); }} toast={toast} onRecordStart={startRecordPlayback} onRecordStop={stopRecordPlayback} />)}
+            : <VoicePanel cid={clip.id} voUrl={voUrl} text={doc.words.map((w) => w.word).join(" ")} onChanged={(u) => { setVoUrl(u); onChange(); }} toast={toast} onRecordStart={startRecordPlayback} onRecordStop={stopRecordPlayback} />)}
           {tool === "reframe" && <ReframePanel center={doc.center} set={set} autoCenter={doAutoCenter} autoBusy={autoBusy} />}
           {tool === "text" && <TranscriptEditor words={doc.words} cuts={doc.cuts} start={doc.start} end={doc.end}
             time={time} onSeek={seek} onCutsChange={(c) => set({ cuts: c })} />}
@@ -2477,10 +2477,24 @@ function Teleprompter({ words, time, maxWords }: { words: Word[]; time: number; 
   );
 }
 
-function VoicePanel({ cid, voUrl, onChanged, toast, onRecordStart, onRecordStop }: { cid: number; voUrl: string | null; onChanged: (u: string | null) => void; toast: Notify; onRecordStart: (range?: { s: number; e: number }, onEnd?: () => void, startMic?: () => Promise<boolean>) => void; onRecordStop: () => void }) {
+function VoicePanel({ cid, voUrl, text, onChanged, toast, onRecordStart, onRecordStop }: { cid: number; voUrl: string | null; text: string; onChanged: (u: string | null) => void; toast: Notify; onRecordStart: (range?: { s: number; e: number }, onEnd?: () => void, startMic?: () => Promise<boolean>) => void; onRecordStop: () => void }) {
   const { recording, error, start, stop } = useRecorder();
   const [pending, setPending] = useState<{ blob: Blob; url: string } | null>(null);
   const [busy, setBusy] = useState(false);
+  // AI voice (ElevenLabs TTS): fetch the available voices once for the picker.
+  const [voices, setVoices] = useState<{ voice_id: string; name: string }[]>([]);
+  const [voiceId, setVoiceId] = useState<string>("");
+  const [genBusy, setGenBusy] = useState(false);
+  useEffect(() => { api.ttsVoices().then((v) => { setVoices(v.voices); setVoiceId(v.default); }).catch(() => {}); }, []);
+  const genVoice = async () => {
+    if (!text.trim()) { toast("No transcript to read — add captions first", "err"); return; }
+    setGenBusy(true);
+    try {
+      await api.ttsVoiceover(cid, voiceId || undefined, text);
+      onChanged(api.clipVoiceoverUrl(cid) + "?t=" + Date.now());
+      toast("AI voice generated — it's now your video's audio", "ok");
+    } catch (e: any) { toast(`Voice generation failed: ${e?.message || e}`, "err"); } finally { setGenBusy(false); }
+  };
 
   const onStop = async () => {
     const blob = await stop();
@@ -2517,6 +2531,19 @@ function VoicePanel({ cid, voUrl, onChanged, toast, onRecordStart, onRecordStop 
       </div>
       {recording && <div className="muted vo-live">● Recording… read your script, then press Stop.</div>}
       {error && <div className="err">{error}</div>}
+
+      {/* AI voice — let ElevenLabs read the transcript instead of recording */}
+      <div className="vo-ai">
+        <div className="muted" style={{ fontSize: 12.5, margin: "6px 0 6px" }}>…or let AI read your transcript aloud:</div>
+        {voices.length > 0 && (
+          <select className="vo-voice" value={voiceId} onChange={(e) => setVoiceId(e.target.value)} disabled={genBusy}>
+            {voices.map((v) => <option key={v.voice_id} value={v.voice_id}>{v.name}</option>)}
+          </select>
+        )}
+        <button className="big-btn" onClick={genVoice} disabled={genBusy || recording || !!pending}>
+          {genBusy ? "Generating…" : "🔊 Generate AI voice"}
+        </button>
+      </div>
       {pending && (
         <div className="vo-pending">
           <div className="muted" style={{ fontSize: 12.5, marginBottom: 6 }}>Listen to your take:</div>
