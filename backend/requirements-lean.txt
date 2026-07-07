@@ -1,0 +1,22 @@
+# Cvideo backend deps - LEAN (laptop / cloud / no NVIDIA GPU).
+# Same as requirements.txt MINUS the two nvidia CUDA accel libs, which are useless
+# without an NVIDIA GPU (and fail to install on machines that have none).
+# Transcription in lean mode uses ElevenLabs (cloud); faster-whisper stays as a
+# free CPU fallback (slower, but works without any GPU).
+#
+# Install inside the venv (Python 3.11):  pip install -r requirements-lean.txt
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+sqlmodel==0.0.22
+python-multipart==0.0.20
+python-dotenv==1.0.1
+yt-dlp==2025.6.9
+faster-whisper==1.1.1
+# opencv-contrib (not plain opencv-python) - includes the YuNet DNN face detector
+# (cv2.FaceDetectorYN) used for speaker-tracked reframe.
+opencv-contrib-python==4.13.0.92
+numpy==2.2.1
+requests==2.32.3
+ollama==0.4.5
+google-generativeai==0.8.3
+anthropic==0.116.0
