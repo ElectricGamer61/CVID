@@ -259,6 +259,21 @@ class GeminiScorer(ScorerBackend):
         return _normalize(_extract_json_array(resp.text), words)
 
 
+class ClaudeScorer(ScorerBackend):
+    """Claude (Anthropic) viral-moment picker — the smart brain. Same prompt as the others;
+    Claude follows the 'return JSON' instruction well and the robust parser handles the rest."""
+    name = "claude"
+
+    def score(self, words: list[dict], n: int) -> list[dict]:
+        from . import llm
+        prompt = learn.winners_prompt_block() + _PROMPT.format(
+            n=n, mins=int(settings.MIN_CLIP_SEC), maxs=int(settings.MAX_CLIP_SEC),
+            transcript=build_timed_transcript(words),
+        )
+        raw = llm._claude_chat(prompt)
+        return _normalize(_extract_json_array(raw), words)
+
+
 class HeuristicScorer(ScorerBackend):
     """No-LLM fallback: split into evenly spaced ~40s windows on sentence-ish breaks."""
     name = "heuristic"
@@ -284,6 +299,7 @@ class HeuristicScorer(ScorerBackend):
 
 def get_backend(name: str) -> ScorerBackend:
     return {
+        "claude": ClaudeScorer,
         "ollama": OllamaScorer,
         "gemini": GeminiScorer,
         "heuristic": HeuristicScorer,

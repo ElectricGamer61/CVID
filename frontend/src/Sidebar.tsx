@@ -47,7 +47,7 @@ const ICONS: Record<string, JSX.Element> = {
   ),
 };
 
-export function Sidebar({ view, onHome, onBoard, onIntake, onQueue, onInsights, onLibrary, onAutopilot }: { view: View; onHome: () => void; onBoard?: () => void; onIntake?: () => void; onQueue?: () => void; onInsights?: () => void; onLibrary?: () => void; onAutopilot?: () => void }) {
+export function Sidebar({ view, onHome, onBoard, onIntake, onQueue, onInsights, onLibrary }: { view: View; onHome: () => void; onBoard?: () => void; onIntake?: () => void; onQueue?: () => void; onInsights?: () => void; onLibrary?: () => void }) {
   const item = (key: string, label: string, active: boolean, onClick?: () => void) => (
     <button className={"nav-item" + (active ? " on" : "")} onClick={onClick} title={label} disabled={!onClick}>
       {ICONS[key]}
@@ -63,7 +63,6 @@ export function Sidebar({ view, onHome, onBoard, onIntake, onQueue, onInsights, 
         {item("home", "Home", view === "home", onHome)}
         {item("intake", "Ideas", view === "intake", onIntake)}
         {item("board", "Create videos", view === "board", onBoard)}
-        {item("autopilot", "Autopilot", view === "autopilot", onAutopilot)}
         {item("queue", "Schedule", view === "queue", onQueue)}
         {item("insights", "Results", view === "insights", onInsights)}
         {item("library", "Downloads", view === "library", onLibrary)}

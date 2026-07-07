@@ -6,16 +6,54 @@ back onto the Project row so the UI can poll it.
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import Callable
 
 import settings
 from .db import Clip, Project, get_session
-from .pipeline import brain, ingest, transcribe
+from .pipeline import brain, ingest
 
 _executor = ThreadPoolExecutor(max_workers=1)
+
+
+def transcribe_subprocess(audio: Path, out_json: Path, backend: str,
+                          progress: Callable[[int, str], None] | None = None) -> dict:
+    """Transcribe in a child process so a native GPU crash can't kill the API.
+
+    Streams the worker's "PROGRESS <pct> <msg>" lines to `progress` and reads the
+    result JSON back. A crash/segfault surfaces here as a non-zero exit code, which
+    the caller turns into a job-level error instead of a dead backend."""
+    cmd = [sys.executable, "-m", "app.pipeline.transcribe_worker",
+           str(audio), str(out_json), backend]
+    proc = subprocess.Popen(
+        cmd, cwd=str(settings.BACKEND_DIR),
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
+    )
+    assert proc.stdout is not None
+    for line in proc.stdout:
+        line = line.rstrip()
+        if line.startswith("PROGRESS "):
+            try:
+                _, pct, msg = line.split(" ", 2)
+                if progress:
+                    progress(int(pct), msg)
+            except ValueError:
+                pass
+        elif line:
+            print(f"[transcribe_worker] {line}")
+    code = proc.wait()
+    if code != 0:
+        raise RuntimeError(
+            f"transcription worker crashed (exit {code}) — likely a GPU/CUDA fault; "
+            f"the backend stayed up")
+    result = json.loads(out_json.read_text(encoding="utf-8"))
+    out_json.unlink(missing_ok=True)
+    return result
 
 
 def _set(project_id: int, **fields):
@@ -53,13 +91,14 @@ def _analyze(project_id: int, upload_path: str | None):
             ingest.extract_audio(source, audio)
             _set(project_id, duration=ingest.probe_duration(source))
 
-        # 2. Transcribe
+        # 2. Transcribe — in a subprocess so a native GPU/CUDA crash can't take the API down.
         _set(project_id, status="transcribing", stage="Transcribing", progress=20)
 
         def _tp(pct, msg):
             _set(project_id, stage=msg, progress=20 + int(pct * 0.5))
 
-        result = transcribe.transcribe(audio, backend=tx_backend, progress=_tp)
+        result = transcribe_subprocess(
+            audio, pdir / "words.tmp.json", tx_backend, _tp)
         (pdir / "words.json").write_text(
             json.dumps(result, ensure_ascii=False), encoding="utf-8"
         )
@@ -107,14 +146,82 @@ def _analyze(project_id: int, upload_path: str | None):
 
         ready_stage = "Ready to caption" if mode == "caption" else f"Found {len(moments)} clips"
         _set(project_id, status="ready", stage=ready_stage, progress=100)
+
+        # 6. Warm the full-video cache in the background so the FIRST export doesn't have to
+        # wait on a full download (analysis only ever pulled audio + a 360p proxy). Runs on
+        # its own thread so it never blocks the analyze worker or the API.
+        if source_type == "url":
+            import threading
+            threading.Thread(target=_prefetch_full, args=(project_id, source_url),
+                             daemon=True).start()
     except Exception as e:  # noqa: BLE001
         traceback.print_exc()
         _set(project_id, status="error", stage="Failed",
              error=f"{type(e).__name__}: {e}")
 
 
+def _prefetch_full(project_id: int, source_url: str) -> None:
+    """Fetch + cache the full source video so the first render is instant. Best-effort:
+    if it fails, `_render_clip_job` still downloads lazily on export."""
+    source = settings.project_dir(project_id) / "source.mp4"
+    if source.exists():
+        return
+    try:
+        ingest.download_full(source_url, source)
+    except Exception as e:  # noqa: BLE001 - non-fatal; export falls back to lazy fetch
+        print(f"[prefetch] full-video prefetch failed for project {project_id}: {e}")
+
+
 def submit_analyze(project_id: int, upload_path: str | None = None):
     _executor.submit(_analyze, project_id, upload_path)
+
+
+def submit_shootdrop(batch_id: str):
+    """Run a shoot-drop batch on the same single worker — transcription is the
+    heavy step and shares the GPU with project analyzes."""
+    from .pipeline import shootdrop
+    _executor.submit(shootdrop.run_batch, batch_id)
+
+
+def start_shootdrop_watcher():
+    """Watch SHOOT_DROP_DIR (backend/.env) for raw phone clips. No-op when unset.
+    Polling (no watchdog dep): a file is picked up only once its size is stable
+    across two polls, so half-copied phone transfers are never ingested."""
+    if not settings.SHOOT_DROP_DIR:
+        return
+    import threading
+    threading.Thread(target=_shootdrop_watch_loop, daemon=True).start()
+
+
+def _shootdrop_watch_loop():
+    from .pipeline import shootdrop
+    drop = Path(settings.SHOOT_DROP_DIR)
+    try:
+        drop.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        print(f"[shootdrop] cannot create watch dir {drop}: {e}")
+        return
+    print(f"[shootdrop] watching {drop}")
+    sizes: dict[str, int] = {}
+    while True:
+        try:
+            stable: list[Path] = []
+            for f in sorted(drop.iterdir()):
+                if not f.is_file() or f.suffix.lower() not in shootdrop.VIDEO_EXTS:
+                    continue
+                sz = f.stat().st_size
+                if sizes.get(f.name) == sz and sz > 0:
+                    stable.append(f)
+                sizes[f.name] = sz
+            if stable:
+                batch_id = shootdrop.new_batch(stable, move=True)
+                for f in stable:
+                    sizes.pop(f.name, None)
+                print(f"[shootdrop] picked up {len(stable)} file(s) -> batch {batch_id}")
+                _executor.submit(shootdrop.run_batch, batch_id)
+        except Exception as e:  # noqa: BLE001 — the watcher must never die
+            print(f"[shootdrop] watch loop error: {e}")
+        time.sleep(10)
 
 
 def get_words(project_id: int) -> list[dict]:

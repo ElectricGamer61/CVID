@@ -12,14 +12,16 @@ from typing import Optional
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 import settings
-from . import ai, autopilot, cartridge, intake, sheets
-from .db import Angle, Beat, Clip, Folder, Outlier, Perf, Project, Ticket, get_session, init_db
-from .jobs import get_words, submit_analyze
+from . import ai, autopilot, cartridge, intake, learn, sheets
+from .db import (Angle, Beat, Clip, Folder, IngestClip, Outlier, Perf, Project,
+                 Ticket, get_session, init_db)
+from .jobs import get_words, start_shootdrop_watcher, submit_analyze, submit_shootdrop
 from .pipeline import captions as caps
-from .pipeline import ingest, reframe, render
+from .pipeline import ingest, reframe, render, shootdrop
 
 app = FastAPI(title="Cvideo")
 app.add_middleware(
@@ -36,6 +38,7 @@ _assemble_status: dict[int, dict] = {}
 @app.on_event("startup")
 def _startup():
     init_db()
+    start_shootdrop_watcher()
 
 
 # --------------------------------------------------------------------------- #
@@ -175,6 +178,7 @@ class TicketPatch(BaseModel):
     project_id: Optional[int] = None
     outlier_id: Optional[int] = None
     platforms: Optional[list] = None
+    post_meta: Optional[dict] = None       # per-platform publish copy (hand edits)
 
 
 class BeatPatch(BaseModel):
@@ -502,6 +506,25 @@ def hook_forge(tid: int, body: AIBrief):
     return {"hooks": ai.hook_forge(brand, angle, body.brief)}
 
 
+@app.post("/api/tickets/{tid}/post-copy")
+def generate_post_copy(tid: int):
+    """AI: fill Ticket.post_meta (per-platform captions/hashtags/title/description)
+    from the ticket's own script — no more pasting the script back into Claude."""
+    with get_session() as s:
+        t = s.get(Ticket, tid)
+        if not t:
+            raise HTTPException(404, "ticket not found")
+        beats = _beats_for(s, tid)
+        brand, hook = t.brand, t.hook_text
+        script = "\n".join((b.spoken_line or b.caption) for b in beats)
+    meta = ai.post_copy(brand, hook, script)
+    with get_session() as s:
+        t = s.get(Ticket, tid)
+        t.post_meta = meta
+        s.add(t); s.commit(); s.refresh(t)
+        return {"ticket": t.model_dump(), "post_meta": meta}
+
+
 @app.get("/api/tickets")
 def list_tickets():
     from sqlmodel import select
@@ -745,7 +768,7 @@ def _recompute_angle(s, angle_name: str) -> None:
         return
     tids = [t.id for t in s.exec(select(Ticket).where(Ticket.angle == angle_name)).all()]
     rows = s.exec(select(Perf).where(Perf.ticket_id.in_(tids))).all() if tids else []
-    scores = [p.saves + p.follows for p in rows]   # the needle metric
+    scores = [learn.perf_score(p.views, p.follows, p.saves, p.sends) for p in rows]
     a = s.get(Angle, angle_name) or Angle(angle=angle_name)
     a.posts_count = len({p.ticket_id for p in rows})
     a.avg_score = round(sum(scores) / len(scores), 2) if scores else 0.0
@@ -950,14 +973,15 @@ def insights():
         perfs = s.exec(select(Perf)).all()
         angles = s.exec(select(Angle).order_by(Angle.avg_score.desc())).all()
 
-        # Top VIDEOS by saves+follows (the needle) — keyed on the real exported asset
+        # Top VIDEOS by the unified perf_score — keyed on the real exported asset
         # (clip/reel), so a long-form clip you posted ranks the same as a native reel.
-        by_video: dict[tuple, int] = defaultdict(int)
+        by_video: dict[tuple, float] = defaultdict(float)
         for p in perfs:
             vid = p.video_id if p.video_id is not None else p.ticket_id
             if vid is None:
                 continue
-            by_video[(p.video_kind or "reel", vid)] += p.saves + p.follows
+            by_video[(p.video_kind or "reel", vid)] += learn.perf_score(
+                p.views, p.follows, p.saves, p.sends)
         top_keys = sorted(by_video.items(), key=lambda kv: kv[1], reverse=True)[:8]
         top = [{**_video_label(s, k[0], k[1]), "score": sc} for k, sc in top_keys]
 
@@ -995,7 +1019,9 @@ def insights():
             videos.append({"video_kind": kind, "video_id": vid, "is_reel": is_reel,
                            "title": lbl["title"], "hook": lbl["hook"],
                            "brand": _video_brand(s, kind, vid), "platforms": plats,
-                           "totals": tot, "score": tot["saves"] + tot["follows"]})
+                           "totals": tot,
+                           "score": learn.perf_score(tot["views"], tot["follows"],
+                                                     tot["saves"], tot["sends"])})
         videos.sort(key=lambda v: (v["score"], v["is_reel"]), reverse=True)
 
     # Per-platform breakdown (which channel is actually working).
@@ -1005,9 +1031,9 @@ def insights():
         row = _plat[p.platform or "?"]
         row["views"] += p.views; row["follows"] += p.follows
         row["saves"] += p.saves; row["sends"] += p.sends; row["posts"] += 1
-    by_platform = [{"platform": k, **v, "score": v["saves"] + v["follows"]}
-                   for k, v in sorted(_plat.items(),
-                                      key=lambda kv: kv[1]["saves"] + kv[1]["follows"],
+    _pscore = lambda v: learn.perf_score(v["views"], v["follows"], v["saves"], v["sends"])
+    by_platform = [{"platform": k, **v, "score": _pscore(v)}
+                   for k, v in sorted(_plat.items(), key=lambda kv: _pscore(kv[1]),
                                       reverse=True)]
 
     # Trend: totals per capture day (chronological) so the UI can chart momentum.
@@ -1018,7 +1044,8 @@ def insights():
         row = _days[d]
         row["views"] += p.views; row["follows"] += p.follows
         row["saves"] += p.saves; row["sends"] += p.sends
-    trend = [{"date": d, **v, "score": v["saves"] + v["follows"]}
+    trend = [{"date": d, **v,
+              "score": learn.perf_score(v["views"], v["follows"], v["saves"], v["sends"])}
              for d, v in sorted(_days.items())]
 
     return {
@@ -1194,6 +1221,148 @@ def _set_beat_media(bid: int, **fields):
             for k, v in fields.items():
                 setattr(b, k, v)
             s.add(b); s.commit()
+
+
+# --------------------------------------------------------------------------- #
+# Shoot Drop — batch raw-footage intake (record → dump files → done)
+# --------------------------------------------------------------------------- #
+class ShootdropAssign(BaseModel):
+    beat_id: Optional[int] = None      # attach to this scene…
+    new_ticket: bool = False           # …or spin a new video from this clip
+
+
+@app.post("/api/shootdrop")
+async def shootdrop_upload(files: list[UploadFile] = File(...)):
+    """Drop a whole shoot's raw files at once; the batch pipeline sorts them."""
+    tmp = Path(tempfile.mkdtemp(prefix="shootdrop_"))
+    paths: list[Path] = []
+    names: list[str] = []
+    for f in files:
+        name = f.filename or "clip.mp4"
+        suffix = Path(name).suffix.lower() or ".mp4"
+        if suffix not in shootdrop.VIDEO_EXTS:
+            continue
+        dest = tmp / f"{len(paths):02d}{suffix}"
+        with dest.open("wb") as out:
+            shutil.copyfileobj(f.file, out)
+        paths.append(dest)
+        names.append(name)
+    if not paths:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise HTTPException(400, "no video files in upload")
+    batch_id = shootdrop.new_batch(paths, move=True, names=names)
+    shutil.rmtree(tmp, ignore_errors=True)
+    submit_shootdrop(batch_id)
+    return {"batch_id": batch_id, "count": len(paths)}
+
+
+@app.get("/api/shootdrop")
+def shootdrop_status():
+    """Recent ingest clips (newest first) + open scenes for the reassign menu."""
+    from sqlmodel import select
+    with get_session() as s:
+        rows = s.exec(select(IngestClip).where(IngestClip.status != "discarded")
+                      .order_by(IngestClip.id.desc()).limit(60)).all()
+        clips = []
+        for ic in rows:
+            d = ic.model_dump()
+            if ic.ticket_id:
+                t = s.get(Ticket, ic.ticket_id)
+                d["ticket_label"] = (t.hook_text or t.angle or f"video {t.id}") if t else ""
+            if ic.beat_id:
+                b = s.get(Beat, ic.beat_id)
+                d["scene_index"] = b.order_index if b else None
+            clips.append(d)
+    return {"clips": clips, "watch_dir": settings.SHOOT_DROP_DIR,
+            "open_scenes": shootdrop.open_beats()}
+
+
+@app.get("/api/shootdrop/clips/{icid}/file")
+def shootdrop_clip_file(icid: int):
+    """Stream a raw ingest clip so you can watch the take and verify the match."""
+    with get_session() as s:
+        ic = s.get(IngestClip, icid)
+        if not ic:
+            raise HTTPException(404, "ingest clip not found")
+        path = Path(ic.path)
+    if not path.exists():
+        raise HTTPException(404, "file no longer exists")
+    return FileResponse(str(path), media_type="video/mp4")
+
+
+@app.get("/api/shootdrop/clips/{icid}/thumb")
+def shootdrop_clip_thumb(icid: int):
+    """A small still frame of the clip — so you recognize silent B-roll at a glance
+    and drag it onto the right scene (media-bin style)."""
+    with get_session() as s:
+        ic = s.get(IngestClip, icid)
+        if not ic:
+            raise HTTPException(404, "ingest clip not found")
+        path = Path(ic.path)
+    if not path.exists():
+        raise HTTPException(404, "file no longer exists")
+    thumb = path.with_suffix(".thumb.jpg")
+    if not thumb.exists():
+        _make_frame(path, thumb, 1.0, w=320)   # ~1s in, source aspect
+    if not thumb.exists():
+        raise HTTPException(404, "thumbnail unavailable")
+    return FileResponse(str(thumb), media_type="image/jpeg")
+
+
+@app.post("/api/shootdrop/clips/{icid}/assign")
+def shootdrop_assign(icid: int, body: ShootdropAssign):
+    """Fix a wrong/missed match: attach the take to a chosen scene, or spin a
+    new video from it. Clears the previously matched scene's footage."""
+    with get_session() as s:
+        ic = s.get(IngestClip, icid)
+        if not ic:
+            raise HTTPException(404, "ingest clip not found")
+        if not Path(ic.path).exists():
+            raise HTTPException(400, "source file no longer exists")
+        prev_beat, src, transcript, mtime = ic.beat_id, ic.path, ic.transcript, ic.mtime
+    if prev_beat and prev_beat != body.beat_id:
+        _set_beat_media(prev_beat, clip_path=None)
+
+    if body.new_ticket:
+        tid = shootdrop.reverse_ticket(
+            f"manual-{icid}",
+            [{"id": icid, "path": src, "transcript": transcript or "", "mtime": mtime}])
+        shootdrop.after_footage(tid)
+    elif body.beat_id:
+        with get_session() as s:
+            b = s.get(Beat, body.beat_id)
+            if not b:
+                raise HTTPException(404, "beat not found")
+            tid, order_index = b.ticket_id, b.order_index
+            t = s.get(Ticket, tid)
+            label = (t.hook_text or t.angle or f"video {tid}") if t else f"video {tid}"
+        shootdrop.attach_clip_to_beat(Path(src), tid, body.beat_id)
+        with get_session() as s:
+            ic = s.get(IngestClip, icid)
+            ic.status = "assigned"
+            ic.ticket_id, ic.beat_id, ic.confidence = tid, body.beat_id, 0.0
+            s.add(ic); s.commit()
+        shootdrop.after_footage(tid)
+    else:
+        raise HTTPException(400, "pass beat_id or new_ticket")
+    with get_session() as s:
+        return s.get(IngestClip, icid).model_dump()
+
+
+@app.delete("/api/shootdrop/clips/{icid}")
+def shootdrop_discard(icid: int):
+    """Discard a take. If it was attached to a scene, that scene needs footage again."""
+    with get_session() as s:
+        ic = s.get(IngestClip, icid)
+        if not ic:
+            raise HTTPException(404, "ingest clip not found")
+        prev_beat = ic.beat_id
+        ic.status = "discarded"
+        ic.ticket_id = ic.beat_id = None
+        s.add(ic); s.commit()
+    if prev_beat:
+        _set_beat_media(prev_beat, clip_path=None)
+    return {"discarded": icid}
 
 
 def _assemble_job(tid: int):
@@ -1720,6 +1889,50 @@ def scene_voiceover_file(cid: int, idx: int):
         return FileResponse(path, media_type="audio/wav")
 
 
+@app.post("/api/clips/{cid}/scene-tts/{idx}")
+def scene_tts_voiceover(cid: int, idx: int, body: TTSBody):
+    """Generate an ElevenLabs voice for ONE scene of a stitched reel and store it in that
+    scene's slot (the same place a recorded scene take lands). Text defaults to the scene's
+    own caption words (sliced by its marker), so 'record it or generate it' is one flow —
+    per scene for reels, whole-clip for long-form."""
+    from .pipeline import tts
+    with get_session() as s:
+        clip = s.get(Clip, cid)
+        if not clip:
+            raise HTTPException(404, "clip not found")
+        markers = json.loads(clip.markers_json) if clip.markers_json else []
+        if idx < 0 or idx >= len(markers):
+            raise HTTPException(400, "scene index out of range")
+        m = markers[idx]
+        pid = clip.project_id
+        words = json.loads(clip.words_json) if clip.words_json else get_words(pid)
+    ms, me = float(m["start"]), float(m["end"])
+    scene_words = [w for w in words if w.get("end", 0) > ms and w.get("start", 0) < me]
+    text = ((body.text or "").strip()
+            or " ".join(w.get("word", "") for w in scene_words).strip()
+            or (m.get("label") or "").strip())
+    if not text:
+        raise HTTPException(400, "no words for this scene to read")
+    mdir = settings.project_dir(pid); mdir.mkdir(parents=True, exist_ok=True)
+    mp3 = mdir / f"clip_{cid}_scene_{idx}_tts.mp3"
+    wav = mdir / f"clip_{cid}_scene_{idx}.wav"       # same slot a recorded scene take uses
+    try:
+        tts.synthesize(text, mp3, body.voice_id)
+        ingest.extract_voiceover(mp3, wav)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(400, f"voice generation failed: {e}")
+    finally:
+        mp3.unlink(missing_ok=True)
+    with get_session() as s:
+        clip = s.get(Clip, cid)
+        vos = _load_scene_vos(clip)
+        vos[idx] = str(wav)
+        clip.scene_vo_json = json.dumps(vos)
+        clip.status = "suggested"
+        s.add(clip); s.commit()
+    return {"voiceover_path": str(wav), "scene_vos": vos}
+
+
 @app.delete("/api/clips/{cid}/scene-voiceover/{idx}")
 def delete_scene_voiceover(cid: int, idx: int):
     with get_session() as s:
@@ -1904,8 +2117,10 @@ def list_presets():
     return {"captions": list(caps.PRESETS.keys()),
             "caption_styles": {k: asdict(v) for k, v in caps.PRESETS.items()},
             "aspects": list(reframe.ASPECTS.keys()),
-            "brains": ["ollama", "gemini", "heuristic"],
+            "brains": ["claude", "ollama", "gemini", "heuristic"],
+            "brains_default": settings.DEFAULT_BRAIN,
             "transcribe": ["local", "elevenlabs"],
+            "transcribe_default": settings.DEFAULT_TRANSCRIBE,
             "resolutions": resolutions,
             "stages": STAGES,
             "formats": sorted(_TICKET_FORMATS),
@@ -1915,3 +2130,16 @@ def list_presets():
 @app.get("/api/health")
 def health():
     return {"ok": True}
+
+
+# --------------------------------------------------------------------------- #
+# Single-port serving (multi-device). Once the frontend is built (`npm run build`),
+# the backend also serves the UI, so the whole app lives at ONE url (:8000) — no
+# separate Vite server, no CORS. Reachable from another device by running uvicorn
+# with `--host 0.0.0.0` and opening http://<this-machine>:8000. Mounted LAST so it
+# never shadows the /api routes above. Dev still uses the Vite server on :3000 when
+# dist/ is absent.
+# --------------------------------------------------------------------------- #
+_FRONTEND_DIST = settings.PROJECT_ROOT / "frontend" / "dist"
+if _FRONTEND_DIST.exists():
+    app.mount("/", StaticFiles(directory=str(_FRONTEND_DIST), html=True), name="frontend")

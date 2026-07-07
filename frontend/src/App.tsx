@@ -1,5 +1,5 @@
-import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
-import { api, AutopilotState, Beat, Clip, ClipEffects, ExportItem, Folder, InsightsData, Outlier, Presets, Project, QueueData, QueueTicket, Ticket, VideoPerf } from "./api";
+import { ChangeEvent, DragEvent as RDragEvent, useEffect, useMemo, useRef, useState } from "react";
+import { api, AutopilotState, Beat, Clip, ClipEffects, ExportItem, Folder, IngestClipInfo, InsightsData, OpenScene, Outlier, PostMeta, Presets, Project, QueueData, QueueTicket, ShootdropData, Ticket, VideoPerf } from "./api";
 import { CaptionOverlay } from "./CaptionOverlay";
 import { CaptionStyle, FALLBACK_PRESETS, groupLines, Word, wordsInRange } from "./captionStyles";
 import { Sidebar } from "./Sidebar";
@@ -16,7 +16,6 @@ type Route =
   | { name: "queue" }
   | { name: "insights" }
   | { name: "library" }
-  | { name: "autopilot" }
   | { name: "video"; tid: number }
   | { name: "project"; pid: number }
   | { name: "editor"; pid: number; cid: number; from?: "board" | "project" | "home" | "video"; tid?: number };
@@ -25,25 +24,39 @@ export default function App() {
   const [presets, setPresets] = useState<Presets | null>(null);
   const [route, setRoute] = useState<Route>({ name: "home" });
   const [projName, setProjName] = useState("");
+  const [backendDown, setBackendDown] = useState(false);
 
   useEffect(() => { api.presets().then(setPresets); }, []);
+  // Poll the backend so a crash is visible immediately — the editor autosaves silently, so a
+  // dead server used to eat edits with no warning. This banner makes the outage impossible to miss.
+  useEffect(() => {
+    let alive = true;
+    const ping = () => api.health().then(() => alive && setBackendDown(false)).catch(() => alive && setBackendDown(true));
+    ping();
+    const t = setInterval(ping, 5000);
+    return () => { alive = false; clearInterval(t); };
+  }, []);
   const goHome = () => setRoute({ name: "home" });
   const goBoard = () => setRoute({ name: "board" });
   const goIntake = () => setRoute({ name: "intake" });
   const goQueue = () => setRoute({ name: "queue" });
   const goInsights = () => setRoute({ name: "insights" });
   const goLibrary = () => setRoute({ name: "library" });
-  const goAutopilot = () => setRoute({ name: "autopilot" });
 
-  const NAMED: Record<string, string> = { board: "Create videos", intake: "Ideas", queue: "Schedule", insights: "Results", library: "Downloads", autopilot: "Autopilot" };
+  const NAMED: Record<string, string> = { board: "Create videos", intake: "Ideas", queue: "Schedule", insights: "Results", library: "Downloads" };
   const crumbLabel = NAMED[route.name] ?? null;
   const sbView = (route.name === "video" ? "board"
-    : ["board", "intake", "queue", "insights", "library", "autopilot"].includes(route.name) ? route.name : "home") as any;
+    : ["board", "intake", "queue", "insights", "library"].includes(route.name) ? route.name : "home") as any;
 
   return (
     <div className="shell">
-      <Sidebar view={sbView} onHome={goHome} onBoard={goBoard} onIntake={goIntake} onQueue={goQueue} onInsights={goInsights} onLibrary={goLibrary} onAutopilot={goAutopilot} />
+      <Sidebar view={sbView} onHome={goHome} onBoard={goBoard} onIntake={goIntake} onQueue={goQueue} onInsights={goInsights} onLibrary={goLibrary} />
       <main className="main">
+        {backendDown && (
+          <div className="backend-down-banner" role="alert">
+            ⚠ Backend offline — your edits are <b>NOT</b> saving. It auto-restarts in a couple of seconds; this clears on its own when it's back.
+          </div>
+        )}
         <header className="topbar">
           <div className="crumbs">
             {route.name === "video"
@@ -66,7 +79,6 @@ export default function App() {
         {route.name === "queue" && <Queue />}
         {route.name === "insights" && <Insights />}
         {route.name === "library" && <Library />}
-        {route.name === "autopilot" && <Autopilot onOpen={(tid) => setRoute({ name: "video", tid })} />}
         {route.name === "home" && <Home presets={presets} onOpen={(pid) => setRoute({ name: "project", pid })} />}
         {route.name === "project" && (
           <MomentsGrid pid={route.pid} onName={setProjName}
@@ -88,100 +100,26 @@ export default function App() {
 }
 
 /* ------------------------------ Autopilot ------------------------------ */
-// The autonomous driver's control room: turn the loop on/off, watch the queue,
-// and approve / reject / regenerate each gated video with one click.
+// Autopilot is no longer a separate place — it's a per-video MODE plus a control strip on the
+// board. A gated video ("waiting for you") surfaces as a badge on its card and in the "Needs
+// you" filter; approve / regenerate / kill live in the video workspace. These are the shared bits.
 const GATE_LABEL: Record<string, string> = {
   awaiting_approval: "Needs your OK", awaiting_footage: "Needs footage",
   parked: "Parked", running: "Working…", done: "Posted",
 };
-function Autopilot({ onOpen }: { onOpen: (tid: number) => void }) {
+// A ticket is "waiting for you" when it's paused at an approval or footage gate.
+const isGated = (t: Ticket) => t.gate === "awaiting_approval" || t.gate === "awaiting_footage";
+// The gate points a supervised video will pause at, shown so autopilot's behavior is legible.
+const GATE_POINTS = "Pauses for you at: ✍️ script · 🎬 reel · 📤 post";
+
+// Shared autopilot loop controls (start/stop/run-once) + the gated queue, polled together.
+// Used by the board header strip and to drive card badges.
+function useAutopilot() {
   const [state, setState] = useState<AutopilotState | null>(null);
-  const [busy, setBusy] = useState(false);
-  const toast = useToast();
   const refresh = () => api.autopilotState().then(setState).catch(() => {});
   useEffect(() => { refresh(); const t = setInterval(refresh, 5000); return () => clearInterval(t); }, []);
-
-  const act = async (fn: () => Promise<unknown>, ok: string) => {
-    setBusy(true);
-    try { await fn(); toast(ok, "ok"); refresh(); }
-    catch (e: any) { toast(`Failed: ${e?.message || e}`, "err"); } finally { setBusy(false); }
-  };
-
-  const queue = state?.queue ?? [];
-  const waiting = queue.filter((t) => t.gate === "awaiting_approval" || t.gate === "awaiting_footage");
-  const parked = queue.filter((t) => t.gate === "parked");
-  const running = queue.filter((t) => !t.gate || t.queue_kind === "running");
-  const posted = queue.filter((t) => t.stage === "posted");
-
-  return (
-    <div className="page">
-      <div className="page-head">
-        <h2>Autopilot</h2>
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <span className={"ap-dot" + (state?.running ? " on" : "")} />
-          <span className="muted" style={{ fontSize: 13 }}>{state?.running ? "Running" : "Paused"}</span>
-          {state?.running
-            ? <button onClick={() => act(api.autopilotStop, "Autopilot paused")} disabled={busy}>Pause</button>
-            : <button className="primary" onClick={() => act(api.autopilotStart, "Autopilot running")} disabled={busy}>Start</button>}
-          <button onClick={() => act(() => api.autopilotTick(), "Advanced one step")} disabled={busy} title="Advance every enrolled video one step now">Run once</button>
-        </div>
-      </div>
-      <div className="ap-digest">
-        <span><b>{waiting.length}</b> awaiting you</span>
-        <span><b>{running.length}</b> working</span>
-        <span><b>{parked.length}</b> parked</span>
-        <span><b>{posted.length}</b> posted</span>
-      </div>
-
-      {queue.length === 0 && (
-        <div className="empty"><div className="big" style={{ fontSize: 26 }}>🤖</div>
-          <div style={{ fontWeight: 700, color: "var(--text)" }}>No videos on autopilot yet</div>
-          <div>Open a video and turn on <b>Autopilot</b> to let the app draft, assemble, and queue it for you.</div>
-        </div>
-      )}
-
-      {waiting.length > 0 && <h3 className="ap-sec">Waiting for you ({waiting.length})</h3>}
-      {waiting.map((t) => (
-        <div key={t.id} className="ap-card ap-wait">
-          <div className="ap-card-main" onClick={() => onOpen(t.id)}>
-            <div className="ap-hook">{t.hook_text || t.angle || "Untitled"}</div>
-            <div className="ap-sub">{t.brand} · {GATE_LABEL[t.gate || "running"]}{t.gate_reason ? ` — ${t.gate_reason}` : ""}</div>
-          </div>
-          <div className="ap-actions" onClick={(e) => e.stopPropagation()}>
-            {t.gate === "awaiting_footage"
-              ? <button className="primary" onClick={() => onOpen(t.id)}>Add footage</button>
-              : <button className="primary" onClick={() => act(() => api.autopilotApprove(t.id), "Approved")} disabled={busy}>Approve</button>}
-            <button onClick={() => act(() => api.autopilotRegenerate(t.id), "Regenerating")} disabled={busy}>Regenerate</button>
-            <button className="danger" onClick={() => act(() => api.autopilotReject(t.id), "Removed from autopilot")} disabled={busy}>Kill</button>
-          </div>
-        </div>
-      ))}
-
-      {parked.length > 0 && <h3 className="ap-sec">Parked — needs a fix ({parked.length})</h3>}
-      {parked.map((t) => (
-        <div key={t.id} className="ap-card ap-parked">
-          <div className="ap-card-main" onClick={() => onOpen(t.id)}>
-            <div className="ap-hook">{t.hook_text || t.angle || "Untitled"}</div>
-            <div className="ap-sub">{t.brand} · {t.gate_reason || "parked"}</div>
-          </div>
-          <div className="ap-actions" onClick={(e) => e.stopPropagation()}>
-            <button onClick={() => act(() => api.autopilotRegenerate(t.id), "Retrying")} disabled={busy}>Retry</button>
-            <button className="danger" onClick={() => act(() => api.autopilotReject(t.id), "Removed")} disabled={busy}>Kill</button>
-          </div>
-        </div>
-      ))}
-
-      {running.length > 0 && <h3 className="ap-sec">Working ({running.length})</h3>}
-      {running.map((t) => (
-        <div key={t.id} className="ap-card" onClick={() => onOpen(t.id)}>
-          <div className="ap-card-main">
-            <div className="ap-hook">{t.hook_text || t.angle || "Untitled"}</div>
-            <div className="ap-sub">{t.brand} · {phaseLabel(t.stage)}</div>
-          </div>
-        </div>
-      ))}
-    </div>
-  );
+  const gated = (state?.queue ?? []).filter(isGated);
+  return { state, refresh, gated };
 }
 
 /* ------------------------------- Board --------------------------------- */
@@ -213,11 +151,24 @@ const modeIcon = (m: string) => MODE_ICONS[m] ?? "🎬";
 function Board({ presets, onOpenTicket }: { presets: Presets | null; onOpenTicket: (tid: number) => void }) {
   const [tickets, setTickets] = useState<Ticket[] | null>(null);
   const [showNew, setShowNew] = useState(false);
+  const [needsYouOnly, setNeedsYouOnly] = useState(false);
+  const [apBusy, setApBusy] = useState(false);
   const toast = useToast();
   const confirm = useConfirm();
+  const { state: apState, refresh: refreshAp, gated } = useAutopilot();
 
   const refresh = () => api.listTickets().then(setTickets).catch(() => {});
   useEffect(() => { refresh(); const t = setInterval(refresh, 4000); return () => clearInterval(t); }, []);
+
+  // Gate lookup by ticket id (from the autopilot queue) so cards can show a "waiting" badge.
+  const gateById = useMemo(() => new Map(gated.map((t) => [t.id, t])), [gated]);
+  const gatedCount = gated.length;
+
+  const apAct = async (fn: () => Promise<unknown>, ok: string) => {
+    setApBusy(true);
+    try { await fn(); toast(ok, "ok"); refreshAp(); refresh(); }
+    catch (e: any) { toast(`Failed: ${e?.message || e}`, "err"); } finally { setApBusy(false); }
+  };
 
   const move = async (t: Ticket, dir: 1 | -1) => {
     const j = phaseOf(t.stage) + dir;
@@ -231,12 +182,29 @@ function Board({ presets, onOpenTicket }: { presets: Presets | null; onOpenTicke
     catch (e: any) { toast(`Delete failed: ${e?.message || e}`, "err"); }
   };
 
+  const visible = (list: Ticket[]) => needsYouOnly ? list.filter((t) => gateById.has(t.id)) : list;
+
   return (
     <div className="board-page">
       <div className="page-head">
         <h2>Create videos</h2>
         <button className="primary" onClick={() => setShowNew(true)}>+ New video</button>
       </div>
+
+      {/* Autopilot control strip — the whole autonomous flow lives here now, not a separate tab. */}
+      <div className="ap-strip">
+        <span className={"ap-dot" + (apState?.running ? " on" : "")} />
+        <span className="ap-strip-label">Autopilot {apState?.running ? "running" : "paused"}</span>
+        {apState?.running
+          ? <button onClick={() => apAct(api.autopilotStop, "Autopilot paused")} disabled={apBusy}>Pause</button>
+          : <button className="primary" onClick={() => apAct(api.autopilotStart, "Autopilot running")} disabled={apBusy}>Start</button>}
+        <button onClick={() => apAct(() => api.autopilotTick(), "Advanced one step")} disabled={apBusy} title="Advance every video that's on autopilot by one step now">Run once</button>
+        <button className={"ap-needs" + (needsYouOnly ? " on" : "")} disabled={gatedCount === 0 && !needsYouOnly}
+          onClick={() => setNeedsYouOnly((v) => !v)} title="Show only videos paused for your approval">
+          {needsYouOnly ? "✓ " : ""}Needs you ({gatedCount})
+        </button>
+      </div>
+
       <div className="how-banner">
         <span className="how-step"><b>1</b> Save an idea</span><span className="how-arrow">→</span>
         <span className="how-step"><b>2</b> Write &amp; film it</span><span className="how-arrow">→</span>
@@ -247,13 +215,13 @@ function Board({ presets, onOpenTicket }: { presets: Presets | null; onOpenTicke
       {tickets == null ? <div className="muted">Loading…</div> : (
         <div className="board">
           {PHASES.map((ph) => {
-            const col = tickets.filter((t) => ph.stages.includes(t.stage));
+            const col = visible(tickets.filter((t) => ph.stages.includes(t.stage)));
             return (
               <div className={"board-col cv-lane cv-" + ph.key} key={ph.key}>
                 <div className="board-col-head"><span className="cv-lane-dot" /><span>{ph.label}</span><span className="board-count">{col.length}</span></div>
                 <div className="board-col-body">
-                  {col.map((t) => <TicketCard key={t.id} t={t} onOpen={() => onOpenTicket(t.id)} onMove={move} onDelete={del} />)}
-                  {col.length === 0 && <div className="cv-lane-empty">{PHASE_HINT[ph.key]}</div>}
+                  {col.map((t) => <TicketCard key={t.id} t={t} gate={gateById.get(t.id)} onOpen={() => onOpenTicket(t.id)} onMove={move} onDelete={del} />)}
+                  {col.length === 0 && <div className="cv-lane-empty">{needsYouOnly ? "Nothing waiting here" : PHASE_HINT[ph.key]}</div>}
                 </div>
               </div>
             );
@@ -265,13 +233,19 @@ function Board({ presets, onOpenTicket }: { presets: Presets | null; onOpenTicke
   );
 }
 
-function TicketCard({ t, onOpen, onMove, onDelete }: {
-  t: Ticket; onOpen: () => void; onMove: (t: Ticket, d: 1 | -1) => void; onDelete: (t: Ticket) => void;
+function TicketCard({ t, gate, onOpen, onMove, onDelete }: {
+  t: Ticket; gate?: Ticket; onOpen: () => void; onMove: (t: Ticket, d: 1 | -1) => void; onDelete: (t: Ticket) => void;
 }) {
   const i = phaseOf(t.stage);
   const made = !!t.clip_url;
   return (
-    <div className="tkt-card" onClick={onOpen} title="Open">
+    <div className={"tkt-card" + (gate ? " tkt-gated" : "")} onClick={onOpen} title="Open">
+      {(gate || t.autopilot) && (
+        <div className="tkt-badges">
+          {t.autopilot && <span className="tkt-ap" title="On autopilot">🤖</span>}
+          {gate && <span className="tkt-gate" title={gate.gate_reason || ""}>⏸ {GATE_LABEL[gate.gate || "awaiting_approval"]}</span>}
+        </div>
+      )}
       <div className="tkt-thumb">
         {made ? (
           <img src={api.ticketThumbUrl(t.id)} alt="" loading="lazy"
@@ -437,6 +411,11 @@ function VideoWorkspace({ tid, presets, onBack, onOpenEditor }: { tid: number; p
 
   const modes = presets?.capture_modes ?? ["longform-clip", "native-short", "repurpose"];
 
+  const apAct = async (fn: () => Promise<unknown>, ok: string) => {
+    try { await fn(); toast(ok, "ok"); load(); }
+    catch (e: any) { toast(`Failed: ${e?.message || e}`, "err"); }
+  };
+
   return (
     <div className="page vw-page">
       {!data ? <div className="muted">Loading…</div> : (() => {
@@ -461,12 +440,29 @@ function VideoWorkspace({ tid, presets, onBack, onOpenEditor }: { tid: number; p
                   {modes.map((m) => <option key={m} value={m}>{modeLabel(m)}</option>)}
                 </select>
                 <button className={"vw-ap-toggle" + (ticket.autopilot ? " on" : "")}
-                  title="Let Autopilot draft, assemble, and queue this video for you"
-                  onClick={async () => { try { await api.autopilotToggle(tid, !ticket.autopilot); load(); toast(ticket.autopilot ? "Autopilot off for this video" : "On autopilot — check the Autopilot tab", "ok"); } catch (e: any) { toast(`Failed: ${e?.message || e}`, "err"); } }}>
+                  title={ticket.autopilot ? GATE_POINTS : "Let Autopilot draft, assemble, and queue this video — pausing for your OK at each step"}
+                  onClick={() => apAct(() => api.autopilotToggle(tid, !ticket.autopilot),
+                    ticket.autopilot ? "Autopilot off for this video" : "On autopilot — it'll pause here for your approval at each step")}>
                   🤖 {ticket.autopilot ? "On autopilot" : "Autopilot"}
                 </button>
               </div>
             </div>
+
+            {ticket.autopilot && !isGated(ticket) && (
+              <div className="vw-ap-hint">🤖 {GATE_POINTS}</div>
+            )}
+            {isGated(ticket) && (
+              <div className="vw-gate">
+                <div className="vw-gate-msg">⏸ <b>{GATE_LABEL[ticket.gate || "awaiting_approval"]}</b>{ticket.gate_reason ? ` — ${ticket.gate_reason}` : ""}</div>
+                <div className="vw-gate-actions">
+                  {ticket.gate === "awaiting_footage"
+                    ? <span className="muted" style={{ fontSize: 12.5 }}>Add footage to the scenes below — it continues on its own once every proof scene has a clip.</span>
+                    : <button className="primary" onClick={() => apAct(() => api.autopilotApprove(tid), "Approved — it'll continue on the next tick")}>Approve</button>}
+                  <button onClick={() => apAct(() => api.autopilotRegenerate(tid), "Regenerating this step")}>Regenerate</button>
+                  <button className="danger" onClick={() => apAct(() => api.autopilotReject(tid), "Autopilot turned off — you're driving")}>Kill autopilot</button>
+                </div>
+              </div>
+            )}
 
             <div className="vw-stepper">
               {PHASES.map((p, j) => (
@@ -551,6 +547,8 @@ function VideoWorkspace({ tid, presets, onBack, onOpenEditor }: { tid: number; p
                     </div>
                   )}
                 </div>
+
+                <PostCopyCard ticket={ticket} onChanged={load} toast={toast} />
               </div>
             </div>
           </>
@@ -615,6 +613,60 @@ function BeatRow({ b, first, last, onChanged, onReorder, toast }: {
   );
 }
 
+/* Publish copy (Ticket.post_meta): captions/hashtags/title written from the
+   video's own script — kills the "find the script and ask Claude" step. */
+function PostCopyCard({ ticket, onChanged, toast }: { ticket: Ticket; onChanged: () => void; toast: Notify }) {
+  const [busy, setBusy] = useState(false);
+  const pm = ticket.post_meta;
+  const gen = async () => {
+    setBusy(true);
+    try { await api.generatePostCopy(ticket.id); toast("Post copy ready", "ok"); onChanged(); }
+    catch (e: any) { toast(`Failed: ${e?.message || e}`, "err"); } finally { setBusy(false); }
+  };
+  const save = async (next: PostMeta) => {
+    try { await api.patchTicket(ticket.id, { post_meta: next }); onChanged(); }
+    catch (e: any) { toast(`Save failed: ${e?.message || e}`, "err"); }
+  };
+  const key = (s: string) => s + (pm ? JSON.stringify(pm).length : 0); // remount on regenerate
+  return (
+    <div className="vw-card">
+      <h4>📣 Post copy</h4>
+      {!pm ? (
+        <>
+          <div className="muted" style={{ fontSize: 12.5, marginBottom: 8 }}>
+            Captions, hashtags & YouTube title — written from this video's own script.
+          </div>
+          <button className="primary" onClick={gen} disabled={busy}>{busy ? "Writing…" : "🪄 Write my post copy"}</button>
+        </>
+      ) : (
+        <div className="postcopy">
+          <label className="pc-lab">TikTok
+            <textarea rows={2} key={key("ttc")} defaultValue={pm.tt.caption} placeholder="caption"
+              onBlur={(e) => e.target.value !== pm.tt.caption && save({ ...pm, tt: { ...pm.tt, caption: e.target.value } })} />
+            <input key={key("tth")} defaultValue={pm.tt.hashtags} placeholder="#hashtags"
+              onBlur={(e) => e.target.value !== pm.tt.hashtags && save({ ...pm, tt: { ...pm.tt, hashtags: e.target.value } })} />
+          </label>
+          <label className="pc-lab">Instagram
+            <textarea rows={2} key={key("igc")} defaultValue={pm.ig.caption} placeholder="caption"
+              onBlur={(e) => e.target.value !== pm.ig.caption && save({ ...pm, ig: { ...pm.ig, caption: e.target.value } })} />
+            <input key={key("igh")} defaultValue={pm.ig.hashtags} placeholder="#hashtags"
+              onBlur={(e) => e.target.value !== pm.ig.hashtags && save({ ...pm, ig: { ...pm.ig, hashtags: e.target.value } })} />
+          </label>
+          <label className="pc-lab">YouTube
+            <input key={key("ytt")} defaultValue={pm.yt.title} placeholder="title"
+              onBlur={(e) => e.target.value !== pm.yt.title && save({ ...pm, yt: { ...pm.yt, title: e.target.value } })} />
+            <textarea rows={2} key={key("ytd")} defaultValue={pm.yt.description} placeholder="description"
+              onBlur={(e) => e.target.value !== pm.yt.description && save({ ...pm, yt: { ...pm.yt, description: e.target.value } })} />
+            <input key={key("ytg")} defaultValue={pm.yt.tags} placeholder="tags (comma-separated)"
+              onBlur={(e) => e.target.value !== pm.yt.tags && save({ ...pm, yt: { ...pm.yt, tags: e.target.value } })} />
+          </label>
+          <button onClick={gen} disabled={busy} style={{ alignSelf: "flex-start" }}>{busy ? "Writing…" : "↻ Rewrite it"}</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ReimportBox({ tid, onDone, empty }: { tid: number; onDone: () => void; empty?: boolean }) {
   const [open, setOpen] = useState(!!empty);
   const [script, setScript] = useState("");
@@ -634,6 +686,174 @@ function ReimportBox({ tid, onDone, empty }: { tid: number; onDone: () => void; 
         {!empty && <button onClick={() => setOpen(false)} disabled={busy}>Cancel</button>}
         <button className="primary" onClick={run} disabled={busy || !script.trim()}>{busy ? "Working…" : "Use this script"}</button>
       </div>
+    </div>
+  );
+}
+
+/* ----------------------------- Shoot drop ------------------------------ */
+/* Editor-style sorting board: dump raw footage, then SEE each clip as a thumbnail
+   and DRAG it onto the scene it belongs to. Clips you talk in still auto-match by
+   what was said; silent B-roll (you voice it over later) waits in the bin for you
+   to place it by hand — never swept into a wrongly-invented video. */
+function ShootDrop() {
+  const [data, setData] = useState<ShootdropData | null>(null);
+  const [dragOver, setDragOver] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [preview, setPreview] = useState<IngestClipInfo | null>(null);
+  const [dropTarget, setDropTarget] = useState<string | null>(null); // hovered slot: beat id or "new"
+  const fileInput = useRef<HTMLInputElement>(null);
+  const toast = useToast();
+
+  const refresh = () => api.shootdropStatus().then(setData).catch(() => {});
+  useEffect(() => { refresh(); }, []);
+  const working = !!data?.clips.some((c) => c.status === "pending" || c.status === "transcribing");
+  useEffect(() => {
+    const t = setInterval(refresh, working ? 2500 : 10000);
+    return () => clearInterval(t);
+  }, [working]);
+
+  const send = async (files: File[]) => {
+    const vids = files.filter((f) => f.type.startsWith("video/") || /\.(mp4|mov|m4v|webm|mkv|avi)$/i.test(f.name));
+    if (!vids.length) { toast("Drop video files here", "err"); return; }
+    setBusy(true);
+    try {
+      const r = await api.shootdropUpload(vids);
+      toast(`Got ${r.count} clip${r.count > 1 ? "s" : ""} — reading them now`, "ok");
+      refresh();
+    } catch (e: any) { toast(`Upload failed: ${e?.message || e}`, "err"); } finally { setBusy(false); }
+  };
+
+  const assignTo = async (clipId: number, beatId: number) => {
+    try { await api.shootdropAssign(clipId, { beat_id: beatId }); toast("Linked to that scene", "ok"); refresh(); }
+    catch (e: any) { toast(`Failed: ${e?.message || e}`, "err"); }
+  };
+  const assignNew = async (clipId: number) => {
+    try { await api.shootdropAssign(clipId, { new_ticket: true }); toast("Started a new video from this clip", "ok"); refresh(); }
+    catch (e: any) { toast(`Failed: ${e?.message || e}`, "err"); }
+  };
+  const discard = async (c: IngestClipInfo) => {
+    try { await api.shootdropDiscard(c.id); toast("Clip discarded", "ok"); refresh(); }
+    catch (e: any) { toast(`Failed: ${e?.message || e}`, "err"); }
+  };
+
+  const clips = data?.clips ?? [];
+  const placedClip = (c: IngestClipInfo) => c.status === "matched" || c.status === "assigned";
+  const canDrag = (c: IngestClipInfo) => c.status !== "pending" && c.status !== "transcribing";
+
+  const clipBadge = (c: IngestClipInfo) => {
+    if (c.status === "pending") return <span className="sd-chip">⏳ waiting</span>;
+    if (c.status === "transcribing") return <span className="sd-chip busy">👂 reading…</span>;
+    if (c.status === "error") return <span className="sd-chip err" title={c.error || ""}>⚠ couldn't read — drag it anyway</span>;
+    if (placedClip(c)) {
+      const scene = c.scene_index != null ? ` · scene ${c.scene_index + 1}` : "";
+      return <span className="sd-chip ok">✓ {c.ticket_label || "video"}{scene}</span>;
+    }
+    return <span className="sd-chip warn">drag me onto a scene →</span>;
+  };
+
+  // Group the open scenes by their video (ticket) for the drop column.
+  const videos: { ticket_id: number; label: string; scenes: OpenScene[] }[] = [];
+  const byTicket = new Map<number, number>();
+  for (const s of data?.open_scenes ?? []) {
+    if (!byTicket.has(s.ticket_id)) {
+      byTicket.set(s.ticket_id, videos.length);
+      videos.push({ ticket_id: s.ticket_id, label: s.ticket_label, scenes: [] });
+    }
+    videos[byTicket.get(s.ticket_id)!].scenes.push(s);
+  }
+
+  const dropOn = (e: RDragEvent, fn: (id: number) => void) => {
+    e.preventDefault(); setDropTarget(null);
+    const id = Number(e.dataTransfer.getData("text/clipid"));
+    if (id) fn(id);
+  };
+
+  return (
+    <div className="shootdrop">
+      <div className="page-head" style={{ marginBottom: 10 }}>
+        <h3 style={{ margin: 0 }}>📼 Shoot drop</h3>
+        <span className="muted">dump your raw recordings, then drag each clip onto the scene it belongs to</span>
+      </div>
+      <div
+        className={"sd-zone" + (dragOver ? " over" : "")}
+        onClick={() => fileInput.current?.click()}
+        onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+        onDragLeave={() => setDragOver(false)}
+        onDrop={(e) => { e.preventDefault(); setDragOver(false); send(Array.from(e.dataTransfer.files)); }}
+      >
+        <div>{busy ? "Uploading…" : "Drag your whole shoot here (or click). Clips you talk in get placed automatically; the rest wait below for you to drag."}</div>
+        {data?.watch_dir && (
+          <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>
+            …or just copy files into <b>{data.watch_dir}</b> — that folder is watched.
+          </div>
+        )}
+        <input ref={fileInput} type="file" accept="video/*" multiple hidden
+          onChange={(e) => { if (e.target.files?.length) send(Array.from(e.target.files)); e.target.value = ""; }} />
+      </div>
+
+      {clips.length > 0 && (
+        <div className="sd-board">
+          {/* Left: the clips, as draggable thumbnails (a media bin). */}
+          <div className="sd-col">
+            <div className="sd-col-h">Your clips <span className="muted">({clips.length})</span></div>
+            <div className="sd-bin">
+              {clips.map((c) => (
+                <div key={c.id}
+                  className={"sd-clip" + (placedClip(c) ? " placed" : "") + (canDrag(c) ? "" : " waiting")}
+                  draggable={canDrag(c)}
+                  onDragStart={(e) => e.dataTransfer.setData("text/clipid", String(c.id))}>
+                  <div className="sd-thumb" onClick={() => setPreview(c)} title="Click to watch">
+                    <img src={api.shootdropClipThumbUrl(c.id)} alt=""
+                      onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = "none"; }} />
+                    <span className="sd-play">▶</span>
+                  </div>
+                  <div className="sd-clip-meta">
+                    <div className="sd-clip-name" title={c.filename}>{c.filename}</div>
+                    {clipBadge(c)}
+                  </div>
+                  <button className="icon-btn danger sd-clip-x" title="Discard this clip" onClick={() => discard(c)}>🗑</button>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Right: the videos' empty scenes, as drop targets. */}
+          <div className="sd-col">
+            <div className="sd-col-h">Drop onto a scene</div>
+            {videos.length === 0 ? (
+              <div className="muted sd-noscenes">
+                No open scenes yet. Make a video in <b>Create videos</b> (write or generate a script),
+                or drag a clip onto the box below to start a fresh one.
+              </div>
+            ) : videos.map((v) => (
+              <div className="sd-vid" key={v.ticket_id}>
+                <div className="sd-vid-h" title={v.label}>{v.label}</div>
+                {v.scenes.map((s) => (
+                  <div key={s.beat_id}
+                    className={"sd-slot" + (dropTarget === `b${s.beat_id}` ? " over" : "")}
+                    onDragOver={(e) => { e.preventDefault(); setDropTarget(`b${s.beat_id}`); }}
+                    onDragLeave={() => setDropTarget((t) => (t === `b${s.beat_id}` ? null : t))}
+                    onDrop={(e) => dropOn(e, (id) => assignTo(id, s.beat_id))}>
+                    <span className="sd-slot-n">Scene {s.order_index + 1}</span>
+                    <span className="sd-slot-line">{s.line || <span className="muted">(no script line)</span>}</span>
+                  </div>
+                ))}
+              </div>
+            ))}
+            <div className={"sd-slot sd-newvid" + (dropTarget === "new" ? " over" : "")}
+              onDragOver={(e) => { e.preventDefault(); setDropTarget("new"); }}
+              onDragLeave={() => setDropTarget((t) => (t === "new" ? null : t))}
+              onDrop={(e) => dropOn(e, assignNew)}>
+              ✨ Drop a clip here to start a brand-new video from it
+            </div>
+          </div>
+        </div>
+      )}
+      {preview && (
+        <VideoModal src={api.shootdropClipUrl(preview.id)}
+          title={preview.transcript ? `“${preview.transcript.slice(0, 120)}”` : preview.filename}
+          onClose={() => setPreview(null)} />
+      )}
     </div>
   );
 }
@@ -658,7 +878,8 @@ function Intake({ onSpun }: { onSpun: () => void }) {
 
   return (
     <div className="page">
-      <div className="page-head"><h2>Ideas</h2><span className="muted">Save videos that inspire you — turn any one into a new video</span></div>
+      <ShootDrop />
+      <div className="page-head" style={{ marginTop: 28 }}><h2>Ideas</h2><span className="muted">Save videos that inspire you — turn any one into a new video</span></div>
       <div className="intake-form">
         <label className="field">What's the idea?<input value={f.angle} placeholder="e.g. hidden sugar in sauces" onChange={(e) => setF({ ...f, angle: e.target.value })} /></label>
         <div className="form-row">
@@ -1055,9 +1276,94 @@ function TrendChart({ trend }: { trend: InsightsData["trend"] }) {
   );
 }
 
+/* Fast bulk logger: pick ONE platform, then every video is a row with its four
+   number fields right there — tab through them all and hit Save once. No opening
+   each video, no 12-field panels. This is the everyday "log the numbers" screen. */
+const BULK_PLATS: ["tt" | "ig" | "yt", string][] = [["tt", "🎵 TikTok"], ["ig", "📸 Instagram"], ["yt", "▶ YouTube"]];
+type Nums = { views: number; follows: number; saves: number; sends: number };
+const ZERO_NUMS: Nums = { views: 0, follows: 0, saves: 0, sends: 0 };
+
+function BulkLogger({ videos, onLogged }: { videos: VideoPerf[]; onLogged: () => void }) {
+  const [pf, setPf] = useState<"tt" | "ig" | "yt">("tt");
+  const [q, setQ] = useState("");
+  const [edits, setEdits] = useState<Record<string, Nums>>({});
+  const [busy, setBusy] = useState(false);
+  const toast = useToast();
+
+  const keyOf = (v: VideoPerf) => `${v.video_kind}:${v.video_id}`;
+  // Switching platform clears in-progress edits so the grid shows that platform's saved numbers.
+  useEffect(() => { setEdits({}); }, [pf]);
+  const valOf = (v: VideoPerf): Nums => edits[keyOf(v)] ?? v.platforms[pf] ?? ZERO_NUMS;
+  const setField = (v: VideoPerf, field: keyof Nums, num: number) =>
+    setEdits((prev) => ({ ...prev, [keyOf(v)]: { ...valOf(v), [field]: num } }));
+
+  const shown = q.trim() ? videos.filter((v) => v.title.toLowerCase().includes(q.trim().toLowerCase())) : videos;
+  const changedCount = videos.filter((v) => edits[keyOf(v)]).length;
+
+  const saveAll = async () => {
+    const changed = videos.filter((v) => edits[keyOf(v)]);
+    if (!changed.length) { toast("Type some numbers first", "err"); return; }
+    setBusy(true);
+    try {
+      // Numbers only — brand is omitted so an already-set brand is never overwritten.
+      for (const v of changed) {
+        const d = valOf(v);
+        await api.logPerf({ video_kind: v.video_kind, video_id: v.video_id, platform: pf, ...d });
+      }
+      toast(`Saved ${changed.length} video${changed.length > 1 ? "s" : ""} 📈`, "ok");
+      setEdits({}); onLogged();
+    } catch (e: any) { toast(`Failed: ${e?.message || e}`, "err"); } finally { setBusy(false); }
+  };
+
+  return (
+    <div className="bulk-log">
+      <div className="bulk-bar">
+        <div className="bulk-tabs">
+          {BULK_PLATS.map(([id, label]) => (
+            <button key={id} className={"bulk-tab" + (pf === id ? " on" : "")} onClick={() => setPf(id)}>{label}</button>
+          ))}
+        </div>
+        {videos.length > 6 && <input className="vid-search" placeholder="Search…" value={q} onChange={(e) => setQ(e.target.value)} />}
+        <button className="primary" onClick={saveAll} disabled={busy || !changedCount}>
+          {busy ? "Saving…" : changedCount ? `Save ${changedCount}` : "Save"}
+        </button>
+      </div>
+      <div className="muted" style={{ fontSize: 12.5, margin: "2px 0 8px" }}>
+        Open your {BULK_PLATS.find(([id]) => id === pf)![1]} analytics, then type each video's numbers straight down the columns. Switch platforms up top; Save when done.
+      </div>
+      {videos.length === 0 ? (
+        <div className="muted">No posted videos yet.</div>
+      ) : (
+        <table className="ins-table bulk-grid">
+          <thead><tr><th>Video</th><th>Views</th><th>Follows</th><th>Saves</th><th>Shares</th></tr></thead>
+          <tbody>{shown.map((v) => {
+            const d = valOf(v);
+            const dirty = !!edits[keyOf(v)];
+            return (
+              <tr key={keyOf(v)} className={dirty ? "dirty" : ""}>
+                <td className="bulk-title">
+                  <span className={"exp-kind-tag " + (v.is_reel ? "reel" : "clip")}>{v.is_reel ? "reel" : "clip"}</span> {v.title}
+                </td>
+                {(["views", "follows", "saves", "sends"] as const).map((f) => (
+                  <td key={f}>
+                    <input type="number" min="0" value={d[f] || ""} placeholder="0"
+                      onFocus={(e) => e.target.select()}
+                      onChange={(e) => setField(v, f, parseInt(e.target.value || "0", 10) || 0)} />
+                  </td>
+                ))}
+              </tr>
+            );
+          })}</tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+
 /* Per-video, per-platform tracker: every reel/clip in one table with its TikTok /
    Instagram / YouTube numbers; pick one to enter or update all three at once. */
 function VideoTracker({ videos, onLogged }: { videos: VideoPerf[]; onLogged: () => void }) {
+  const [mode, setMode] = useState<"bulk" | "track">("bulk");
   const [sel, setSel] = useState<string>("");
   const [q, setQ] = useState("");
   const shown = q.trim()
@@ -1072,10 +1378,18 @@ function VideoTracker({ videos, onLogged }: { videos: VideoPerf[]; onLogged: () 
   return (
     <div className="perf-log">
       <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
-        <h3 className="ins-h" style={{ margin: 0 }}>Your videos <span className="muted">(track each across TikTok · Instagram · YouTube)</span></h3>
-        {videos.length > 6 && <input className="vid-search" placeholder="Search…" value={q} onChange={(e) => setQ(e.target.value)} />}
+        <h3 className="ins-h" style={{ margin: 0 }}>Your videos <span className="muted">(log the numbers fast, or open one)</span></h3>
+        <div className="row" style={{ gap: 8 }}>
+          {mode === "track" && videos.length > 6 && <input className="vid-search" placeholder="Search…" value={q} onChange={(e) => setQ(e.target.value)} />}
+          <div className="log-toggle">
+            <button className={mode === "bulk" ? "on" : ""} onClick={() => setMode("bulk")}>📋 Log numbers</button>
+            <button className={mode === "track" ? "on" : ""} onClick={() => setMode("track")}>🔍 One at a time</button>
+          </div>
+        </div>
       </div>
-      {videos.length === 0 ? (
+      {mode === "bulk" ? (
+        <BulkLogger videos={videos} onLogged={onLogged} />
+      ) : videos.length === 0 ? (
         <div className="muted">No reels or clips yet — make one, then track how it does on each platform here.</div>
       ) : (
         <table className="ins-table vid-table">
@@ -1111,7 +1425,8 @@ function VideoTracker({ videos, onLogged }: { videos: VideoPerf[]; onLogged: () 
   );
 }
 
-const BRANDS = ["NoCrapDiet", "SemSeo", "Real Dennis", "Missedyu"];
+// Dennis's real brands (see marketing memory). "Real Dennis"/tmpbrand were test cartridges, cut.
+const BRANDS = ["NoCrapDiet", "SemSeo", "Missedyu"];
 
 function PlatformEditor({ video, onLogged }: { video: VideoPerf; onLogged: () => void }) {
   const zero = { views: 0, follows: 0, saves: 0, sends: 0 };
@@ -1390,6 +1705,10 @@ function NewProject({ presets, onCreated }: { presets: Presets | null; onCreated
   const [transcribe, setTranscribe] = useState("local");
   const [brand, setBrand] = useState("NoCrapDiet");
   const [busy, setBusy] = useState(false); const toast = useToast();
+  // Default the transcription + brain picks to the backend defaults (CVIDEO_DEFAULT_TRANSCRIBE /
+  // CVIDEO_DEFAULT_BRAIN). Fires once when presets load; the stable dep never clobbers a later pick.
+  useEffect(() => { if (presets?.transcribe_default) setTranscribe(presets.transcribe_default); }, [presets?.transcribe_default]);
+  useEffect(() => { if (presets?.brains_default) setBrain(presets.brains_default); }, [presets?.brains_default]);
 
   const submit = async () => {
     if (!name.trim()) { toast("Give your project a name", "err"); return; }
@@ -1439,7 +1758,7 @@ function NewProject({ presets, onCreated }: { presets: Presets | null; onCreated
       </div>
       <div className="row" style={{ marginTop: 14, alignItems: "flex-end" }}>
         {genMode === "caption" && <label className="field">Brand<select value={brand} onChange={(e) => setBrand(e.target.value)}>{BRANDS.map((b) => <option key={b} value={b}>{b}</option>)}</select></label>}
-        {genMode === "moments" && <label className="field">Brain<select value={brain} onChange={(e) => setBrain(e.target.value)}>{(presets?.brains ?? ["ollama"]).map((b) => <option key={b}>{b}</option>)}</select></label>}
+        {genMode === "moments" && <label className="field">Brain<select value={brain} onChange={(e) => setBrain(e.target.value)}>{(presets?.brains ?? ["ollama"]).map((b) => <option key={b} value={b}>{b === "claude" ? "Claude (smartest)" : b === "ollama" ? "Local (free)" : b === "gemini" ? "Gemini" : "Basic (no AI)"}</option>)}</select></label>}
         <label className="field">Transcription<select value={transcribe} onChange={(e) => setTranscribe(e.target.value)}>{(presets?.transcribe ?? ["local"]).map((t) => <option key={t} value={t}>{t === "local" ? "Local (free)" : "ElevenLabs"}</option>)}</select></label>
         <label className="field">Aspect<select value={aspect} onChange={(e) => setAspect(e.target.value)}>{(presets?.aspects ?? ["9:16"]).map((a) => <option key={a}>{a}</option>)}</select></label>
         <label className="field">Caption style<select value={preset} onChange={(e) => setPreset(e.target.value)}>{(presets?.captions ?? ["capcut"]).map((c) => <option key={c}>{c}</option>)}</select></label>
@@ -1622,7 +1941,11 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
     cuts: jsonOr(clip.cuts_json, [] as [number, number][]),
     splits: jsonOr(clip.splits_json, [] as number[]),
   };
-  const { doc, set, undo, redo, canUndo, canRedo } = useHistory<EditDoc>(initDoc);
+  const { doc, set, reset, undo, redo, canUndo, canRedo } = useHistory<EditDoc>(initDoc);
+  const confirm = useConfirm();
+  // Snapshot of the doc exactly as it opened (captured once — initDoc recomputes from the
+  // clip prop, which the poll mutates after autosave). Powers "Revert to opened".
+  const openedDoc = useRef(initDoc);
 
   const [tool, setTool] = useState<string>("subs");
   const [subsTab, setSubsTab] = useState<"style" | "edit">("style");
@@ -1647,7 +1970,7 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
     const cap = Math.min(20, Math.max(4, Math.ceil(dur / 30)));
     return Math.min(cap, Math.max(1, Math.round((dur / len) * 0.5)));
   });
-  const [saveState, setSaveState] = useState<"idle" | "saving" | "saved">("idle");
+  const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [autoBusy, setAutoBusy] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
@@ -1680,7 +2003,27 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
   // Captions STAY when you trim or cut — we never silently replace them (that used
   // to wipe captions when you moved the clip). To instead pull the transcript text
   // for the current section, the "Match captions to this part" button calls this.
-  const resyncCaptions = () => { if (words.length) { setManualWords(false); set({ words: wordsInRange(words, doc.start, doc.end) }); } };
+  const resyncCaptions = async () => {
+    if (!words.length) return;
+    const next = wordsInRange(words, doc.start, doc.end);
+    // Guard: if the user has hand-edited captions, don't clobber them without a heads-up.
+    const changed = JSON.stringify(next.map((w) => w.word)) !== JSON.stringify(doc.words.map((w) => w.word));
+    if (changed && doc.words.length && !await confirm({
+      title: "Replace your captions?",
+      body: "This swaps the current captions for the transcript text of the trimmed section. You can undo it with Ctrl+Z.",
+      confirmLabel: "Replace",
+    })) return;
+    setManualWords(false); set({ words: next });
+  };
+  const revertToOpened = async () => {
+    if (!await confirm({
+      title: "Revert to how it opened?",
+      body: "Discards every edit you made this session (trims, cuts, captions, style) and restores the clip to the state it was in when you opened it.",
+      confirmLabel: "Revert", danger: true,
+    })) return;
+    reset(openedDoc.current);
+    toast("Reverted to how it opened", "ok");
+  };
 
   // STABLE timeline window = the WHOLE source video, so trimming can reach ANY
   // part of it (not just a margin around the current clip). Navigated by zoom +
@@ -1728,8 +2071,13 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
     if (firstRun.current) { firstRun.current = false; return; }
     setSaveState("saving");
     const id = setTimeout(async () => {
-      await api.patchClip(clip.id, { start: doc.start, end: doc.end, caption_preset: doc.preset, resolution: doc.resolution, crop_center: doc.center, style: doc.style, words: doc.words, title: doc.title, cuts: doc.cuts, splits: doc.splits });
-      setSaveState("saved"); onChange();
+      try {
+        await api.patchClip(clip.id, { start: doc.start, end: doc.end, caption_preset: doc.preset, resolution: doc.resolution, crop_center: doc.center, style: doc.style, words: doc.words, title: doc.title, cuts: doc.cuts, splits: doc.splits });
+        setSaveState("saved"); onChange();
+      } catch {
+        // Backend down / request failed — surface it instead of silently pretending we saved.
+        setSaveState("error");
+      }
     }, 800);
     return () => clearTimeout(id);
   }, [doc]);
@@ -1950,7 +2298,10 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
         <div className="ed2-top-right">
           <button className="icon-btn" disabled={!canUndo} onClick={undo} title="Undo (Ctrl+Z)">↶</button>
           <button className="icon-btn" disabled={!canRedo} onClick={redo} title="Redo (Ctrl+Shift+Z)">↷</button>
-          <span className="save-ind">{saveState === "saving" ? "Saving…" : saveState === "saved" ? "✓ Saved" : ""}</span>
+          <button className="icon-btn" disabled={!canUndo} onClick={revertToOpened} title="Revert to how this clip opened (discards this session's edits)">⟲</button>
+          <span className={"save-ind" + (saveState === "error" ? " save-err" : "")}>
+            {saveState === "saving" ? "Saving…" : saveState === "saved" ? "✓ Saved" : saveState === "error" ? "⚠ Not saved" : ""}
+          </span>
           <button className="primary" onClick={exportClip} disabled={busy || exporting}>{busy ? (clip.stage || "Rendering…") : exporting ? "Starting…" : rendered ? "Re-export" : "Export"}</button>
           {rendered && <button className="icon-btn" title="Download" onClick={() => downloadClip(clip.id, doc.title, toast)}>⬇</button>}
         </div>
@@ -2356,7 +2707,9 @@ function useHistory<T>(initial: T) {
   };
   const undo = () => setState((s) => (s.past.length ? { past: s.past.slice(0, -1), present: s.past[s.past.length - 1], future: [s.present, ...s.future] } : s));
   const redo = () => setState((s) => (s.future.length ? { past: [...s.past, s.present], present: s.future[0], future: s.future.slice(1) } : s));
-  return { doc: state.present, set, undo, redo, canUndo: state.past.length > 0, canRedo: state.future.length > 0 };
+  // Replace the whole document and clear history — used by "Revert to opened".
+  const reset = (next: T) => { clearTimeout(timer.current); pendingBase.current = null; setState({ past: [], present: next, future: [] }); };
+  return { doc: state.present, set, reset, undo, redo, canUndo: state.past.length > 0, canRedo: state.future.length > 0 };
 }
 
 /* The "Clips" tool: lists every block as an editable clip — select, fine-tune in/out,
@@ -2577,6 +2930,20 @@ function SceneVoicePanel({ cid, markers, sceneIdx, onSelectScene, sceneVos, setS
   const [busy, setBusy] = useState(false);
   const hasVoice = !!sceneVos[sceneIdx];
   const doneCount = sceneVos.filter(Boolean).length;
+  // AI voice (ElevenLabs TTS) for THIS scene — same picker + flow as the whole-clip VoicePanel.
+  const [voices, setVoices] = useState<{ voice_id: string; name: string }[]>([]);
+  const [voiceId, setVoiceId] = useState<string>("");
+  const [genBusy, setGenBusy] = useState(false);
+  useEffect(() => { api.ttsVoices().then((v) => { setVoices(v.voices); setVoiceId(v.default); }).catch(() => {}); }, []);
+  const genVoice = async () => {
+    if (previewMode !== "off") onStopPreview();
+    setGenBusy(true);
+    try {
+      const r = await api.sceneTtsVoiceover(cid, sceneIdx, voiceId || undefined);
+      setSceneVos(r.scene_vos); onChanged();
+      toast(`AI voice added to scene ${sceneIdx + 1}`, "ok");
+    } catch (e: any) { toast(`Voice generation failed: ${e?.message || e}`, "err"); } finally { setGenBusy(false); }
+  };
 
   const onStop = async () => { const blob = await stop(); onRecordStop(); if (blob) setPending({ blob, url: URL.createObjectURL(blob) }); };
   // Park the video on the scene start, then start the mic, then roll — capture begins
@@ -2614,6 +2981,19 @@ function SceneVoicePanel({ cid, markers, sceneIdx, onSelectScene, sceneVos, setS
       </div>
       {recording && <div className="muted vo-live">● Recording scene {sceneIdx + 1}… read along with the highlight.</div>}
       {error && <div className="err">{error}</div>}
+
+      {/* AI voice — let ElevenLabs read this scene instead of recording it */}
+      <div className="vo-ai">
+        <div className="muted" style={{ fontSize: 12.5, margin: "6px 0 6px" }}>…or let AI read this scene aloud:</div>
+        {voices.length > 0 && (
+          <select className="vo-voice" value={voiceId} onChange={(e) => setVoiceId(e.target.value)} disabled={genBusy || recording}>
+            {voices.map((v) => <option key={v.voice_id} value={v.voice_id}>{v.name}</option>)}
+          </select>
+        )}
+        <button className="big-btn" onClick={genVoice} disabled={genBusy || recording || !!pending}>
+          {genBusy ? "Generating…" : "🔊 Generate AI voice for this scene"}
+        </button>
+      </div>
       {pending && (
         <div className="vo-pending">
           <div className="muted" style={{ fontSize: 12.5, marginBottom: 6 }}>Listen to your take:</div>

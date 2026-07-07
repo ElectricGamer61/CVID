@@ -12,6 +12,18 @@ from __future__ import annotations
 from collections import defaultdict
 
 
+def perf_score(views: int = 0, follows: int = 0, saves: int = 0, sends: int = 0) -> float:
+    """The ONE in-app ranking score for a video / angle / platform.
+
+    Weights the needle metrics (a save and a follow are worth far more than a view) and
+    finally counts sends, which the app tracks but historically never scored. This is the
+    single source of truth for ordering INSIDE Cvideo (Results, top videos, angle ranking).
+    The Google Sheet still owns its own scoring for the content engine — see sheets.ROW_FIELDS.
+    Weights are deliberately simple; tune here and every ranking updates together."""
+    return round((saves or 0) * 3 + (follows or 0) * 5 + (sends or 0) * 2
+                 + (views or 0) * 0.001, 3)
+
+
 def winning_patterns(limit: int = 5, brand: str | None = None, min_views: int = 0) -> dict:
     """Aggregate logged performance into the account's top hooks / angles / caption styles,
     ranked by **saves + follows** (the needle metric, never views). Returns lists (possibly

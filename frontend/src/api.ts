@@ -63,11 +63,19 @@ export interface Presets {
   caption_styles: Record<string, CaptionStyle>;
   aspects: string[];
   brains: string[];
+  brains_default?: string;        // backend's CVIDEO_DEFAULT_BRAIN (claude | ollama | gemini | heuristic)
   transcribe: string[];
+  transcribe_default?: string;   // backend's CVIDEO_DEFAULT_TRANSCRIBE (local | elevenlabs)
   resolutions: ResolutionOption[];
   stages: string[];
   formats: string[];
   capture_modes: string[];
+}
+
+export interface PostMeta {
+  tt: { caption: string; hashtags: string };
+  ig: { caption: string; hashtags: string };
+  yt: { title: string; description: string; tags: string };
 }
 
 export interface Ticket {
@@ -83,6 +91,7 @@ export interface Ticket {
   hook_text: string;
   clip_url?: string | null;
   captions?: Record<string, string> | null;
+  post_meta?: PostMeta | null;
   platforms: string[];
   scheduled_at?: string | null;
   posted_at?: string | null;
@@ -183,6 +192,30 @@ export interface PostResult {
   results: Record<string, string>; message: string;
 }
 
+// --- Shoot drop (batch raw-footage intake) ---
+export interface IngestClipInfo {
+  id: number;
+  batch_id: string;
+  filename: string;
+  path: string;
+  transcript: string;
+  status: string;      // pending|transcribing|matched|unmatched|assigned|error
+  ticket_id?: number | null;
+  beat_id?: number | null;
+  confidence: number;  // matcher score 0..1 (0 = manual / new ticket)
+  error?: string | null;
+  ticket_label?: string;
+  scene_index?: number | null;
+}
+export interface OpenScene {
+  beat_id: number; ticket_id: number; order_index: number; line: string; ticket_label: string;
+}
+export interface ShootdropData {
+  clips: IngestClipInfo[];
+  watch_dir: string;
+  open_scenes: OpenScene[];
+}
+
 export interface ExportItem {
   kind: "clip" | "reel";
   id: number;
@@ -222,6 +255,7 @@ const jsonInit = (method: string, body?: unknown): RequestInit =>
   ({ method, headers: J, body: body === undefined ? undefined : JSON.stringify(body) });
 
 export const api = {
+  health: (): Promise<{ ok: boolean }> => req("/api/health"),
   presets: (): Promise<Presets> => req("/api/presets"),
   listProjects: (): Promise<Project[]> => req("/api/projects"),
   getProject: (id: number): Promise<{ project: Project; clips: Clip[] }> =>
@@ -326,6 +360,9 @@ export const api = {
   deleteSceneVoiceover: (cid: number, idx: number): Promise<{ ok: boolean }> =>
     req(`/api/clips/${cid}/scene-voiceover/${idx}`, { method: "DELETE" }),
   sceneVoiceoverUrl: (cid: number, idx: number) => `/api/clips/${cid}/scene-voiceover/${idx}`,
+  // AI voice for ONE scene of a reel (mirrors ttsVoiceover for the whole-clip path).
+  sceneTtsVoiceover: (cid: number, idx: number, voice_id?: string, text?: string): Promise<{ voiceover_path: string; scene_vos: (string | null)[] }> =>
+    req(`/api/clips/${cid}/scene-tts/${idx}`, jsonInit("POST", { voice_id, text })),
 
   // --- Autopilot (the autonomous orchestrator) ---
   autopilotState: (): Promise<AutopilotState> => req("/api/autopilot"),
@@ -347,6 +384,22 @@ export const api = {
     req(`/api/tickets/${tid}/script-factory`, jsonInit("POST", { brief })),
   hookForge: (tid: number, brief = ""): Promise<{ hooks: string[] }> =>
     req(`/api/tickets/${tid}/hook-forge`, jsonInit("POST", { brief })),
+  generatePostCopy: (tid: number): Promise<{ ticket: Ticket; post_meta: PostMeta }> =>
+    req(`/api/tickets/${tid}/post-copy`, { method: "POST" }),
+
+  // --- Shoot drop (batch raw-footage intake) ---
+  shootdropUpload: (files: File[]): Promise<{ batch_id: string; count: number }> => {
+    const fd = new FormData();
+    files.forEach((f) => fd.append("files", f));
+    return req("/api/shootdrop", { method: "POST", body: fd });
+  },
+  shootdropStatus: (): Promise<ShootdropData> => req("/api/shootdrop"),
+  shootdropClipUrl: (icid: number) => `/api/shootdrop/clips/${icid}/file`,
+  shootdropClipThumbUrl: (icid: number) => `/api/shootdrop/clips/${icid}/thumb`,
+  shootdropAssign: (icid: number, body: { beat_id?: number; new_ticket?: boolean }): Promise<IngestClipInfo> =>
+    req(`/api/shootdrop/clips/${icid}/assign`, jsonInit("POST", body)),
+  shootdropDiscard: (icid: number): Promise<{ discarded: number }> =>
+    req(`/api/shootdrop/clips/${icid}`, { method: "DELETE" }),
 
   // --- Outliers (swipe file) ---
   listOutliers: (): Promise<Outlier[]> => req("/api/outliers"),

@@ -32,7 +32,15 @@ OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_MODEL = os.getenv("CVIDEO_GEMINI_MODEL", "gemini-1.5-flash")
 
-DEFAULT_BRAIN = os.getenv("CVIDEO_DEFAULT_BRAIN", "ollama")  # ollama | gemini | heuristic
+# Claude (Anthropic) — the "smart brain": scripts, hooks, post copy, and viral-moment
+# picking. Uses the official `anthropic` SDK. When ANTHROPIC_API_KEY is set, Claude becomes
+# the DEFAULT brain (falls back to ollama/gemini/heuristic if a call fails). Opus 4.8 rejects
+# temperature/top_p — the Claude path ignores those (see pipeline/llm.py).
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+CLAUDE_MODEL = os.getenv("CVIDEO_CLAUDE_MODEL", "claude-opus-4-8")
+
+# claude | ollama | gemini | heuristic. Defaults to claude when the key is present.
+DEFAULT_BRAIN = os.getenv("CVIDEO_DEFAULT_BRAIN", "claude" if ANTHROPIC_API_KEY else "ollama")
 
 # Transcription backend: local (faster-whisper, free) | elevenlabs (Scribe, paid key)
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "")
@@ -41,6 +49,13 @@ ELEVENLABS_MODEL = os.getenv("CVIDEO_ELEVENLABS_MODEL", "scribe_v1")
 ELEVENLABS_VOICE_ID = os.getenv("CVIDEO_ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")
 ELEVENLABS_TTS_MODEL = os.getenv("CVIDEO_ELEVENLABS_TTS_MODEL", "eleven_turbo_v2_5")
 DEFAULT_TRANSCRIBE = os.getenv("CVIDEO_DEFAULT_TRANSCRIBE", "local")
+
+# --- Shoot Drop (batch raw-footage intake) ------------------------------------
+# Watched folder: copy raw phone clips here and the backend auto-ingests them
+# (transcribe -> match to open video scripts -> attach). Empty = watcher off;
+# the in-app drop zone works regardless.
+SHOOT_DROP_DIR = os.getenv("SHOOT_DROP_DIR", "")
+SHOOTDROP_DIR = DATA_DIR / "shootdrop"
 
 # --- Posting (Phase 6 schedule/post) -----------------------------------------
 # Upload-Post API key. When empty, the poster runs in DRY-RUN mode (logs instead

@@ -167,6 +167,25 @@ class Beat(SQLModel, table=True):
     caption_timings: Optional[list] = Field(default=None, sa_column=Column(JSON))
 
 
+class IngestClip(SQLModel, table=True):
+    """One raw shoot-drop recording moving through transcribe → match → attach.
+    Persists batch results so the review UI survives a backend restart."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    batch_id: str = Field(index=True)      # one drop of files = one batch
+    filename: str = ""                     # original filename off the phone
+    path: str = ""                         # current file location (renamed once matched)
+    mtime: float = 0.0                     # source file mtime = shooting order
+    transcript: str = ""
+    # pending|transcribing|matched|unmatched|assigned|discarded|error
+    # "matched" = auto-attached to a beat; "assigned" = user re-assigned by hand.
+    status: str = "pending"
+    ticket_id: Optional[int] = None
+    beat_id: Optional[int] = None
+    confidence: float = 0.0                # matcher score 0..1 (0 for manual/new-ticket)
+    error: Optional[str] = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
 class Perf(SQLModel, table=True):
     """One row per platform per posted VIDEO (MEASURE). A video is the actual exported
     asset you post — a rendered Clip ("clip") or an assembled ticket reel ("reel") — keyed

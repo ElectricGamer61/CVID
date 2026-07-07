@@ -27,3 +27,6 @@ editor/test-results/
 # os
 .DS_Store
 Thumbs.db
+
+# graphify generated cache (AST/stat index churn — regenerated on demand)
+graphify-out/cache/

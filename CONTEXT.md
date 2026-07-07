@@ -26,9 +26,32 @@ $env:Path = [System.Environment]::GetEnvironmentVariable('Path','Machine') + ';'
   `cd backend; .\.venv\Scripts\python.exe -m uvicorn app.main:app --port 8000`
 - **Frontend** (Vite, port 5173, proxies `/api` → 8000): `cd frontend; npm run dev`
 - One-click: **double-click `start.cmd`** (repo root) → `scripts\start.ps1` launches both + opens
-  http://localhost:5173. (`start.ps1` is ASCII-only — em-dash/`…` chars broke PowerShell 5.1 parsing.)
-- The backend reads `backend/.env` (gitignored) for API keys. **No `--reload`** — restart after
-  changing `.env` or backend code.
+  http://localhost:3000. (`start.ps1` is ASCII-only — em-dash/`…` chars broke PowerShell 5.1 parsing.)
+  **The backend runs in a supervised restart loop** (auto-restarts in ~2 s if uvicorn dies) with all
+  output tee'd to **`data/backend.log`**, in a **minimized** window (dodges the QuickEdit-freeze trap
+  where a click in the console pauses stdout and hangs the server).
+- The backend reads `backend/.env` (gitignored) for API keys. **No `--reload`** — the supervised loop
+  restarts on crash, but you still restart manually after changing `.env` or backend code.
+- **One-click launch:** the **Cvideo desktop shortcut** (and `open-cvideo.cmd`) runs
+  `scripts\open-cvideo.ps1` — starts the server only if it isn't already up (supervised, minimized,
+  local `127.0.0.1`), waits for `/api/health`, then opens the app in a **Chrome/Edge `--app` window**
+  (no tabs, looks native). ~3 s when the server's already running. Icon: `assets\cvideo.ico` (Pillow-
+  generated). **Health checks MUST use `127.0.0.1`, never `localhost`** — Windows resolves `localhost`
+  to IPv6 `::1` first but uvicorn listens on IPv4, so a `localhost` probe hangs ~2 s/try (this bit the
+  launcher: a 60 s hang + failed launch until switched to `127.0.0.1`).
+- **Server mode (one port, multi-device):** `scripts\serve.ps1` builds the UI and lets the **backend
+  serve it**, so the whole app is a single url on **port 8000 bound to `0.0.0.0`** — no Vite server,
+  no CORS. `main.py` mounts `frontend/dist` at `/` (StaticFiles, **only when `dist/` exists**, mounted
+  LAST so it never shadows `/api`; absent → dev falls back to the two-server Vite flow). Reach it from
+  another device on the same wifi at `http://<pc-ip>:8000`, or **from anywhere via Tailscale** (install
+  on both devices → `http://<tailscale-name>:8000`; the desktop keeps doing the GPU work, the other
+  device is just a screen). The React client already uses **relative `/api` paths**, so same-origin
+  serving needs zero code changes on the frontend. **`allow-network.cmd`** (self-elevating
+  `scripts\allow-network.ps1`) adds the one-time Windows Firewall rule (inbound TCP 8000, **Private
+  profile only**) so phone/laptop can connect. Same-wifi URL prints from the machine's LAN IP
+  (e.g. `http://192.168.12.110:8000`); "from anywhere" = install Tailscale on each device. The app is
+  mobile-usable (no horizontal overflow; Shoot Drop's drop zone is tappable → upload from the phone's
+  camera roll straight to the desktop engine), though heavy editing is best on a laptop/desktop.
 
 **Repo is under git** (branch `main`); `.gitignore` covers `data/`, `backend/.venv/`,
 `frontend/node_modules/`, `.env`, `*.log`, `*.tsbuildinfo`. Stack = FastAPI + SQLite + React with
@@ -59,7 +82,11 @@ via `render_scene_reel` (voice-first) or `assemble_ticket`.
   **`extract_voiceover()` = 48 kHz stereo** (for recorded voice that ends up in the export — do NOT
   run voiceovers through the 16 kHz Whisper path or they sound bad).
 - **transcribe.py** — `local` faster-whisper (GPU→CPU fallback) / `elevenlabs` Scribe. Output → `words.json`.
-- **brain.py** — viral-moment picker: `ollama`/`gemini`/`heuristic`. Virality-framework prompt,
+  **Runs in a subprocess** via `transcribe_worker.py` (`jobs._transcribe_subprocess` spawns
+  `python -m app.pipeline.transcribe_worker`): a native cuBLAS/cuDNN crash on the Blackwell GPU kills
+  only the child (non-zero exit → project marked errored), never the API. Progress streams back as
+  `PROGRESS <pct> <msg>` stdout lines. Trade-off: the whisper model reloads per analyze (no in-process cache).
+- **brain.py** — viral-moment picker: `claude`/`ollama`/`gemini`/`heuristic`. Virality-framework prompt,
   chunking + cross-chunk de-dupe, sentence-boundary snapping. Fields must be in `_CLIPS_SCHEMA` required.
 - **reframe.py** — 9:16 crop center via OpenCV **YuNet DNN** (+ Haar fallback). `crop_filter()` builds
   the ffmpeg crop+scale. **No MediaPipe.**
@@ -90,7 +117,23 @@ via `render_scene_reel` (voice-first) or `assemble_ticket`.
     takes exactly as long as you spoke (readable + natural). Scenes with no voice keep natural length.
   - **`assemble_ticket(ticket_id)`** — original native path (per-Beat render via `_render_beat` +
     concat) → `data/tickets/{id}/reel.mp4`. Proof-guard on number-claim beats.
-- **ai.py** — Script Factory + Hook Forge (reuse brain clients; heuristic fallbacks).
+- **ai.py** — Script Factory + Hook Forge + **`post_copy(brand, hook, script)`** (fills
+  `Ticket.post_meta` from the ticket's own script; reuse brain clients; heuristic fallbacks).
+- **shootdrop.py** — **Shoot Drop batch intake** (record → dump files → done): each raw clip is
+  transcribed (`jobs.transcribe_subprocess`, ElevenLabs when key set else local) then **matched by
+  what was said** (deterministic `match_score` = max(difflib ratio, 0.9·vocab-containment),
+  threshold 0.55) against open native tickets' unfilled beats → auto-attached
+  (`attach_clip_to_beat`, same write as the manual upload) + auto-named
+  `{ticket}_scene{N}.mp4`. Leftovers become a NEW ticket whose script is reverse-generated from
+  the transcripts (one beat per clip, mtime order). When a ticket's scenes all fill,
+  `after_footage` bumps stage→sourced + auto-fills `post_meta`. Rows persist in **`IngestClip`**.
+  Two entry points: `POST /api/shootdrop` (in-app drop zone) + a **watched folder**
+  (`SHOOT_DROP_DIR` in `backend/.env`; `jobs.start_shootdrop_watcher` polls every 10 s,
+  size-stable pickup, moves files out; unset = off).
+  **Silent B-roll is first-class:** `_transcript_for` returns `""` when a clip has no audio track
+  (extract_audio fails) or transcription hiccups — the clip becomes `unmatched` (waits in the board),
+  never errors. Only clips with `>= MIN_SPEECH_WORDS` (4) real words can auto-invent a reverse ticket,
+  so the common "I voice it over later" workflow leaves clips for manual drag-placement.
 
 `jobs.py` runs long-form analysis in a background thread. **`Project.mode`**: `moments` (default,
 run the brain) or `caption` (skip brain, make ONE full-length clip — used by "Just caption my clip"
@@ -120,7 +163,11 @@ uploads AND by `build-edit` reels).
 - **Beat** (script-as-timeline): ticket_id, order_index, spoken_line, on_screen_text, caption,
   shot_cue, clip_path?, voiceover_path?, is_proof_beat, **`caption_timings`** (JSON, nullable —
   per-word VO timing, filled in P4 for karaoke captions; words are known, audio only times them).
-- **Outlier** (swipe file), **Perf** (per-platform stats), **Angle** (`avg_score = avg(saves+follows)`).
+- **Outlier** (swipe file), **Perf** (per-platform stats), **Angle** (`avg_score` = avg of
+  `learn.perf_score` — see §7 scoring note; no longer a raw saves+follows sum).
+- **IngestClip** (Shoot Drop): batch_id, filename, path, mtime, transcript, status
+  (pending|transcribing|matched|unmatched|assigned|discarded|error), ticket_id?, beat_id?,
+  confidence (matcher score; 0 = manual/new-ticket), error.
 
 ---
 
@@ -133,8 +180,10 @@ uploads AND by `build-edit` reels).
   **cuts**) · `POST /{cid}/render` · `GET /{cid}/download|/preview|/thumb` · `DELETE /{cid}` ·
   `POST /{cid}/auto-center`.
   - **Clip voiceover (whole-clip):** `POST /{cid}/voiceover` (48 kHz via `extract_voiceover`) ·
-    `GET /{cid}/voiceover-file` · `DELETE /{cid}/voiceover`.
-  - **Per-scene voiceover (reels):** `POST/GET/DELETE /api/clips/{cid}/scene-voiceover/{idx}`.
+    `GET /{cid}/voiceover-file` · `DELETE /{cid}/voiceover` · **`POST /{cid}/tts-voiceover`** (ElevenLabs AI voice).
+  - **Per-scene voiceover (reels):** `POST/GET/DELETE /api/clips/{cid}/scene-voiceover/{idx}` +
+    **`POST /{cid}/scene-tts/{idx}`** (ElevenLabs AI voice for ONE scene; text defaults to that scene's
+    caption words). So "record it or generate it" is one flow — per-scene for reels, whole-clip for long-form.
 - **Tickets:** `POST /api/tickets` · `/from-script` · `/{tid}/import-script` · `GET /api/tickets` ·
   `GET /{tid}` · `PATCH /{tid}` · `DELETE /{tid}` · `GET /{tid}/thumb` (reel poster) ·
   **`POST /{tid}/build-edit`** (stitch a native reel's scenes into one caption-mode Project+Clip with
@@ -154,19 +203,46 @@ uploads AND by `build-edit` reels).
 - **Presets:** `GET /api/presets` — captions, caption_styles, aspects, brains, transcribe,
   resolutions, stages, formats, capture_modes.
 - **Script import:** `intake.parse_script(text)` → `{hook, beats[]}` (deterministic, no LLM).
+- **Shoot Drop:** `POST /api/shootdrop` (multipart multi-file → batch → queued on the jobs worker) ·
+  `GET /api/shootdrop` → `{clips[] (+ticket_label/scene_index), watch_dir, open_scenes[]}` ·
+  `POST /api/shootdrop/clips/{icid}/assign` (`{beat_id}` or `{new_ticket:true}`; clears the old
+  beat's footage on re-assign) · `DELETE /api/shootdrop/clips/{icid}` (discard → scene needs
+  footage again) · `GET /api/shootdrop/clips/{icid}/file` (stream the raw take → the review card's
+  ▶ preview lightbox, so a match can be eyeballed; supports range requests). **`POST /api/tickets/{tid}/post-copy`** → `ai.post_copy` fills `post_meta`
+  (also auto-runs when Shoot Drop fills a ticket's last scene); `PATCH /api/tickets/{tid}` now
+  accepts `post_meta` for hand edits.
 
 ---
 
 ## 6. Frontend (frontend/src/, React + Vite + TS, plain CSS)
 
-Light "Soft-UI" theme (Plus Jakarta Sans). **Sidebar:** Home · **Outliers** · **Create videos** ·
+Light "Soft-UI" theme (Plus Jakarta Sans). **Sidebar:** Home · **Ideas** · **Create videos** ·
 **Schedule** · Results · Downloads (internal routes: home/intake/board/queue/insights/library).
+**There is no Autopilot tab** — autopilot is a per-video *mode*, not a place (see below).
 Plain-language UI: a ticket = "video", a beat = "scene", an outlier = an "idea".
 
 - **App.tsx** — routes (home | board | intake | insights | library | project | **editor** with an
-  optional `from:"board"`), shell, and all screens + the **ClipEditor** workspace.
+  optional `from:"board"`), shell, and all screens + the **ClipEditor** workspace. A top **backend-offline
+  banner** polls `GET /api/health` every 5 s and warns "edits are NOT saving" the instant the server dies.
+- **Autopilot = a mode, folded into the board** (`useAutopilot` hook + `GATE_LABEL`/`isGated`/`GATE_POINTS`).
+  The board header has an **Autopilot strip** (Start / Pause / Run once) and a **"Needs you (N)" filter**
+  that shows only gated videos. Cards carry a 🤖 badge + a "⏸ Needs your OK" gate badge. The
+  Approve / Regenerate / Kill actions live in the video workspace (`VideoWorkspace`), which also shows the
+  gate points ("Pauses for you at: script · reel · post") whenever a video is on autopilot. Backend
+  autopilot state is unchanged — this was a pure frontend re-home of the old separate tab.
 - **Home / NewProject** — paste URL or upload. A **mode toggle**: "Find viral moments" (default) vs
   **"Just caption my clip"** (caption mode → one full-length clip → auto-opens the editor).
+- **Ideas (Intake) — 📼 Shoot drop card** (`ShootDrop`): drag a whole shoot in (or the watched
+  folder); live per-clip list (⏳/👂 listening/→ matched chip with ticket · scene · confidence),
+  an **editor-style drag-and-drop sorting board** (`.sd-board`): left = clip **thumbnail cards**
+  (`.sd-clip`, `draggable`; thumb via `/api/shootdrop/clips/{id}/thumb`, click to watch via
+  `VideoModal`); right = each open video's empty scenes as **drop slots** (`.sd-slot`, grouped by
+  ticket) + a "✨ new video from this clip" drop zone. Drag a clip onto a slot → `shootdropAssign`.
+  Auto-matched (talking) clips show as placed/green; **silent B-roll waits in the bin** to be dragged.
+  Polls 2.5 s while working, 10 s idle.
+- **Video workspace — 📣 Post copy card** (`PostCopyCard`, in the vw-rail): "🪄 Write my post copy"
+  → editable per-platform fields (TT/IG caption+hashtags, YT title/description/tags) saved via
+  `patchTicket({post_meta})` on blur, "↻ Rewrite it" regenerates.
 - **Create videos** (Board) — redesigned: the 8 DB stages collapse to **4 phase lanes** (`PHASES`:
   Idea / Make it / Ready / Posted) with accent colors; cards show a reel thumbnail, the hook, mode
   badge, ◀▶ phase move. **+ New video** modal: angle + **✨ Generate with AI** (create + script-
@@ -182,10 +258,14 @@ Plain-language UI: a ticket = "video", a beat = "scene", an outlier = an "idea".
   via the ✏️ button (or double-click its name) — re-tags every video in it (loops the same PATCH per
   item). **Click a row's thumb → `VideoModal`** preview. `downloadFile()` saves to a remembered folder (Chromium
   `showDirectoryPicker` persisted in IndexedDB via `exportDir.ts`); Firefox/Safari fall back.
-- **ClipEditor** (`.ed2`) — wayin-style workspace: top bar (title · undo/redo · autosave · Export) ·
-  **tool rail** · 9:16 preview (`<video>` CSS-crop + live `CaptionOverlay`, + `<audio>` for voice) ·
-  contextual panel · **FilmstripTimeline** (one continuous track of frames). Tools: **Trim** · **Cut**
-  · **Reframe** · **Subtitles** · **Voice** (Text/B-roll/Music/Transitions/AI Hook = coming soon).
+- **ClipEditor** (`.ed2`) — wayin-style workspace: top bar (title · undo/redo · **⟲ Revert to opened** ·
+  autosave indicator · Export) · **tool rail** · 9:16 preview (`<video>` CSS-crop + live `CaptionOverlay`,
+  + `<audio>` for voice) · contextual panel · **FilmstripTimeline** (one continuous track of frames).
+  Tools: **Trim** · **Cut** · **Reframe** · **Subtitles** · **Voice** (Text/B-roll/Music/Transitions/AI Hook = coming soon).
+  - **Autosave is still silent + debounced**, but now has an escape hatch: **⟲ Revert to opened**
+    (`useHistory.reset(openedDoc.current)` — `openedDoc` is a ref snapshot of the doc at mount, immune to
+    the poll) restores the clip to how it opened and clears history. The **save indicator shows ⚠ Not saved**
+    (red) when a `patchClip` fails, so a dead backend no longer silently eats edits.
   - **FilmstripTimeline** = continuous scrubbing track: **drag ANYWHERE to move the playhead** (no
     selection/highlight — this is the familiar behavior; a CapCut-style per-clip-block timeline was
     tried and reverted because it hijacked the playhead). Dim outside the trim, start/end **trim
@@ -199,15 +279,16 @@ Plain-language UI: a ticket = "video", a beat = "scene", an outlier = an "idea".
     words inside a removed gap collapse to the seam but stay in sequence (captions read
     "word4 5 6 → cut → 7 8", never dropping words). Preview == export. Captions also **STAY** on any
     trim/cut (no auto-resync); **"↻ Match captions to this part"** (Subtitles → Edit words, shown when a
-    transcript exists) pulls the section's transcript on demand.
-  - **Voice** — two modes:
+    transcript exists) pulls the section's transcript on demand. It now **confirms first** when it would
+    overwrite hand-edited captions and commits through `useHistory` (Ctrl+Z undoes it).
+  - **Voice** — two modes, each with **record OR generate (ElevenLabs AI voice)**:
     - **Reel clips (have scene markers): per-scene.** `SceneVoicePanel` — ◀ Scene N/M ▶ selector,
       a **karaoke `Teleprompter`** scoped to the scene, a **reading-speed** control (0.5/0.75/1×, slows
       record playback only — mic stays natural), **Record this scene** (rolls that scene looping +
-      mic via `useRecorder`) → preview → Save, **"▶ Hear this scene with voice"**, and **"▶ Play whole
-      video with voice"** (chains all scenes for a full pre-export preview). Export = voice-first per
-      scene.
-    - **Long-form clips: whole-clip voice** (single `VoicePanel`, record over the clip).
+      mic via `useRecorder`) → preview → Save, **🔊 Generate AI voice for this scene** (`scene-tts/{idx}`),
+      **"▶ Hear this scene with voice"**, and **"▶ Play whole video with voice"** (chains all scenes for a
+      full pre-export preview). Export = voice-first per scene.
+    - **Long-form clips: whole-clip voice** (single `VoicePanel`, record or 🔊 Generate AI voice).
   - **`useHistory`** undo/redo, **autosave** debounced `patchClip`.
 - **New components:** `Teleprompter` (karaoke, reuses `captionAt`/`groupLines`), `useRecorder.ts`
   (MediaRecorder → webm blob), `VideoModal.tsx` (lightbox). `CaptionOverlay.tsx`/`captionStyles.ts`
@@ -230,7 +311,18 @@ Plain-language UI: a ticket = "video", a beat = "scene", an outlier = an "idea".
   `MomentsGrid` auto-opens a caption-mode project's editor once (module-level `autoOpenedPids` guard
   prevents a back-navigation loop).
 - **Captions burn fine** only with `{\1c&H..&}` color + libass `fontsdir` → `C:\Windows\Fonts`.
-- **Export 403s:** `ingest._ydl()` retries transient YouTube 403/timeout on `download_full`.
+  **Emoji caveat:** libass renders Segoe UI Emoji as monochrome outlines at best (no color glyphs), so
+  AI-Effects emoji in a burned caption may look flat or tofu. Not yet proven on a real export — decide
+  after watching one whether to keep them preview-only or overlay as PNGs.
+- **One ranking score:** `learn.perf_score(views, follows, saves, sends)` is the single in-app score
+  (saves·3 + follows·5 + sends·2 + views·0.001), used by Results top-videos / per-video / per-platform /
+  trend and `Angle.avg_score`. The **Google Sheet still owns its own scoring** (`sheets.py` sends raw
+  metrics, no score) for the content engine. Tune weights in `perf_score` and every ranking moves together.
+- **Transcription is subprocess-isolated** (`transcribe_worker.py`) so a GPU crash can't kill the API;
+  the backend also runs in a supervised auto-restart loop (§1). If the API ever 000s, check `data/backend.log`.
+- **Export 403s:** `ingest._ydl()` retries transient YouTube 403/timeout on `download_full`. URL projects
+  also **prefetch the full video in the background** right after analysis (`jobs._prefetch_full`), so the
+  first export is usually instant instead of waiting on a download.
 - **PATH refresh** mandatory in every new shell (§1).
 
 ---
@@ -258,7 +350,16 @@ Plain-language UI: a ticket = "video", a beat = "scene", an outlier = an "idea".
   + `dennis-facebook-banned` memories for the full why.
 - **Metrics — Results upgraded** (2026-06-27): `/api/insights` adds `by_platform` + `trend`; the
   Results screen now shows a **Momentum** day-by-day bar chart + a **By platform** breakdown table.
-  Still manual entry — **auto-pull stats** remains the next refinement.
+- **Fast bulk logger** (`BulkLogger`, default mode in `VideoTracker`): pick ONE platform tab
+  (TikTok/IG/YouTube), every posted video is a row with 4 inline number fields (views/follows/saves/
+  shares) — tab down the columns, one **Save N** button batches `POST /api/perf` for every changed
+  row (brand omitted so it's never overwritten). Switching platform clears in-progress edits and
+  shows that platform's saved numbers. The old per-video expander is still there under
+  "🔍 One at a time". **Auto-pull** (still the next refinement) is viable via the **Upload-Post
+  analytics API** (`GET /api/analytics/{user}` returns views/likes/saves/shares/followers for
+  tt/ig/yt) — dodges the Meta-ban/TikTok-audit walls since Upload-Post already brokers the accounts;
+  needs `UPLOAD_POST_API_KEY` set (same key that makes posting live). Account-level is easy; per-video
+  needs matching each post's `job_id`/`request_id` captured at post time.
 - **Forced caption alignment** to the actual recorded speech (currently even-split across the voice).
 - **Long-form whole-clip voice** lacks the reading-speed control + uses `-shortest` (can clip the
   tail); the per-scene reel path has the full voice-first treatment.
