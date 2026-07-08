@@ -1249,8 +1249,10 @@ function ScheduleCard({ t, platforms, onDone }: { t: QueueTicket; platforms: str
   const [when, setWhen] = useState(defaultWhen());
   const [picked, setPicked] = useState<string[]>(t.platforms?.length ? t.platforms : platforms);
   const [busy, setBusy] = useState("");
+  const [showCopy, setShowCopy] = useState(false);
   const toast = useToast();
   const title = t.hook_text || t.angle || `Video ${t.id}`;
+  const hasCopy = !!t.post_meta;
   const toggle = (p: string) => setPicked((cur) => cur.includes(p) ? cur.filter((x) => x !== p) : [...cur, p]);
 
   const schedule = async () => {
@@ -1279,7 +1281,12 @@ function ScheduleCard({ t, platforms, onDone }: { t: QueueTicket; platforms: str
         <div className="q-actions">
           <button className="ghost" onClick={schedule} disabled={!!busy}>{busy === "sch" ? "…" : "Schedule"}</button>
           <button className="primary" onClick={postNow} disabled={!!busy}>{busy === "post" ? "…" : "Post now"}</button>
+          <button className={"link-btn" + (hasCopy ? "" : " attn")} onClick={() => setShowCopy((v) => !v)}
+            title="Captions, hashtags & YouTube title/description/tags that get posted with the video">
+            {showCopy ? "Hide copy" : hasCopy ? "📣 Descriptions & tags" : "📣 Add descriptions & tags"}
+          </button>
         </div>
+        {showCopy && <PostCopyCard ticket={t} onChanged={onDone} toast={toast} />}
       </div>
     </div>
   );

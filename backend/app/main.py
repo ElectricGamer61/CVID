@@ -1109,7 +1109,17 @@ from .pipeline import poster  # noqa: E402
 
 
 def _ticket_caption(t: Ticket, platform: Optional[str] = None) -> str:
-    """Best caption for a ticket: the platform's own, else any set, else the hook."""
+    """Best publish caption for a ticket. Prefers the per-platform post_meta (caption + hashtags —
+    the copy the app writes and you edit on screen), then the legacy `captions` field, then the
+    hook. This is what actually gets sent to Upload-Post, so the descriptions/tags aren't lost."""
+    pm = t.post_meta if isinstance(t.post_meta, dict) else {}
+    order = [platform] if platform else list(pm.keys())
+    for p in order:
+        entry = pm.get(p) or {}
+        cap = (entry.get("caption") or entry.get("title") or "").strip()
+        tags = (entry.get("hashtags") or entry.get("tags") or "").strip()
+        if cap or tags:
+            return " ".join(x for x in (cap, tags) if x).strip()
     caps_map = t.captions if isinstance(t.captions, dict) else {}
     if platform and caps_map.get(platform):
         return caps_map[platform]
@@ -1180,7 +1190,7 @@ def post_ticket(tid: int, body: PostTicket):
         if not t:
             raise HTTPException(404, "ticket not found")
         platforms = body.platforms or t.platforms or settings.PLATFORMS
-        caption = body.caption or _ticket_caption(t)
+        caption = body.caption or _ticket_caption(t, platforms[0] if platforms else None)
         video = t.clip_url
     when = body.scheduled_at or None
     try:
