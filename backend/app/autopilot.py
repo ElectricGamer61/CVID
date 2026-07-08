@@ -180,10 +180,48 @@ def _do_footage_check(t) -> gates.Result:
     return True, ""
 
 
+def _do_auto_voiceover(t) -> gates.Result:
+    """When the ticket's auto_voiceover toggle is on: TTS every scene's spoken_line into
+    its voiceover slot before assembling. Skips scenes that already have a voice (user
+    recordings win). Fails closed with a clear reason when TTS isn't configured."""
+    if not getattr(t, "auto_voiceover", False):
+        return True, ""
+    from pathlib import Path
+    from sqlmodel import select
+    from .db import Beat, get_session
+    from .pipeline import assemble, ingest, tts
+    if not tts.available():
+        return False, "auto voiceover needs ELEVENLABS_API_KEY (or turn the toggle off)"
+    with get_session() as s:
+        beats = s.exec(select(Beat).where(Beat.ticket_id == t.id)
+                       .order_by(Beat.order_index)).all()
+        todo = [b for b in beats
+                if (b.spoken_line or "").strip()
+                and not (b.voiceover_path and Path(b.voiceover_path).exists())]
+    vo_dir = assemble.ticket_dir(t.id) / "beats"
+    for b in todo:
+        mp3 = vo_dir / f"beat_{b.id}_tts.mp3"
+        wav = vo_dir / f"beat_{b.id}_voiceover.wav"
+        try:
+            tts.synthesize(b.spoken_line, mp3)
+            ingest.extract_voiceover(mp3, wav)   # mp3 → 48k stereo wav (render-ready)
+        except Exception as e:  # noqa: BLE001
+            return False, f"auto voiceover failed on scene {b.order_index + 1}: {e}"
+        with get_session() as s:
+            row = s.get(Beat, b.id)
+            row.voiceover_path = str(wav)
+            row.caption_timings = None           # re-align captions to the new voice
+            s.add(row); s.commit()
+    return True, ""
+
+
 def _do_assemble(t) -> gates.Result:
-    """sourced → assembled: render the reel, run the reel gate."""
+    """sourced → assembled: auto-voiceover (if toggled), render the reel, run the reel gate."""
     from .pipeline import assemble
     from .db import get_session
+    ok, reason = _do_auto_voiceover(t)
+    if not ok:
+        return False, reason
     try:
         out = assemble.assemble_ticket(t.id)
     except Exception as e:  # noqa: BLE001
@@ -205,10 +243,24 @@ def _do_assemble(t) -> gates.Result:
 
 
 def _do_postmeta(t) -> gates.Result:
-    """assembled → ready: ensure per-platform post copy + the post gate can pass."""
-    from .db import get_session
+    """assembled → ready: write real per-platform post copy (LLM via ai.post_copy — captions,
+    hashtags, YT title/description/tags from the ticket's own script) + run the post gate.
+    Hand-edited copy is kept; only missing platforms are filled."""
+    from sqlmodel import select
+    from . import ai
+    from .db import Beat, get_session
     platforms = t.platforms or cartridge.cadence(t.brand).get("platforms") or ["tt", "ig", "yt"]
     pm = t.post_meta or {}
+    missing = [p for p in platforms if not (pm.get(p) or {})]
+    if missing:
+        with get_session() as s:
+            beats = s.exec(select(Beat).where(Beat.ticket_id == t.id)
+                           .order_by(Beat.order_index)).all()
+            script = "\n".join((b.spoken_line or b.caption) for b in beats)
+        generated = ai.post_copy(t.brand, t.hook_text, script)  # LLM w/ heuristic fallback
+        for p in missing:
+            if generated.get(p):
+                pm[p] = generated[p]
     for p in platforms:
         if not (pm.get(p) or {}):
             cap = t.hook_text or t.angle or "New video"
@@ -240,10 +292,17 @@ def _do_post(t) -> gates.Result:
     """scheduled → posted: hand to the publisher (dry-run without creds)."""
     from .pipeline import poster
     when = t.scheduled_at.isoformat() if t.scheduled_at else None
+    # Post with the generated publish copy (caption + hashtags), not just the hook.
+    platforms = t.platforms or ["tt", "ig", "yt"]
+    pm = t.post_meta or {}
+    entry = next((pm.get(p) for p in platforms if pm.get(p)), None) or {}
+    caption = " ".join(x for x in (
+        entry.get("caption") or entry.get("title") or t.hook_text or t.angle or "",
+        entry.get("hashtags") or "") if x).strip()
     try:
         poster.post_reel(ticket_id=t.id, video_path=t.clip_url,
-                         caption=(t.hook_text or t.angle or ""),
-                         platforms=t.platforms or ["tt", "ig", "yt"], when=when)
+                         caption=caption or (t.hook_text or t.angle or ""),
+                         platforms=platforms, when=when)
     except Exception as e:  # noqa: BLE001
         return False, f"publish failed: {e}"
     from .db import get_session
@@ -284,7 +343,15 @@ def advance_ticket(ticket_id: int) -> str:
         t = s.get(Ticket, ticket_id)
         if not t or not t.autopilot:
             return "skip"
-        if t.gate in ("awaiting_approval", "awaiting_footage", "parked"):
+        if t.gate == "awaiting_footage":
+            # Footage gates self-clear: once every scene has its clip, the ticket
+            # continues on the next tick without a click (as the UI promises).
+            ok, _ = _do_footage_check(t)
+            if not ok:
+                return "waiting"
+            t.gate = t.gate_reason = None
+            s.add(t); s.commit(); s.refresh(t)
+        elif t.gate in ("awaiting_approval", "parked"):
             return "waiting"
         if t.stage == "posted":
             t.gate = "done"; s.add(t); s.commit()

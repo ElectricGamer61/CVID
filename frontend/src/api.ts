@@ -98,9 +98,15 @@ export interface Ticket {
   posted_at?: string | null;
   created_at: string;
   autopilot?: boolean;
+  auto_voiceover?: boolean;
   gate?: string | null;
   gate_reason?: string | null;
   queue_kind?: string;
+  // Scene progress summary (only on the /api/tickets list) — drives the board's
+  // "where did I leave off" chips.
+  n_beats?: number;
+  n_clips?: number;
+  n_vo?: number;
 }
 
 export interface AutopilotState {
@@ -138,6 +144,8 @@ export interface NewTicketBody {
   capture_mode: string;
   hook_text?: string;
   script?: string;
+  autopilot?: boolean;
+  auto_voiceover?: boolean;
 }
 
 export interface Outlier {

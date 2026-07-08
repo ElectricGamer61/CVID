@@ -148,6 +148,36 @@ const MODE_ICONS: Record<string, string> = {
 const modeLabel = (m: string) => MODE_LABELS[m] ?? m;
 const modeIcon = (m: string) => MODE_ICONS[m] ?? "🎬";
 
+// "Recently opened" memory (localStorage) — the board floats these to the top of their
+// column and marks them, so you never lose track of the videos you were working on.
+const RECENT_KEY = "cv.recentTickets";
+const getRecent = (): number[] => {
+  try { return JSON.parse(localStorage.getItem(RECENT_KEY) || "[]"); } catch { return []; }
+};
+const markRecent = (tid: number) => {
+  try {
+    const r = [tid, ...getRecent().filter((i) => i !== tid)].slice(0, 8);
+    localStorage.setItem(RECENT_KEY, JSON.stringify(r));
+  } catch { /* private mode etc. — the board just skips the highlight */ }
+};
+
+// What a "Make it" video needs NEXT, derived from its real scene progress (not the stage
+// field, which nobody remembers to bump) — this is what unclutters the Make It column.
+type MakeStep = { key: string; label: string };
+const MAKE_STEPS: MakeStep[] = [
+  { key: "script", label: "✍️ Needs a script" },
+  { key: "clips",  label: "🎬 Needs clips" },
+  { key: "voice",  label: "🎙 Needs a voice" },
+  { key: "build",  label: "🧩 Ready to build" },
+];
+const makeStepOf = (t: Ticket): string => {
+  const beats = t.n_beats ?? 0, clips = t.n_clips ?? 0, vo = t.n_vo ?? 0;
+  if (beats === 0) return "script";
+  if (clips < beats) return "clips";
+  if (!t.auto_voiceover && vo === 0) return "voice";   // AI-voice tickets skip this — TTS covers it
+  return "build";
+};
+
 function Board({ presets, onOpenTicket }: { presets: Presets | null; onOpenTicket: (tid: number) => void }) {
   const [tickets, setTickets] = useState<Ticket[] | null>(null);
   const [showNew, setShowNew] = useState(false);
@@ -184,10 +214,20 @@ function Board({ presets, onOpenTicket }: { presets: Presets | null; onOpenTicke
 
   const visible = (list: Ticket[]) => needsYouOnly ? list.filter((t) => gateById.has(t.id)) : list;
 
+  // Recently-opened first (the ones you were working on), then newest.
+  const recent = getRecent();
+  const recencyRank = (t: Ticket) => { const i = recent.indexOf(t.id); return i === -1 ? Infinity : i; };
+  const sortCol = (list: Ticket[]) =>
+    [...list].sort((a, b) => recencyRank(a) - recencyRank(b) || b.id - a.id);
+
+  const [showHow, setShowHow] = useState(() => localStorage.getItem("cv.hideHow") !== "1");
+  const toggleHow = () => { setShowHow((v) => { localStorage.setItem("cv.hideHow", v ? "1" : "0"); return !v; }); };
+
   return (
     <div className="board-page">
       <div className="page-head">
         <h2>Create videos</h2>
+        <button className="link-btn" onClick={toggleHow}>{showHow ? "Hide the steps" : "How it works"}</button>
         <button className="primary" onClick={() => setShowNew(true)}>+ New video</button>
       </div>
 
@@ -205,22 +245,40 @@ function Board({ presets, onOpenTicket }: { presets: Presets | null; onOpenTicke
         </button>
       </div>
 
-      <div className="how-banner">
-        <span className="how-step"><b>1</b> Save an idea</span><span className="how-arrow">→</span>
-        <span className="how-step"><b>2</b> Write &amp; film it</span><span className="how-arrow">→</span>
-        <span className="how-step"><b>3</b> Make the video</span><span className="how-arrow">→</span>
-        <span className="how-step"><b>4</b> Post &amp; see results</span>
-        <span className="how-tip">Each video is a card below. Use ◀ ▶ to move it forward as you finish each step.</span>
-      </div>
+      {showHow && (
+        <div className="how-banner">
+          <span className="how-step"><b>1</b> Save an idea</span><span className="how-arrow">→</span>
+          <span className="how-step"><b>2</b> Write &amp; film it</span><span className="how-arrow">→</span>
+          <span className="how-step"><b>3</b> Make the video</span><span className="how-arrow">→</span>
+          <span className="how-step"><b>4</b> Post &amp; see results</span>
+          <span className="how-tip">Each video is a card below. Use ◀ ▶ to move it forward as you finish each step.</span>
+        </div>
+      )}
       {tickets == null ? <div className="muted">Loading…</div> : (
         <div className="board">
           {PHASES.map((ph) => {
-            const col = visible(tickets.filter((t) => ph.stages.includes(t.stage)));
+            const col = sortCol(visible(tickets.filter((t) => ph.stages.includes(t.stage))));
+            const card = (t: Ticket) => (
+              <TicketCard key={t.id} t={t} gate={gateById.get(t.id)} recent={recent.indexOf(t.id) > -1 && recent.indexOf(t.id) < 3}
+                onOpen={() => { markRecent(t.id); onOpenTicket(t.id); }} onMove={move} onDelete={del} />
+            );
             return (
               <div className={"board-col cv-lane cv-" + ph.key} key={ph.key}>
                 <div className="board-col-head"><span className="cv-lane-dot" /><span>{ph.label}</span><span className="board-count">{col.length}</span></div>
                 <div className="board-col-body">
-                  {col.map((t) => <TicketCard key={t.id} t={t} gate={gateById.get(t.id)} onOpen={() => onOpenTicket(t.id)} onMove={move} onDelete={del} />)}
+                  {/* Make It is where cards pile up — group them by what each one needs NEXT. */}
+                  {ph.key === "make" && col.length > 0
+                    ? MAKE_STEPS.map((st) => {
+                        const grp = col.filter((t) => makeStepOf(t) === st.key);
+                        if (!grp.length) return null;
+                        return (
+                          <div className="make-sub" key={st.key}>
+                            <div className="make-sub-head">{st.label}<span className="board-count">{grp.length}</span></div>
+                            {grp.map(card)}
+                          </div>
+                        );
+                      })
+                    : col.map(card)}
                   {col.length === 0 && <div className="cv-lane-empty">{needsYouOnly ? "Nothing waiting here" : PHASE_HINT[ph.key]}</div>}
                 </div>
               </div>
@@ -233,15 +291,18 @@ function Board({ presets, onOpenTicket }: { presets: Presets | null; onOpenTicke
   );
 }
 
-function TicketCard({ t, gate, onOpen, onMove, onDelete }: {
-  t: Ticket; gate?: Ticket; onOpen: () => void; onMove: (t: Ticket, d: 1 | -1) => void; onDelete: (t: Ticket) => void;
+function TicketCard({ t, gate, recent, onOpen, onMove, onDelete }: {
+  t: Ticket; gate?: Ticket; recent?: boolean; onOpen: () => void; onMove: (t: Ticket, d: 1 | -1) => void; onDelete: (t: Ticket) => void;
 }) {
   const i = phaseOf(t.stage);
   const made = !!t.clip_url;
+  const beats = t.n_beats ?? 0, clips = t.n_clips ?? 0, vo = t.n_vo ?? 0;
+  const inMake = PHASES[i]?.key === "make";
   return (
-    <div className={"tkt-card" + (gate ? " tkt-gated" : "")} onClick={onOpen} title="Open">
-      {(gate || t.autopilot) && (
+    <div className={"tkt-card" + (gate ? " tkt-gated" : "") + (recent ? " tkt-recent" : "")} onClick={onOpen} title="Open">
+      {(gate || t.autopilot || recent) && (
         <div className="tkt-badges">
+          {recent && !gate && <span className="tkt-recent-chip" title="You opened this recently">⏱</span>}
           {t.autopilot && <span className="tkt-ap" title="On autopilot">🤖</span>}
           {gate && <span className="tkt-gate" title={gate.gate_reason || ""}>⏸ {GATE_LABEL[gate.gate || "awaiting_approval"]}</span>}
         </div>
@@ -259,7 +320,18 @@ function TicketCard({ t, gate, onOpen, onMove, onDelete }: {
         {t.hook_text
           ? <div className="tkt-hook-main">“{t.hook_text}”</div>
           : <div className="tkt-angle">{t.angle || <span className="muted">Untitled video</span>}</div>}
-        <div className="tkt-sub">{t.hook_text ? (t.angle || modeLabel(t.capture_mode)) : modeLabel(t.capture_mode)}</div>
+        {inMake && beats > 0 ? (
+          <div className="tkt-prog">
+            <span className="tkt-chip done" title="Scenes written">✍ {beats}</span>
+            <span className={"tkt-chip" + (clips >= beats ? " done" : "")} title="Clips added">🎬 {clips}/{beats}</span>
+            <span className={"tkt-chip" + (t.auto_voiceover || vo >= beats ? " done" : "")}
+              title={t.auto_voiceover ? "AI voiceover — voiced automatically when it's built" : "Voiceovers recorded"}>
+              🎙 {t.auto_voiceover ? "AI" : `${vo}/${beats}`}
+            </span>
+          </div>
+        ) : (
+          <div className="tkt-sub">{t.hook_text ? (t.angle || modeLabel(t.capture_mode)) : modeLabel(t.capture_mode)}</div>
+        )}
       </div>
       <div className="tkt-side" onClick={(e) => e.stopPropagation()}>
         <button className="icon-btn" disabled={i <= 0} title="Move back a step" onClick={() => onMove(t, -1)}>◀</button>
@@ -271,12 +343,18 @@ function TicketCard({ t, gate, onOpen, onMove, onDelete }: {
 }
 
 // Slim starter: 3 choices, then straight into the full-page workspace (no bounce back to the board).
+// "I have a script" flips open a paste box + the autopilot / AI-voice toggles, so the whole
+// script-in → clips-in → auto-voiced → ready-to-post flow starts from one place.
 function NewTicketModal({ presets, onClose, onCreated }: { presets: Presets | null; onClose: () => void; onCreated: (tid: number) => void }) {
   const [brand, setBrand] = useState("NoCrapDiet");
   const [angle, setAngle] = useState("");
   const [format, setFormat] = useState("reel");
   const [capture, setCapture] = useState("native-short");
-  const [busy, setBusy] = useState<"" | "create" | "ai">("");
+  const [script, setScript] = useState("");
+  const [showScript, setShowScript] = useState(false);
+  const [autopilot, setAutopilot] = useState(true);
+  const [autoVoice, setAutoVoice] = useState(true);
+  const [busy, setBusy] = useState<"" | "create" | "ai" | "script">("");
   const toast = useToast();
   const formats = presets?.formats ?? ["reel", "carousel"];
   const modes = presets?.capture_modes ?? ["longform-clip", "native-short", "repurpose"];
@@ -286,6 +364,20 @@ function NewTicketModal({ presets, onClose, onCreated }: { presets: Presets | nu
     try {
       const res = await api.createTicket({ brand, angle, format, capture_mode: capture });
       toast("Video created — write your script", "ok");
+      onCreated(res.ticket.id);
+    } catch (e: any) { toast(`Failed: ${e?.message || e}`, "err"); setBusy(""); }
+  };
+
+  // Script path: paste your script → scenes, optionally on autopilot with AI voiceover.
+  // You add the clips in the workspace; autopilot voices, builds, and writes post copy.
+  const startFromScript = async () => {
+    setBusy("script");
+    try {
+      const res = await api.createTicketFromScript({
+        brand, angle, format, capture_mode: capture, script,
+        autopilot, auto_voiceover: autoVoice,
+      });
+      toast(`Made ${res.beats.length} scenes${autopilot ? " — on autopilot, just add your clips" : ""}`, "ok");
       onCreated(res.ticket.id);
     } catch (e: any) { toast(`Failed: ${e?.message || e}`, "err"); setBusy(""); }
   };
@@ -326,11 +418,39 @@ function NewTicketModal({ presets, onClose, onCreated }: { presets: Presets | nu
             </label>
           )}
         </div>
+        {!showScript ? (
+          <button className="link-btn" style={{ alignSelf: "flex-start" }} onClick={() => setShowScript(true)}>
+            📝 I already have a script — paste it
+          </button>
+        ) : (
+          <div className="nt-script">
+            <textarea rows={7} value={script} autoFocus
+              placeholder={"Paste your script — plain lines work, or the labeled format:\nHOOK: the first line\n\nBEAT\nSpoken: what the voiceover says\nShot: what to film"}
+              onChange={(e) => setScript(e.target.value)} />
+            <label className="nt-toggle" title="Autopilot voices the scenes, builds the reel, writes captions & tags, and queues the post — pausing for your OK">
+              <input type="checkbox" checked={autopilot} onChange={(e) => setAutopilot(e.target.checked)} />
+              <span>🤖 Run on autopilot (build &amp; prep the post once clips are in)</span>
+            </label>
+            <label className="nt-toggle" title="Reads each scene's spoken line in your AI voice (MasterDee) — for silent B-roll">
+              <input type="checkbox" checked={autoVoice} onChange={(e) => setAutoVoice(e.target.checked)} />
+              <span>🎙 AI voiceover (auto-read each scene's spoken line)</span>
+            </label>
+          </div>
+        )}
         <div className="muted" style={{ fontSize: 12.5 }}>Next you'll land in the workspace — script, scenes, and “make my video” all live there.</div>
         <div className="modal-actions">
           <button onClick={onClose} disabled={!!busy}>Cancel</button>
-          <button onClick={startBlank} disabled={!!busy}>{busy === "create" ? "Creating…" : "Start writing myself"}</button>
-          <button className="primary" onClick={generateWithAI} disabled={!!busy || !angle.trim()} title={!angle.trim() ? "Enter a topic first" : "Create + write the script with AI"}>{busy === "ai" ? "Writing your script…" : "✨ Write it with AI"}</button>
+          {showScript ? (
+            <button className="primary" onClick={startFromScript} disabled={!!busy || !script.trim()}
+              title={!script.trim() ? "Paste your script first" : "Split into scenes — then add your clips"}>
+              {busy === "script" ? "Making scenes…" : "Use this script →"}
+            </button>
+          ) : (
+            <>
+              <button onClick={startBlank} disabled={!!busy}>{busy === "create" ? "Creating…" : "Start writing myself"}</button>
+              <button className="primary" onClick={generateWithAI} disabled={!!busy || !angle.trim()} title={!angle.trim() ? "Enter a topic first" : "Create + write the script with AI"}>{busy === "ai" ? "Writing your script…" : "✨ Write it with AI"}</button>
+            </>
+          )}
         </div>
       </div>
     </div>
@@ -346,7 +466,7 @@ function VideoWorkspace({ tid, presets, onBack, onOpenEditor }: { tid: number; p
   const toast = useToast();
   const confirm = useConfirm();
   const load = () => api.getTicket(tid).then(setData).catch(() => {});
-  useEffect(() => { load(); }, [tid]);
+  useEffect(() => { load(); markRecent(tid); }, [tid]);
 
   const patchT = async (body: Partial<Ticket>) => { await api.patchTicket(tid, body); load(); };
   const setPhase = async (j: number) => {
@@ -439,6 +559,12 @@ function VideoWorkspace({ tid, presets, onBack, onOpenEditor }: { tid: number; p
                   onChange={(e) => patchT({ capture_mode: e.target.value })}>
                   {modes.map((m) => <option key={m} value={m}>{modeLabel(m)}</option>)}
                 </select>
+                <button className={"vw-ap-toggle" + (ticket.auto_voiceover ? " on" : "")}
+                  title={ticket.auto_voiceover ? "AI voiceover ON — each scene's spoken line is read in your AI voice before the video is built" : "Turn on to auto-read each scene's spoken line in your AI voice (for silent B-roll)"}
+                  onClick={() => apAct(() => api.patchTicket(tid, { auto_voiceover: !ticket.auto_voiceover } as Partial<Ticket>),
+                    ticket.auto_voiceover ? "AI voiceover off" : "AI voiceover on — scenes get voiced when the video is built")}>
+                  🎙 {ticket.auto_voiceover ? "AI voice on" : "AI voice"}
+                </button>
                 <button className={"vw-ap-toggle" + (ticket.autopilot ? " on" : "")}
                   title={ticket.autopilot ? GATE_POINTS : "Let Autopilot draft, assemble, and queue this video — pausing for your OK at each step"}
                   onClick={() => apAct(() => api.autopilotToggle(tid, !ticket.autopilot),

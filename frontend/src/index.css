@@ -525,6 +525,22 @@ button.primary.danger-solid:hover { background: #db3a48; border-color: #db3a48; 
 .tkt-card { position: relative; }
 .tkt-ap { font-size: 12px; }
 .tkt-gate { font-size: 10.5px; font-weight: 700; color: #fff; background: var(--primary); border-radius: 999px; padding: 1px 7px; white-space: nowrap; }
+.tkt-card.tkt-recent { border-color: var(--accent); }
+.tkt-recent-chip { font-size: 11px; }
+/* scene-progress chips on Make It cards — where did I leave off, at a glance */
+.tkt-prog { display: flex; gap: 4px; margin-top: 3px; }
+.tkt-chip { font-size: 10px; font-weight: 700; color: var(--muted); background: var(--surface-3); border: 1px solid var(--border); border-radius: 999px; padding: 1px 6px; white-space: nowrap; }
+.tkt-chip.done { color: var(--accent); border-color: var(--accent); background: transparent; }
+/* Make It sub-groups: cards sorted by what each video needs NEXT */
+.make-sub { display: flex; flex-direction: column; gap: 6px; }
+.make-sub + .make-sub { margin-top: 10px; }
+.make-sub-head { display: flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 800; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; padding: 0 2px; }
+.make-sub-head .board-count { font-size: 10.5px; padding: 0 6px; }
+/* New-video modal: paste-a-script path + autopilot / AI-voice toggles */
+.nt-script { display: flex; flex-direction: column; gap: 8px; }
+.nt-script textarea { width: 100%; resize: vertical; }
+.nt-toggle { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text-2); cursor: pointer; }
+.nt-toggle input { accent-color: var(--primary); }
 .vw-ap-hint { font-size: 12.5px; color: var(--muted); background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-sm); padding: 7px 12px; margin: 10px 0; }
 .vw-gate { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; margin: 12px 0; padding: 11px 15px; background: var(--primary-soft); border: 1px solid var(--primary); border-radius: var(--r); }
 .vw-gate-msg { font-size: 13.5px; color: var(--text); }

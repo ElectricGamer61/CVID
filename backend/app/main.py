@@ -180,6 +180,8 @@ class CreateTicket(BaseModel):
 
 class TicketFromScript(CreateTicket):
     script: str = ""                   # pasted script → auto-split into beats
+    autopilot: bool = False            # hand the ticket to the orchestrator right away
+    auto_voiceover: bool = False       # TTS each scene's spoken line before assembling
 
 
 class ImportScript(BaseModel):
@@ -199,6 +201,7 @@ class TicketPatch(BaseModel):
     outlier_id: Optional[int] = None
     platforms: Optional[list] = None
     post_meta: Optional[dict] = None       # per-platform publish copy (hand edits)
+    auto_voiceover: Optional[bool] = None  # AI-voice toggle (TTS scenes before assemble)
 
 
 class BeatPatch(BaseModel):
@@ -465,6 +468,8 @@ def create_ticket_from_script(body: TicketFromScript):
     with get_session() as s:
         t = _new_ticket(body, body.hook_text or parsed["hook"],
                         "scripted" if parsed["beats"] else "outlier")
+        t.autopilot = body.autopilot
+        t.auto_voiceover = body.auto_voiceover
         s.add(t); s.commit(); s.refresh(t)
         tid = t.id
         _replace_beats(s, tid, parsed["beats"])
@@ -547,10 +552,22 @@ def generate_post_copy(tid: int):
 
 @app.get("/api/tickets")
 def list_tickets():
+    """All tickets, each with a scene-progress summary (n_beats / n_clips / n_vo) so the
+    board can show exactly where a "Make it" video was left off."""
     from sqlmodel import select
     with get_session() as s:
         rows = s.exec(select(Ticket).order_by(Ticket.id.desc())).all()
-        return [t.model_dump() for t in rows]
+        beats = s.exec(select(Beat)).all()
+        prog: dict[int, dict] = {}
+        for b in beats:
+            p = prog.setdefault(b.ticket_id, {"n_beats": 0, "n_clips": 0, "n_vo": 0})
+            p["n_beats"] += 1
+            if b.clip_path:
+                p["n_clips"] += 1
+            if b.voiceover_path:
+                p["n_vo"] += 1
+        return [{**t.model_dump(), **prog.get(t.id, {"n_beats": 0, "n_clips": 0, "n_vo": 0})}
+                for t in rows]
 
 
 @app.get("/api/tickets/{tid}")

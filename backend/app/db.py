@@ -147,6 +147,10 @@ class Ticket(SQLModel, table=True):
     ai_generated: bool = False
     # --- Autopilot orchestration (the autonomous driver owns this row when True) ---
     autopilot: bool = False            # the orchestrator advances this ticket automatically
+    # Auto-voiceover toggle: before assembling, TTS every scene's spoken_line into its
+    # voiceover slot (ElevenLabs, default MasterDee voice) — for silent-B-roll tickets
+    # where the user provides script + clips and wants the voice generated.
+    auto_voiceover: bool = False
     gate: Optional[str] = None         # None|awaiting_approval|awaiting_footage|parked|done
     gate_reason: Optional[str] = None  # why it's parked / what's needed (shown on the card)
     attempts_json: Optional[str] = None  # JSON retry log per stage: {stage: {tries, last_error}}
@@ -265,7 +269,8 @@ def _migrate() -> None:
         "project": {"transcribe_backend": "TEXT DEFAULT 'local'",
                     "mode": "TEXT DEFAULT 'moments'", "folder": "TEXT", "brand": "TEXT"},
         "ticket": {"folder": "TEXT", "post_meta": "TEXT", "ai_generated": "INTEGER DEFAULT 0",
-                   "autopilot": "INTEGER DEFAULT 0", "gate": "TEXT", "gate_reason": "TEXT",
+                   "autopilot": "INTEGER DEFAULT 0", "auto_voiceover": "INTEGER DEFAULT 0",
+                   "gate": "TEXT", "gate_reason": "TEXT",
                    "attempts_json": "TEXT", "job_id": "TEXT", "request_id": "TEXT"},
         "beat": {"caption_timings": "TEXT"},
     }
