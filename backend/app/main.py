@@ -1409,7 +1409,7 @@ def shootdrop_discard(icid: int):
 def _assemble_job(tid: int):
     _assemble_status[tid] = {"state": "running", "stage": "Starting", "error": None}
     try:
-        reel = assemble.assemble_ticket(tid, progress=lambda m: _assemble_status.__setitem__(
+        reel = assemble.assemble_reel(tid, progress=lambda m: _assemble_status.__setitem__(
             tid, {"state": "running", "stage": m, "error": None}))
         with get_session() as s:
             t = s.get(Ticket, tid)
@@ -1847,6 +1847,7 @@ def clip_tts_voiceover(cid: int, body: TTSBody):
     with get_session() as s:
         clip = s.get(Clip, cid)
         clip.voiceover_path = str(wav)
+        clip.scene_vo_json = None      # one read for the WHOLE reel wins over any per-scene voices
         clip.status = "suggested"
         s.add(clip); s.commit()
     return {"voiceover_path": str(wav)}

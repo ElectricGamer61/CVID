@@ -541,6 +541,11 @@ button.primary.danger-solid:hover { background: #db3a48; border-color: #db3a48; 
 .nt-script textarea { width: 100%; resize: vertical; }
 .nt-toggle { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text-2); cursor: pointer; }
 .nt-toggle input { accent-color: var(--primary); }
+/* Whole-reel AI voice block in the editor (above the per-scene panel) */
+.whole-reel-vo { background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-sm); padding: 11px 12px; margin-bottom: 12px; display: flex; flex-direction: column; gap: 6px; }
+.wrv-head { font-weight: 800; font-size: 13.5px; color: var(--text); }
+.wrv-row { display: flex; gap: 8px; align-items: center; margin-top: 2px; }
+.wrv-row .vo-voice { flex: 1 1 auto; min-width: 0; }
 .vw-ap-hint { font-size: 12.5px; color: var(--muted); background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-sm); padding: 7px 12px; margin: 10px 0; }
 .vw-gate { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; margin: 12px 0; padding: 11px 15px; background: var(--primary-soft); border: 1px solid var(--primary); border-radius: var(--r); }
 .vw-gate-msg { font-size: 13.5px; color: var(--text); }

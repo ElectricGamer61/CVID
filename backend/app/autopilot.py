@@ -180,50 +180,13 @@ def _do_footage_check(t) -> gates.Result:
     return True, ""
 
 
-def _do_auto_voiceover(t) -> gates.Result:
-    """When the ticket's auto_voiceover toggle is on: TTS every scene's spoken_line into
-    its voiceover slot before assembling. Skips scenes that already have a voice (user
-    recordings win). Fails closed with a clear reason when TTS isn't configured."""
-    if not getattr(t, "auto_voiceover", False):
-        return True, ""
-    from pathlib import Path
-    from sqlmodel import select
-    from .db import Beat, get_session
-    from .pipeline import assemble, ingest, tts
-    if not tts.available():
-        return False, "auto voiceover needs ELEVENLABS_API_KEY (or turn the toggle off)"
-    with get_session() as s:
-        beats = s.exec(select(Beat).where(Beat.ticket_id == t.id)
-                       .order_by(Beat.order_index)).all()
-        todo = [b for b in beats
-                if (b.spoken_line or "").strip()
-                and not (b.voiceover_path and Path(b.voiceover_path).exists())]
-    vo_dir = assemble.ticket_dir(t.id) / "beats"
-    for b in todo:
-        mp3 = vo_dir / f"beat_{b.id}_tts.mp3"
-        wav = vo_dir / f"beat_{b.id}_voiceover.wav"
-        try:
-            tts.synthesize(b.spoken_line, mp3)
-            ingest.extract_voiceover(mp3, wav)   # mp3 → 48k stereo wav (render-ready)
-        except Exception as e:  # noqa: BLE001
-            return False, f"auto voiceover failed on scene {b.order_index + 1}: {e}"
-        with get_session() as s:
-            row = s.get(Beat, b.id)
-            row.voiceover_path = str(wav)
-            row.caption_timings = None           # re-align captions to the new voice
-            s.add(row); s.commit()
-    return True, ""
-
-
 def _do_assemble(t) -> gates.Result:
-    """sourced → assembled: auto-voiceover (if toggled), render the reel, run the reel gate."""
+    """sourced → assembled: render the reel (laying one whole-reel AI voiceover over it when
+    the ticket's auto_voiceover toggle is on), then run the reel gate."""
     from .pipeline import assemble
     from .db import get_session
-    ok, reason = _do_auto_voiceover(t)
-    if not ok:
-        return False, reason
     try:
-        out = assemble.assemble_ticket(t.id)
+        out = assemble.assemble_reel(t.id)
     except Exception as e:  # noqa: BLE001
         return False, f"assemble failed: {e}"
     dur = None

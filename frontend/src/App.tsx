@@ -431,9 +431,9 @@ function NewTicketModal({ presets, onClose, onCreated }: { presets: Presets | nu
               <input type="checkbox" checked={autopilot} onChange={(e) => setAutopilot(e.target.checked)} />
               <span>🤖 Run on autopilot (build &amp; prep the post once clips are in)</span>
             </label>
-            <label className="nt-toggle" title="Reads each scene's spoken line in your AI voice (MasterDee) — for silent B-roll">
+            <label className="nt-toggle" title="Reads the whole script in your AI voice (MasterDee) as ONE continuous voiceover over all your clips — for silent B-roll">
               <input type="checkbox" checked={autoVoice} onChange={(e) => setAutoVoice(e.target.checked)} />
-              <span>🎙 AI voiceover (auto-read each scene's spoken line)</span>
+              <span>🎙 AI voiceover (one read over the whole video)</span>
             </label>
           </div>
         )}
@@ -560,9 +560,9 @@ function VideoWorkspace({ tid, presets, onBack, onOpenEditor }: { tid: number; p
                   {modes.map((m) => <option key={m} value={m}>{modeLabel(m)}</option>)}
                 </select>
                 <button className={"vw-ap-toggle" + (ticket.auto_voiceover ? " on" : "")}
-                  title={ticket.auto_voiceover ? "AI voiceover ON — each scene's spoken line is read in your AI voice before the video is built" : "Turn on to auto-read each scene's spoken line in your AI voice (for silent B-roll)"}
+                  title={ticket.auto_voiceover ? "AI voiceover ON — your whole script is read as ONE continuous voiceover over all clips when the video is built" : "Turn on to read the whole script in your AI voice as one continuous voiceover over all your clips (for silent B-roll)"}
                   onClick={() => apAct(() => api.patchTicket(tid, { auto_voiceover: !ticket.auto_voiceover } as Partial<Ticket>),
-                    ticket.auto_voiceover ? "AI voiceover off" : "AI voiceover on — scenes get voiced when the video is built")}>
+                    ticket.auto_voiceover ? "AI voiceover off" : "AI voiceover on — one read over the whole video when it's built")}>
                   🎙 {ticket.auto_voiceover ? "AI voice on" : "AI voice"}
                 </button>
                 <button className={"vw-ap-toggle" + (ticket.autopilot ? " on" : "")}
@@ -2466,10 +2466,14 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
         <div className="ed2-panel">
           {tool === "cut" && <CutPanel doc={doc} set={set} time={time} onSeek={seek} />}
           {tool === "voice" && (hasScenes
-            ? <SceneVoicePanel cid={clip.id} markers={markers} sceneIdx={Math.min(sceneIdx, markers.length - 1)} onSelectScene={selectScene}
-                sceneVos={sceneVos} setSceneVos={applySceneVos} readRate={readRate} setReadRate={setReadRate}
-                activeScene={activeScene!} onRecordStart={startRecordPlayback} onRecordStop={stopRecordPlayback}
-                previewMode={previewMode} onPlayScene={playScene} onPlayReel={playReel} onStopPreview={stopPreview} onChanged={onChange} toast={toast} />
+            ? <>
+                <WholeReelVoice cid={clip.id} text={doc.words.map((w) => w.word).join(" ")}
+                  onGenerated={() => { applySceneVos(markers.map(() => null)); onChange(); }} toast={toast} />
+                <SceneVoicePanel cid={clip.id} markers={markers} sceneIdx={Math.min(sceneIdx, markers.length - 1)} onSelectScene={selectScene}
+                  sceneVos={sceneVos} setSceneVos={applySceneVos} readRate={readRate} setReadRate={setReadRate}
+                  activeScene={activeScene!} onRecordStart={startRecordPlayback} onRecordStop={stopRecordPlayback}
+                  previewMode={previewMode} onPlayScene={playScene} onPlayReel={playReel} onStopPreview={stopPreview} onChanged={onChange} toast={toast} />
+              </>
             : <VoicePanel cid={clip.id} voUrl={voUrl} text={doc.words.map((w) => w.word).join(" ")} onChanged={(u) => { setVoUrl(u); onChange(); }} toast={toast} onRecordStart={startRecordPlayback} onRecordStop={stopRecordPlayback} />)}
           {tool === "reframe" && <ReframePanel center={doc.center} set={set} autoCenter={doAutoCenter} autoBusy={autoBusy} />}
           {tool === "text" && <TranscriptEditor words={doc.words} cuts={doc.cuts} start={doc.start} end={doc.end}
@@ -2952,6 +2956,39 @@ function Teleprompter({ words, time, maxWords }: { words: Word[]; time: number; 
         ))}
       </div>
       {next && <div className="tp-next">{next.map((w) => w.word.trim()).join(" ")}</div>}
+    </div>
+  );
+}
+
+/* Whole-reel AI voice: read the ENTIRE script as one continuous voiceover laid over all the
+   clips (clips keep their natural length; last frame holds if the voice runs long). One button —
+   sits above the per-scene panel for reels. Generating it clears any per-scene voices. */
+function WholeReelVoice({ cid, text, onGenerated, toast }: { cid: number; text: string; onGenerated: () => void; toast: Notify }) {
+  const [voices, setVoices] = useState<{ voice_id: string; name: string }[]>([]);
+  const [voiceId, setVoiceId] = useState<string>("");
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { api.ttsVoices().then((v) => { setVoices(v.voices); setVoiceId(v.default); }).catch(() => {}); }, []);
+  const gen = async () => {
+    if (!text.trim()) { toast("No script to read — add captions first", "err"); return; }
+    setBusy(true);
+    try {
+      await api.ttsVoiceover(cid, voiceId || undefined, text);
+      onGenerated();
+      toast("AI voice added — one read over the whole video", "ok");
+    } catch (e: any) { toast(`Voice generation failed: ${e?.message || e}`, "err"); } finally { setBusy(false); }
+  };
+  return (
+    <div className="whole-reel-vo">
+      <div className="wrv-head">🎙 Voice the whole reel</div>
+      <div className="muted" style={{ fontSize: 12.5 }}>One continuous AI read of your whole script, over all the clips. Replaces any per-scene voices below.</div>
+      <div className="wrv-row">
+        {voices.length > 0 && (
+          <select className="vo-voice" value={voiceId} onChange={(e) => setVoiceId(e.target.value)} disabled={busy}>
+            {voices.map((v) => <option key={v.voice_id} value={v.voice_id}>{v.name}</option>)}
+          </select>
+        )}
+        <button className="primary" onClick={gen} disabled={busy}>{busy ? "Generating…" : "🔊 Voice whole reel"}</button>
+      </div>
     </div>
   );
 }

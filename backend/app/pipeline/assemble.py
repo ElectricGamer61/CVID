@@ -399,9 +399,83 @@ def _ensure_caption_timings(beats: list[dict], progress=None) -> None:
             print(f"[align] cache write failed for beat {b.get('id')}: {e}")
 
 
-def assemble_ticket(ticket_id: int, progress=None) -> Path:
+def mux_single_voiceover(video: Path, vo: Path, out: Path) -> Path:
+    """Lay ONE voiceover over a finished reel, replacing its audio. If the voice runs longer
+    than the footage, hold the last frame so the tail isn't cut (mirrors render._voice_pad_suffix);
+    if it's shorter, the video keeps playing at its natural length and the audio just ends."""
+    vdur = float(probe_duration(video) or 0.0)
+    vodur = float(probe_duration(vo) or 0.0)
+    extra = vodur - vdur
+    cmd = ["ffmpeg", "-y", "-i", str(video), "-i", str(vo)]
+    if extra > 0.05:
+        cmd += ["-filter_complex", f"[0:v]tpad=stop_mode=clone:stop_duration={extra:.3f}[v]",
+                "-map", "[v]", "-map", "1:a:0"]
+    else:
+        cmd += ["-map", "0:v:0", "-map", "1:a:0"]
+    cmd += ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", "30", "-preset", "veryfast",
+            "-crf", "20", "-c:a", "aac", "-ar", "48000", "-ac", "2",
+            "-movflags", "+faststart", str(out)]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise RuntimeError(f"voiceover mux failed:\n{proc.stderr[-1500:]}")
+    return out
+
+
+def whole_reel_voiceover(ticket_id: int, voice_id: str | None = None) -> Path:
+    """Generate ONE voiceover reading the whole reel's script (every beat's spoken line,
+    in order) as a single continuous take. Raises when TTS isn't configured or there's
+    nothing to read, so callers can fail closed with a clear reason."""
+    from app.db import Beat, get_session
+    from sqlmodel import select
+    from . import ingest, tts
+    if not tts.available():
+        raise RuntimeError("AI voiceover needs ELEVENLABS_API_KEY in backend/.env")
+    with get_session() as s:
+        beats = s.exec(select(Beat).where(Beat.ticket_id == ticket_id)
+                       .order_by(Beat.order_index)).all()
+    text = " ".join((b.spoken_line or "").strip() for b in beats if (b.spoken_line or "").strip()).strip()
+    if not text:
+        raise RuntimeError("no spoken lines to read")
+    d = ticket_dir(ticket_id)
+    mp3 = d / "whole_vo.mp3"
+    wav = d / "whole_vo.wav"
+    tts.synthesize(text, mp3, voice_id)
+    ingest.extract_voiceover(mp3, wav)          # mp3 → 48k stereo wav
+    mp3.unlink(missing_ok=True)
+    return wav
+
+
+def assemble_reel(ticket_id: int, progress=None) -> Path:
+    """Assemble a ticket's reel, honoring its `auto_voiceover` flag. When it's on, the reel is
+    built with clips at their natural length and ONE AI voiceover (the whole script, one read)
+    is laid over the top — otherwise per-beat voices/silence are used as-is. Always writes
+    data/tickets/{id}/reel.mp4 (so Ticket.clip_url is stable)."""
+    import os
+    from app.db import Ticket, get_session
+    with get_session() as s:
+        t = s.get(Ticket, ticket_id)
+        if not t:
+            raise RuntimeError("ticket not found")
+        whole = bool(getattr(t, "auto_voiceover", False))
+    reel = assemble_ticket(ticket_id, progress, ignore_beat_vo=whole)
+    if not whole:
+        return reel
+    if progress:
+        progress("Generating AI voiceover")
+    vo = whole_reel_voiceover(ticket_id)
+    if progress:
+        progress("Adding the voiceover")
+    voiced = reel.parent / "reel_voiced.mp4"
+    mux_single_voiceover(reel, vo, voiced)
+    os.replace(voiced, reel)                     # overwrite in place → clip_url stays reel.mp4
+    return reel
+
+
+def assemble_ticket(ticket_id: int, progress=None, ignore_beat_vo: bool = False) -> Path:
     """Stitch a ticket's beats (in order_index) into data/tickets/{id}/reel.mp4.
-    Raises on the proof guard or any ffmpeg failure."""
+    Raises on the proof guard or any ffmpeg failure. When `ignore_beat_vo` is set, each beat
+    renders at its clip's natural length with no voice (used by the whole-reel voiceover path,
+    which lays one continuous read over the finished reel instead)."""
     from app.db import Beat, Ticket, get_session
     from sqlmodel import select
 
@@ -414,6 +488,10 @@ def assemble_ticket(ticket_id: int, progress=None) -> Path:
     if not beats:
         raise RuntimeError("ticket has no beats to assemble")
 
+    if ignore_beat_vo:
+        for b in beats:
+            b["voiceover_path"] = None           # render each beat at its clip's natural length
+
     # PROOF GUARD — a beat stating a real number must show the product/label on screen.
     gaps = [b for b in beats if b["is_proof_beat"] and not (b["clip_path"] and Path(b["clip_path"]).exists())]
     if gaps:
@@ -423,7 +501,8 @@ def assemble_ticket(ticket_id: int, progress=None) -> Path:
     # FORCED CAPTION ALIGNMENT — for any voiced beat without cached word timings, transcribe
     # its voiceover once and align the KNOWN caption words to the real speech. Cached on
     # Beat.caption_timings so re-exports are instant; failure just leaves even-split timing.
-    _ensure_caption_timings(beats, progress)
+    if not ignore_beat_vo:
+        _ensure_caption_timings(beats, progress)
 
     td = ticket_dir(ticket_id)
     segdir = td / "segs"
