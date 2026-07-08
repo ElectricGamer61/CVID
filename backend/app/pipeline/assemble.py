@@ -7,6 +7,8 @@ object storage + a job queue.
 """
 from __future__ import annotations
 
+import difflib
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -37,8 +39,103 @@ def _even_split(text: str, dur: float) -> list[dict]:
             for i, w in enumerate(toks)]
 
 
+def _norm(w: str) -> str:
+    """Comparison key for aligning known words to transcript words (letters/digits only)."""
+    return re.sub(r"[^a-z0-9]", "", (w or "").lower())
+
+
+def align_known_words(known_text: str, transcript_words: list[dict], dur: float) -> list[dict]:
+    """Forced-alignment (lite): give the KNOWN caption words REAL spoken timings.
+
+    The script words are canonical (we keep them verbatim as the on-screen caption); the
+    transcript of the voiceover only supplies *timing*. We align the two token streams
+    (`difflib`), anchor each matched script word to its transcript word's start time, and
+    linearly interpolate timing for any script word the transcript missed (ASR slips).
+    Output is monotonic, gapless, and clamped to [0, dur]. Falls back to `_even_split`
+    when there's no usable transcript — so callers always get valid timings."""
+    known = (known_text or "").split()
+    if not known:
+        return []
+    dur = max(float(dur or 0.0), 0.1)
+    tw = [w for w in (transcript_words or [])
+          if w.get("start") is not None and w.get("end") is not None]
+    if not tw:
+        return _even_split(known_text, dur)
+
+    kn = [_norm(w) for w in known]
+    tn = [_norm(w.get("word", "")) for w in tw]
+    anchor: list[float | None] = [None] * len(known)
+    for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(a=kn, b=tn, autojunk=False).get_opcodes():
+        if tag == "equal":
+            for k in range(i2 - i1):
+                anchor[i1 + k] = float(tw[j1 + k]["start"])
+    if all(a is None for a in anchor):
+        return _even_split(known_text, dur)
+
+    # Bracket the anchored points with virtual endpoints (0.0 before the first word,
+    # dur after the last) so every index sits inside an interpolation segment.
+    pts = [(-1.0, 0.0)] + [(float(i), t) for i, t in enumerate(anchor) if t is not None] \
+          + [(float(len(known)), dur)]
+
+    def interp(idx: float) -> float:
+        k = 0
+        while k < len(pts) - 2 and pts[k + 1][0] <= idx:
+            k += 1
+        (x0, y0), (x1, y1) = pts[k], pts[k + 1]
+        frac = 0.0 if x1 == x0 else (idx - x0) / (x1 - x0)
+        return y0 + frac * (y1 - y0)
+
+    out: list[dict] = []
+    prev = 0.0
+    for i, w in enumerate(known):
+        s = min(max(interp(float(i)), prev), dur)
+        e = min(max(interp(float(i + 1)), s + 0.02), dur)
+        out.append({"start": round(s, 3), "end": round(e, 3), "word": w})
+        prev = s
+    return out
+
+
+def timings_from_voiceover(known_text: str, vo_path, dur: float | None = None,
+                           backend: str | None = None) -> list[dict] | None:
+    """Transcribe a voiceover and align the KNOWN caption words to its real speech.
+
+    Best-effort: returns aligned [{start,end,word}] or None if transcription/alignment
+    fails (caller then keeps the even-split fallback). The transcript words are discarded
+    — only their timings are borrowed for the script words (see `align_known_words`)."""
+    try:
+        from .transcribe import transcribe
+        vo = Path(vo_path)
+        if not vo.exists() or not (known_text or "").strip():
+            return None
+        d = float(dur or probe_duration(vo) or 0.0)
+        res = transcribe(vo, backend=backend or settings.DEFAULT_TRANSCRIBE)
+        aligned = align_known_words(known_text, res.get("words") or [], d)
+        return aligned or None
+    except Exception as e:  # noqa: BLE001 - alignment is a best-effort quality upgrade
+        print(f"[align] timing failed: {e}")
+        return None
+
+
+def _caption_words(text: str, dur: float, timings: list | None) -> list[dict]:
+    """Prefer real per-word `timings` (from `align_known_words`, cached on the row);
+    otherwise even-split the known words. Timings are clamped to [0, dur] and kept
+    monotonic so a stale/mismatched cache can never produce bad ASS."""
+    if isinstance(timings, list) and timings and \
+            all(isinstance(x, dict) and "word" in x for x in timings):
+        out: list[dict] = []
+        prev = 0.0
+        for x in timings:
+            s = min(max(float(x.get("start") or 0.0), prev), dur)
+            e = min(max(float(x.get("end") or 0.0), s + 0.02), dur)
+            out.append({"start": round(s, 3), "end": round(e, 3), "word": x["word"]})
+            prev = s
+        return out
+    return _even_split(text, dur)
+
+
 def _write_beat_ass(beat: dict, dur: float, ass_path: Path) -> None:
-    write_ass(_even_split(beat["caption"], dur), 0.0, dur, "capcut", ass_path)
+    words = _caption_words(beat.get("caption") or "", dur, beat.get("caption_timings"))
+    write_ass(words, 0.0, dur, "capcut", ass_path)
     osd = (beat.get("on_screen_text") or "").strip()
     if osd:
         # static top-center overlay for the whole beat (reuses the Base style)
@@ -270,6 +367,35 @@ def render_scene_reel(source: Path, out_path: Path, markers: list[dict],
     return out_path
 
 
+def _ensure_caption_timings(beats: list[dict], progress=None) -> None:
+    """Fill Beat.caption_timings for voiced beats that don't have it yet (transcribe the
+    VO once, align known words, cache on the row). Mutates the beat dicts in place so the
+    render uses the timings even before the commit lands. Fully best-effort — any beat that
+    fails keeps its even-split fallback and the render proceeds."""
+    from app.db import Beat, get_session
+
+    for i, b in enumerate(beats):
+        vo = b.get("voiceover_path")
+        if not (vo and Path(vo).exists()) or b.get("caption_timings"):
+            continue
+        if not (b.get("caption") or "").strip():
+            continue
+        if progress:
+            progress(f"Timing captions {i + 1}/{len(beats)}")
+        t = timings_from_voiceover(b["caption"], vo)
+        if not t:
+            continue
+        b["caption_timings"] = t
+        try:  # cache so future exports skip the transcription
+            with get_session() as s:
+                row = s.get(Beat, b["id"])
+                if row:
+                    row.caption_timings = t
+                    s.add(row); s.commit()
+        except Exception as e:  # noqa: BLE001 - caching is optional; render already has `t`
+            print(f"[align] cache write failed for beat {b.get('id')}: {e}")
+
+
 def assemble_ticket(ticket_id: int, progress=None) -> Path:
     """Stitch a ticket's beats (in order_index) into data/tickets/{id}/reel.mp4.
     Raises on the proof guard or any ffmpeg failure."""
@@ -290,6 +416,11 @@ def assemble_ticket(ticket_id: int, progress=None) -> Path:
     if gaps:
         raise RuntimeError(
             f"{len(gaps)} proof beat(s) missing a clip — add the product/label footage first")
+
+    # FORCED CAPTION ALIGNMENT — for any voiced beat without cached word timings, transcribe
+    # its voiceover once and align the KNOWN caption words to the real speech. Cached on
+    # Beat.caption_timings so re-exports are instant; failure just leaves even-split timing.
+    _ensure_caption_timings(beats, progress)
 
     td = ticket_dir(ticket_id)
     segdir = td / "segs"
