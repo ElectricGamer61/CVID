@@ -1,5 +1,6 @@
 // Thin API client for the Cvideo backend.
 import { CaptionStyle, Word } from "./captionStyles";
+import { getApiToken, setApiToken } from "./apiToken";
 
 export interface Project {
   id: number;
@@ -242,6 +243,14 @@ async function req<T>(input: string, init?: RequestInit): Promise<T> {
     r = await fetch(input, init);
   } catch {
     throw new Error("Can't reach the app — is the server running?");
+  }
+  if (r.status === 401) {
+    // Backend has an API token set. Ask for it, store it, and reload so the patched
+    // fetch resends every request with the token. (No token configured = never hit.)
+    const cur = getApiToken();
+    const t = window.prompt(cur ? "Access token rejected — re-enter it:" : "This Cvideo needs an access token:");
+    if (t) { setApiToken(t); location.reload(); }
+    throw new Error("Access token required");
   }
   if (!r.ok) {
     let detail = "";

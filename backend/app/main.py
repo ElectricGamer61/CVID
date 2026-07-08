@@ -11,7 +11,7 @@ from typing import Optional
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -29,6 +29,26 @@ app.add_middleware(
     allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
     allow_methods=["*"], allow_headers=["*"],
 )
+
+
+# OPT-IN API auth (lock the doors before any multi-user / public exposure). When
+# CVIDEO_API_TOKEN is empty (the default) this is a no-op — solo/local use is unchanged.
+# When set, every /api/* call must carry the token (X-API-Token or Bearer). /api/health
+# stays open so the frontend's offline banner can probe without it.
+@app.middleware("http")
+async def _require_api_token(request, call_next):
+    token = settings.API_TOKEN
+    if token:
+        path = request.url.path
+        if path.startswith("/api") and path != "/api/health":
+            sent = request.headers.get("x-api-token") or ""
+            if not sent:
+                auth = request.headers.get("authorization") or ""
+                if auth.lower().startswith("bearer "):
+                    sent = auth[7:]
+            if sent != token:
+                return JSONResponse({"detail": "invalid or missing API token"}, status_code=401)
+    return await call_next(request)
 
 _render_pool = ThreadPoolExecutor(max_workers=2)
 # Transient assemble progress per ticket (no schema change needed): id -> {state,stage,error}

@@ -42,6 +42,11 @@ CLAUDE_MODEL = os.getenv("CVIDEO_CLAUDE_MODEL", "claude-opus-4-8")
 # claude | ollama | gemini | heuristic. Defaults to claude when the key is present.
 DEFAULT_BRAIN = os.getenv("CVIDEO_DEFAULT_BRAIN", "claude" if ANTHROPIC_API_KEY else "ollama")
 
+# OPT-IN API token. Empty (default) = no auth, solo/local use is frictionless. Set a value
+# and every /api/* call must send it (X-API-Token or `Authorization: Bearer <token>`) —
+# the lock to add before exposing the app to anyone else. See main._require_api_token.
+API_TOKEN = os.getenv("CVIDEO_API_TOKEN", "")
+
 # Transcription backend: local (faster-whisper, free) | elevenlabs (Scribe, paid key)
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "")
 ELEVENLABS_MODEL = os.getenv("CVIDEO_ELEVENLABS_MODEL", "scribe_v1")
