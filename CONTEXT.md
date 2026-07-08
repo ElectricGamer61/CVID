@@ -305,7 +305,15 @@ Plain-language UI: a ticket = "video", a beat = "scene", an outlier = an "idea".
 - **Voiceovers are 48 kHz stereo** (`extract_voiceover`), not the 16 kHz mono Whisper path — using the
   Whisper path made recorded voice sound bad.
 - **Voice-first timing:** the recorded voice is the master; the scene's video is looped/held to it.
-  Captions are **even-split** across the voice (forced alignment is a future refinement).
+- **Forced caption alignment** (`assemble.align_known_words` / `timings_from_voiceover`): captions get
+  REAL per-word timings by transcribing the voiceover and aligning the KNOWN script words to it
+  (difflib anchor + interpolation; transcript words are discarded, only their timing is borrowed).
+  Wired into BOTH export paths — native `assemble_ticket` (caches `Beat.caption_timings`, transcribes
+  once) and editor `render_scene_reel` (per-scene, recomputed per export, no cache field yet). **Safe
+  opt-in upgrade:** any failure (no key, no speech, bad audio) falls back to the old **even-split**, so
+  output is byte-identical when a beat/scene has no usable voiceover transcript. NOTE: the editor
+  *preview* still shows even-split words (built by `build_edit_video`); the EXPORT is the aligned one,
+  so preview ≠ export for voiced captions (approx preview, accurate export).
 - **Editor reuse for reels:** `build-edit` turns a reel into a caption-mode Project+Clip so the normal
   editor (preview/captions/trim/cut/voice) applies; scene boundaries ride along as `markers_json`.
   `MomentsGrid` auto-opens a caption-mode project's editor once (module-level `autoOpenedPids` guard
@@ -360,9 +368,12 @@ Plain-language UI: a ticket = "video", a beat = "scene", an outlier = an "idea".
   tt/ig/yt) — dodges the Meta-ban/TikTok-audit walls since Upload-Post already brokers the accounts;
   needs `UPLOAD_POST_API_KEY` set (same key that makes posting live). Account-level is easy; per-video
   needs matching each post's `job_id`/`request_id` captured at post time.
-- **Forced caption alignment** to the actual recorded speech (currently even-split across the voice).
+- ~~**Forced caption alignment**~~ DONE (2026-07-07) — `assemble.align_known_words` /
+  `timings_from_voiceover`; both export paths, even-split fallback. Still unproven on a watched export
+  (timing correctness needs eyes). Preview stays even-split; export is aligned.
 - **Long-form whole-clip voice** lacks the reading-speed control + uses `-shortest` (can clip the
-  tail); the per-scene reel path has the full voice-first treatment.
+  tail); the per-scene reel path has the full voice-first treatment. (Left as-is — the voice/video
+  duration trade-off needs a watched export to get right; not touched by the alignment work.)
 - **Middle-cut (Cut) + per-scene voice are mutually exclusive** — the per-scene export path ignores
   `cuts_json`.
 - **Reel render is fixed 1080×1920** (no 1440p/4k tier; long-form clips already support tiers).
