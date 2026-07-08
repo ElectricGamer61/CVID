@@ -1164,6 +1164,10 @@ def post_ticket(tid: int, body: PostTicket):
             t.stage = "posted"
             if not t.posted_at:
                 t.posted_at = datetime.utcnow()
+        # Capture the Upload-Post ids (present in real mode; None in dry-run) so a scheduled
+        # post can later be cancelled and per-video stats matched back.
+        t.job_id = result.get("job_id") or t.job_id
+        t.request_id = result.get("request_id") or t.request_id
         s.add(t); s.commit()
     return result
 

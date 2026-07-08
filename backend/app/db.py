@@ -136,6 +136,10 @@ class Ticket(SQLModel, table=True):
     platforms: list = Field(default_factory=list, sa_column=Column(JSON))   # ['tt','ig','yt']
     scheduled_at: Optional[datetime] = None
     posted_at: Optional[datetime] = None
+    # Upload-Post ids captured at post time — for schedule status / cancel and per-video
+    # metrics matching later. Null in dry-run (no key) until a real post runs.
+    job_id: Optional[str] = None       # FUTURE: cancel a scheduled post via the Upload-Post API
+    request_id: Optional[str] = None
     # User-assigned Downloads folder (drag-to-move). None -> grouped under the brand.
     folder: Optional[str] = None
     # True when the script was written by the app's AI (Script Factory) — drives the reel's
@@ -262,7 +266,7 @@ def _migrate() -> None:
                     "mode": "TEXT DEFAULT 'moments'", "folder": "TEXT", "brand": "TEXT"},
         "ticket": {"folder": "TEXT", "post_meta": "TEXT", "ai_generated": "INTEGER DEFAULT 0",
                    "autopilot": "INTEGER DEFAULT 0", "gate": "TEXT", "gate_reason": "TEXT",
-                   "attempts_json": "TEXT"},
+                   "attempts_json": "TEXT", "job_id": "TEXT", "request_id": "TEXT"},
         "beat": {"caption_timings": "TEXT"},
     }
     with _engine.connect() as conn:
