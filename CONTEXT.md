@@ -332,6 +332,16 @@ Plain-language UI: a ticket = "video", a beat = "scene", an outlier = an "idea".
   also **prefetch the full video in the background** right after analysis (`jobs._prefetch_full`), so the
   first export is usually instant instead of waiting on a download.
 - **PATH refresh** mandatory in every new shell (§1).
+- **Opt-in API auth** (`settings.API_TOKEN` / `CVIDEO_API_TOKEN`): empty (default) = no auth, solo/local
+  use unchanged. Set it and `main._require_api_token` guards every `/api/*` call (health exempt);
+  accepts `X-API-Token` or `Bearer`. Frontend `apiToken.ts` patches `fetch` to attach the stored token
+  and `req()` prompts for it on 401. The lock to turn on before exposing the app to anyone else.
+- **Upload-Post `job_id`/`request_id`** are persisted on the Ticket at post time (`Ticket.job_id`,
+  `Ticket.request_id`; None in dry-run) so a scheduled post can be cancelled + per-video stats matched
+  later. The cancel-via-API call itself is a `# FUTURE:` marker.
+- **Whole-clip voiceover no longer truncates:** `render._voice_pad_suffix` holds the last frame (tpad)
+  when a voiceover overruns the clip, so `-shortest` can't cut the voice tail. Byte-identical when the
+  voice fits (common case). The freeze-frame still wants a watched export to confirm it feels right.
 
 ---
 
@@ -371,9 +381,8 @@ Plain-language UI: a ticket = "video", a beat = "scene", an outlier = an "idea".
 - ~~**Forced caption alignment**~~ DONE (2026-07-07) — `assemble.align_known_words` /
   `timings_from_voiceover`; both export paths, even-split fallback. Still unproven on a watched export
   (timing correctness needs eyes). Preview stays even-split; export is aligned.
-- **Long-form whole-clip voice** lacks the reading-speed control + uses `-shortest` (can clip the
-  tail); the per-scene reel path has the full voice-first treatment. (Left as-is — the voice/video
-  duration trade-off needs a watched export to get right; not touched by the alignment work.)
+- **Long-form whole-clip voice** — `-shortest` tail-clip FIXED (2026-07-07, holds last frame when the
+  voice overruns; see §7). Still lacks the record-time reading-speed control the per-scene panel has.
 - **Middle-cut (Cut) + per-scene voice are mutually exclusive** — the per-scene export path ignores
   `cuts_json`.
 - **Reel render is fixed 1080×1920** (no 1440p/4k tier; long-form clips already support tiers).
