@@ -335,7 +335,10 @@ def render_scene_reel(source: Path, out_path: Path, markers: list[dict],
             # length (`-t dur` below) instead of looping the video out to the full VO.
             vo_dur = float(probe_duration(Path(vo)) or kept_dur)
             dur = max(0.8, min(float(kept_dur), vo_dur))
-            local_words = _even_split(" ".join(w["word"] for w in scene_words), dur)
+            # Forced alignment: give the scene's KNOWN caption words REAL spoken timings by
+            # transcribing this scene's voiceover; even-split is the fallback if that fails.
+            known = " ".join(w["word"] for w in scene_words)
+            local_words = timings_from_voiceover(known, vo, dur) or _even_split(known, dur)
         else:
             dur = max(0.8, float(kept_dur))
             # Re-time captions onto the post-cut (compressed) scene timeline.
