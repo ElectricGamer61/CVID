@@ -17,6 +17,22 @@ def _escape_subtitles_path(p: Path) -> str:
     return s
 
 
+def _voice_pad_suffix(voiceover: "Path | None", video_dur: float) -> str:
+    """Video-filter suffix that HOLDS the last frame when the voiceover runs longer than
+    the video, so `-shortest` can't chop the tail of the voice off (lost spoken words).
+    Returns "" (no change -> byte-identical output) when the voice fits the video, which
+    is the common case. Voice-first: the recorded voice is the master."""
+    if not voiceover:
+        return ""
+    from .ingest import probe_duration
+    try:
+        vo_dur = float(probe_duration(Path(voiceover)) or 0.0)
+    except Exception:  # noqa: BLE001 - a probe failure just means "don't pad"
+        return ""
+    extra = vo_dur - float(video_dur or 0.0)
+    return f",tpad=stop_mode=clone:stop_duration={extra:.3f}" if extra > 0.05 else ""
+
+
 def _fonts_dir() -> str | None:
     """Windows Fonts dir so libass can always resolve a font (it renders nothing
     if it finds none)."""
@@ -182,7 +198,8 @@ def render_clip_segments(source: Path, out_path: Path,
     concat_in = "".join(f"[v{i}][a{i}]" for i in range(len(segments)))
     parts.append(f"{concat_in}concat=n={len(segments)}:v=1:a=1[vc][ac];")
     zf = _zoom_filter(zoom, out_w, out_h)
-    parts.append(f"[vc]{crop},{subs}{',' + zf if zf else ''}[vout]")
+    tail = _voice_pad_suffix(voiceover, sum(b - a for a, b in segments))
+    parts.append(f"[vc]{crop},{subs}{',' + zf if zf else ''}{tail}[vout]")
     filter_complex = "".join(parts)
 
     cmd = ["ffmpeg", "-y", "-i", str(source)]
@@ -212,6 +229,8 @@ def render_clip(source: Path, out_path: Path, start: float, end: float,
     zf = _zoom_filter(zoom, out_w, out_h)
     if zf:
         vf = f"{vf},{zf}"
+    # Hold the last frame if the voiceover overruns the clip, so its tail isn't cut.
+    vf = f"{vf}{_voice_pad_suffix(voiceover, end - start)}"
 
     cmd = ["ffmpeg", "-y", "-ss", f"{start:.3f}", "-to", f"{end:.3f}", "-i", str(source)]
     if voiceover:
