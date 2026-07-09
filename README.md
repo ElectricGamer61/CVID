@@ -6,17 +6,30 @@ TikTok-style captions → editor → export. Runs entirely on your PC.
 
 ## 🚀 Dead-simple install (Windows laptop)
 
-Open **PowerShell** and paste this one line — it installs everything (Git, Python, Node,
-ffmpeg), downloads the app, builds it, asks for your keys, and launches it:
+This repo is **private**, so the very first step needs a one-time sign-in (a browser window
+pops up automatically — no token, nothing to paste). After that it's fully automated.
 
+**1.** Open PowerShell and install Git (skip if you already have it):
 ```powershell
-iwr -useb https://raw.githubusercontent.com/ElectricGamer61/CVID/main/scripts/bootstrap.ps1 | iex
+winget install -e --id Git.Git
+```
+Close and reopen PowerShell so `git` is on PATH.
+
+**2.** Clone the repo (a browser window opens once — sign in to GitHub there):
+```powershell
+git clone https://github.com/ElectricGamer61/CVID.git
 ```
 
-That's it. When it asks, paste your **ElevenLabs** and **OpenAI** API keys (or press Enter to
-add them later in `backend\.env`). After the first run, just double-click **`serve.cmd`** to
-start it again. This is the **bare-bones** build: ElevenLabs for voice/transcription + OpenAI
-for writing — no local AI models, ~1 GB total, no GPU needed.
+**3.** Open the new `CVID` folder and double-click **`install.cmd`**. It installs everything
+else (Python, Node, ffmpeg), builds the app, asks for your **ElevenLabs** and **OpenAI** API
+keys (press Enter to add them later in `backend\.env`), and launches it.
+
+After the first run, just double-click **`serve.cmd`** to start it again. This is the
+**bare-bones** build: ElevenLabs for voice/transcription + OpenAI for writing — no local AI
+models, ~1 GB total, no GPU needed.
+
+<sub>If you ever make this repo public, `scripts/bootstrap.ps1` can also run as a single
+`iwr -useb <raw-url> | iex` one-liner that does steps 1–3 for you in one shot.</sub>
 
 <sub>Already cloned the repo? Just double-click **`install.cmd`** instead.</sub>
 
