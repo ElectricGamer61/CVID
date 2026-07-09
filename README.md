@@ -4,6 +4,24 @@ Your own free, local clone of wayinvideo / OpusClip. Turns long-form YouTube vid
 into vertical shorts: auto-transcribe → AI picks the best moments → 9:16 reframe →
 TikTok-style captions → editor → export. Runs entirely on your PC.
 
+## 🚀 Dead-simple install (Windows laptop)
+
+Open **PowerShell** and paste this one line — it installs everything (Git, Python, Node,
+ffmpeg), downloads the app, builds it, asks for your keys, and launches it:
+
+```powershell
+iwr -useb https://raw.githubusercontent.com/ElectricGamer61/CVID/main/scripts/bootstrap.ps1 | iex
+```
+
+That's it. When it asks, paste your **ElevenLabs** and **OpenAI** API keys (or press Enter to
+add them later in `backend\.env`). After the first run, just double-click **`serve.cmd`** to
+start it again. This is the **bare-bones** build: ElevenLabs for voice/transcription + OpenAI
+for writing — no local AI models, ~1 GB total, no GPU needed.
+
+<sub>Already cloned the repo? Just double-click **`install.cmd`** instead.</sub>
+
+---
+
 ## What's in the box
 - **Backend** (`backend/`) — FastAPI + SQLite pipeline:
   ingest (yt-dlp / upload) → transcribe (faster-whisper) → brain (Ollama / Gemini /
