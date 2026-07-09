@@ -28,6 +28,20 @@ def _gemini_chat(prompt: str) -> str:
     return genai.GenerativeModel(settings.GEMINI_MODEL).generate_content(prompt).text
 
 
+def _openai_chat(prompt: str, temperature: float = 0.7) -> str:
+    """OpenAI (GPT) via the official SDK. Model is CVIDEO_OPENAI_MODEL (default gpt-4o-mini)."""
+    from openai import OpenAI
+    if not settings.OPENAI_API_KEY:
+        raise RuntimeError("OPENAI_API_KEY not set")
+    client = OpenAI(api_key=settings.OPENAI_API_KEY)
+    resp = client.chat.completions.create(
+        model=settings.OPENAI_MODEL,
+        messages=[{"role": "user", "content": prompt}],
+        temperature=temperature,
+    )
+    return resp.choices[0].message.content or ""
+
+
 def _claude_chat(prompt: str, temperature: float = 0.7) -> str:
     """Claude (Anthropic) via the official SDK — the smart brain for scripts/hooks/moments.
     `temperature` is accepted for a uniform signature but NOT forwarded: Opus 4.8/4.7 reject
@@ -55,12 +69,14 @@ def strip_think(text: str) -> str:
 def llm_text(prompt: str, brain: str | None = None, temperature: float = 0.7) -> str:
     """Try the preferred brain, then the other, raising if none work. Reasoning preamble stripped."""
     brain = brain or settings.DEFAULT_BRAIN
-    order = [brain] + [b for b in ("claude", "ollama", "gemini") if b != brain]
+    order = [brain] + [b for b in ("claude", "openai", "ollama", "gemini") if b != brain]
     last: Exception | None = None
     for b in order:
         try:
             if b == "claude":
                 return strip_think(_claude_chat(prompt, temperature))
+            if b == "openai":
+                return strip_think(_openai_chat(prompt, temperature))
             if b == "ollama":
                 return strip_think(_ollama_chat(prompt, temperature))
             if b == "gemini":

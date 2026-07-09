@@ -259,6 +259,30 @@ class GeminiScorer(ScorerBackend):
         return _normalize(_extract_json_array(resp.text), words)
 
 
+class OpenAIScorer(ScorerBackend):
+    """OpenAI (GPT) viral-moment picker. JSON-object response mode; the robust parser
+    pulls the clips array out."""
+    name = "openai"
+
+    def score(self, words: list[dict], n: int) -> list[dict]:
+        from openai import OpenAI
+
+        if not settings.OPENAI_API_KEY:
+            raise RuntimeError("OPENAI_API_KEY not set")
+        client = OpenAI(api_key=settings.OPENAI_API_KEY)
+        prompt = learn.winners_prompt_block() + _PROMPT.format(
+            n=n, mins=int(settings.MIN_CLIP_SEC), maxs=int(settings.MAX_CLIP_SEC),
+            transcript=build_timed_transcript(words),
+        )
+        resp = client.chat.completions.create(
+            model=settings.OPENAI_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"},
+            temperature=0.4,
+        )
+        return _normalize(_extract_json_array(resp.choices[0].message.content or ""), words)
+
+
 class ClaudeScorer(ScorerBackend):
     """Claude (Anthropic) viral-moment picker — the smart brain. Same prompt as the others;
     Claude follows the 'return JSON' instruction well and the robust parser handles the rest."""
@@ -300,6 +324,7 @@ class HeuristicScorer(ScorerBackend):
 def get_backend(name: str) -> ScorerBackend:
     return {
         "claude": ClaudeScorer,
+        "openai": OpenAIScorer,
         "ollama": OllamaScorer,
         "gemini": GeminiScorer,
         "heuristic": HeuristicScorer,

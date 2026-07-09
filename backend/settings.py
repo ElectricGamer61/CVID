@@ -32,6 +32,11 @@ OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_MODEL = os.getenv("CVIDEO_GEMINI_MODEL", "gemini-1.5-flash")
 
+# OpenAI (GPT) — a cloud brain option: scripts, hooks, post copy, viral-moment picking.
+# Uses the official `openai` SDK. Set OPENAI_API_KEY and CVIDEO_DEFAULT_BRAIN=openai.
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+OPENAI_MODEL = os.getenv("CVIDEO_OPENAI_MODEL", "gpt-4o-mini")
+
 # Claude (Anthropic) — the "smart brain": scripts, hooks, post copy, and viral-moment
 # picking. Uses the official `anthropic` SDK. When ANTHROPIC_API_KEY is set, Claude becomes
 # the DEFAULT brain (falls back to ollama/gemini/heuristic if a call fails). Opus 4.8 rejects
@@ -39,8 +44,11 @@ GEMINI_MODEL = os.getenv("CVIDEO_GEMINI_MODEL", "gemini-1.5-flash")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 CLAUDE_MODEL = os.getenv("CVIDEO_CLAUDE_MODEL", "claude-opus-4-8")
 
-# claude | ollama | gemini | heuristic. Defaults to claude when the key is present.
-DEFAULT_BRAIN = os.getenv("CVIDEO_DEFAULT_BRAIN", "claude" if ANTHROPIC_API_KEY else "ollama")
+# claude | openai | ollama | gemini | heuristic. Defaults to claude when its key is present,
+# else OpenAI when that key is present, else local ollama.
+DEFAULT_BRAIN = os.getenv(
+    "CVIDEO_DEFAULT_BRAIN",
+    "claude" if ANTHROPIC_API_KEY else "openai" if OPENAI_API_KEY else "ollama")
 
 # Closed learning loop (learn.py) — feeds your best-performing hooks/angles back into the
 # AI's prompts. Set CVIDEO_LEARNING=off for a bare-bones build that never touches generation.

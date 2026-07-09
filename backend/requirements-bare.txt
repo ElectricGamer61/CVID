@@ -1,9 +1,9 @@
-# Cvideo backend deps - BARE BONES (laptop, ElevenLabs + cloud Gemini brain).
+# Cvideo backend deps - BARE BONES (laptop, ElevenLabs + cloud OpenAI brain).
 # The smallest working install: no local Whisper (transcribe via ElevenLabs), no local
-# LLM (write via cloud Gemini). Drops faster-whisper (the ~big ML download + the 3 GB
-# Whisper model it pulls) and the ollama/anthropic client packages, which this build
-# never calls. Everything here is imported lazily except opencv/numpy, which the reel
-# assembler and 9:16 reframe need at import time — so they STAY.
+# LLM (write via cloud OpenAI/GPT). Drops faster-whisper (the ~big ML download + the 3 GB
+# Whisper model it pulls) and the ollama/anthropic/gemini client packages, which this
+# build never calls. Everything here is imported lazily except opencv/numpy, which the
+# reel assembler and 9:16 reframe need at import time — so they STAY.
 #
 # Install inside the venv (Python 3.11):  pip install -r requirements-bare.txt
 fastapi==0.115.6
@@ -19,4 +19,4 @@ opencv-contrib-python==4.13.0.92
 numpy==2.2.1
 requests==2.32.3
 # Cloud brain - the ONLY LLM client this build installs (scripts/hooks/post-copy/moments).
-google-generativeai==0.8.3
+openai>=1.40,<2
