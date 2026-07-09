@@ -3,9 +3,10 @@
 #
 # Run:  powershell -ExecutionPolicy Bypass -File scripts\setup-laptop.ps1
 #
-# What it does: checks Python 3.11 / ffmpeg / Node, builds the venv with the LEAN
-# deps (no CUDA - no GPU needed), seeds backend\.env from the template, and builds
-# the UI. After it finishes: paste your keys into backend\.env, then run serve.cmd.
+# What it does: checks Python 3.11 / ffmpeg / Node, builds the venv with the BARE-BONES
+# deps (no CUDA, no local Whisper, no local LLM - ElevenLabs + cloud Gemini), seeds
+# backend\.env from the template, and builds the UI. After it finishes: paste your keys
+# into backend\.env, then run serve.cmd.
 
 $ErrorActionPreference = "Stop"
 $root = Split-Path $PSScriptRoot -Parent
@@ -42,9 +43,9 @@ if (-not (Test-Path ".venv")) {
   Write-Host "Creating Python 3.11 venv..." -ForegroundColor Cyan
   & py -3.11 -m venv .venv
 }
-Write-Host "Installing backend deps (lean - no CUDA)..." -ForegroundColor Cyan
+Write-Host "Installing backend deps (bare-bones - no CUDA, no Whisper, no local LLM)..." -ForegroundColor Cyan
 & .\.venv\Scripts\python.exe -m pip install --upgrade pip
-& .\.venv\Scripts\python.exe -m pip install -r requirements-lean.txt
+& .\.venv\Scripts\python.exe -m pip install -r requirements-bare.txt
 if ($LASTEXITCODE -ne 0) { Write-Host "pip install failed - see errors above." -ForegroundColor Red; exit 1 }
 
 # --- 3. Seed backend\.env ---------------------------------------------------

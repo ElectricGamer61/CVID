@@ -1,0 +1,22 @@
+# Cvideo backend deps - BARE BONES (laptop, ElevenLabs + cloud Gemini brain).
+# The smallest working install: no local Whisper (transcribe via ElevenLabs), no local
+# LLM (write via cloud Gemini). Drops faster-whisper (the ~big ML download + the 3 GB
+# Whisper model it pulls) and the ollama/anthropic client packages, which this build
+# never calls. Everything here is imported lazily except opencv/numpy, which the reel
+# assembler and 9:16 reframe need at import time — so they STAY.
+#
+# Install inside the venv (Python 3.11):  pip install -r requirements-bare.txt
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+sqlmodel==0.0.22
+python-multipart==0.0.20
+python-dotenv==1.0.1
+yt-dlp==2025.6.9
+# opencv-contrib (not plain opencv-python) - includes the YuNet DNN face detector
+# used for speaker-tracked reframe; also provides crop/probe helpers the assembler
+# imports at module load. Required.
+opencv-contrib-python==4.13.0.92
+numpy==2.2.1
+requests==2.32.3
+# Cloud brain - the ONLY LLM client this build installs (scripts/hooks/post-copy/moments).
+google-generativeai==0.8.3

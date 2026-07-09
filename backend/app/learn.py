@@ -76,7 +76,11 @@ def winning_patterns(limit: int = 5, brand: str | None = None, min_views: int = 
 
 def winners_prompt_block(brand: str | None = None, min_views: int = 0) -> str:
     """A short prompt insert describing what's worked (optionally for one brand). Empty string
-    when there's no qualifying performance data yet (so generation behaves exactly as before)."""
+    when learning is turned off (CVIDEO_LEARNING=off) or there's no qualifying performance data
+    yet — so generation behaves exactly as a plain prompt would."""
+    import settings
+    if not settings.LEARNING_ENABLED:
+        return ""
     w = winning_patterns(brand=brand, min_views=min_views)
     if not (w["top_hooks"] or w["top_angles"]):
         return ""

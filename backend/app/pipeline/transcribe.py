@@ -46,7 +46,15 @@ _model_cache: dict = {}
 
 
 def _get_model(device: str, compute: str):
-    from faster_whisper import WhisperModel
+    try:
+        from faster_whisper import WhisperModel
+    except ModuleNotFoundError:
+        # Bare-bones build (requirements-bare.txt) ships no local Whisper — transcription
+        # is ElevenLabs-only. Give a clear reason instead of a raw import error.
+        raise RuntimeError(
+            "local transcription isn't installed (bare-bones build). Set "
+            "CVIDEO_DEFAULT_TRANSCRIBE=elevenlabs and add your ELEVENLABS_API_KEY, or "
+            "install faster-whisper (requirements-lean.txt) for offline transcription.")
 
     key = (settings.WHISPER_MODEL, device, compute)
     if key not in _model_cache:
