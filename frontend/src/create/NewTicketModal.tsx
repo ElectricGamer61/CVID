@@ -2,7 +2,7 @@
 // the dashboard owns its own creation entry point. (Phase 3 of the redesign replaces
 // this with the four-path creation wizard; kept as-is for now to preserve behavior.)
 import { useState } from "react";
-import { api, Presets } from "../api";
+import { api, NormalizedPlan, Presets } from "../api";
 import { useToast } from "../Toast";
 import { BRANDS, modeLabel } from "./constants";
 
@@ -18,8 +18,20 @@ export function NewTicketModal({ presets, onClose, onCreated }: { presets: Prese
   const [showScript, setShowScript] = useState(false);
   const [autopilot, setAutopilot] = useState(true);
   const [autoVoice, setAutoVoice] = useState(true);
-  const [busy, setBusy] = useState<"" | "create" | "ai" | "script">("");
+  const [busy, setBusy] = useState<"" | "create" | "ai" | "script" | "preview">("");
+  const [preview, setPreview] = useState<NormalizedPlan | null>(null);
   const toast = useToast();
+
+  // Show the user exactly how CVideo will split their pasted text into scenes BEFORE
+  // creating anything — no external chat, no guessing at the format.
+  const previewPlan = async () => {
+    setBusy("preview");
+    try {
+      const p = await api.normalizeScript({ script, angle, format });
+      setPreview(p);
+    } catch (e: any) { toast(`Couldn't read that script: ${e?.message || e}`, "err"); }
+    finally { setBusy(""); }
+  };
   const formats = presets?.formats ?? ["reel", "carousel"];
   const modes = presets?.capture_modes ?? ["longform-clip", "native-short", "repurpose"];
 
@@ -89,8 +101,32 @@ export function NewTicketModal({ presets, onClose, onCreated }: { presets: Prese
         ) : (
           <div className="nt-script">
             <textarea rows={7} value={script} autoFocus
-              placeholder={"Paste your script — plain lines work, or the labeled format:\nHOOK: the first line\n\nBEAT\nSpoken: what the voiceover says\nShot: what to film"}
-              onChange={(e) => setScript(e.target.value)} />
+              placeholder={"Paste anything — rough notes, bullet points, prose, or another AI's output.\nCVideo splits it into scenes for you. No special format needed."}
+              onChange={(e) => { setScript(e.target.value); setPreview(null); }} />
+            <div className="nt-preview-row">
+              <button className="link-btn" onClick={previewPlan} disabled={!script.trim() || busy === "preview"}>
+                {busy === "preview" ? "Reading…" : "👁 Preview scenes"}
+              </button>
+              <span className="muted" style={{ fontSize: 11.5 }}>See how CVideo splits your text before creating.</span>
+            </div>
+            {preview && (
+              <div className="nt-preview">
+                <div className="nt-preview-head">
+                  <b>{preview.plan.beats.length} scene{preview.plan.beats.length === 1 ? "" : "s"}</b>
+                  {preview.plan.hook && <span className="nt-preview-hook">Hook: “{preview.plan.hook}”</span>}
+                </div>
+                <ol className="nt-preview-list">
+                  {preview.plan.beats.map((b) => (
+                    <li key={b.order_index}>
+                      <span className="nt-preview-line">{b.spoken_line}</span>
+                      {b.is_proof_beat && <span className="nt-proof" title="States a number → needs a proof clip">proof</span>}
+                    </li>
+                  ))}
+                </ol>
+                {preview.warnings.map((w, i) => <div key={i} className="nt-preview-warn">⚠ {w}</div>)}
+                {preview.errors.map((e, i) => <div key={i} className="nt-preview-err">✕ {e}</div>)}
+              </div>
+            )}
             <label className="nt-toggle" title="Autopilot voices the scenes, builds the reel, writes captions & tags, and queues the post — pausing for your OK">
               <input type="checkbox" checked={autopilot} onChange={(e) => setAutopilot(e.target.checked)} />
               <span>🤖 Run on autopilot (build &amp; prep the post once clips are in)</span>

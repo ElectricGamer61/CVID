@@ -16,7 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 import settings
-from . import ai, autopilot, cartridge, intake, learn, sheets
+from . import ai, autopilot, cartridge, intake, learn, normalize, sheets
 from .db import (Angle, Beat, Clip, Folder, IngestClip, Outlier, Perf, Project,
                  Ticket, get_session, init_db)
 from .jobs import get_words, start_shootdrop_watcher, submit_analyze, submit_shootdrop
@@ -186,6 +186,13 @@ class TicketFromScript(CreateTicket):
 
 class ImportScript(BaseModel):
     script: str                        # pasted script → replaces this ticket's beats
+
+
+class NormalizeScript(BaseModel):
+    script: str = ""                   # pasted/free-form script (any format) → validated plan
+    angle: str = ""                    # topic/title (used for the starter fallback)
+    format: str = "reel"
+    target_duration_seconds: Optional[int] = None
 
 
 class TicketPatch(BaseModel):
@@ -426,11 +433,17 @@ def _beats_for(s, tid: int) -> list[Beat]:
 
 
 def _replace_beats(s, tid: int, parsed_beats: list[dict]) -> None:
-    """Delete a ticket's beats and recreate them from parsed script beats."""
+    """Delete a ticket's beats and recreate them from parsed script beats.
+
+    This is the single choke point every beat writer passes through (paste, AI script
+    factory, re-import, and autopilot), so it normalizes first: malformed or unbounded
+    model output can never create broken/partial Beat rows — it degrades to a clean,
+    capped, fully-formed set (see normalize.normalize_beats)."""
     from sqlmodel import select
+    beats = normalize.normalize_beats(parsed_beats)
     for b in s.exec(select(Beat).where(Beat.ticket_id == tid)).all():
         s.delete(b)
-    for pb in parsed_beats:
+    for pb in beats:
         s.add(Beat(ticket_id=tid, order_index=pb["order_index"],
                    spoken_line=pb["spoken_line"], on_screen_text=pb["on_screen_text"],
                    caption=pb["caption"], shot_cue=pb["shot_cue"],
@@ -476,6 +489,25 @@ def create_ticket_from_script(body: TicketFromScript):
         s.commit(); s.refresh(t)
         return {"ticket": t.model_dump(),
                 "beats": [b.model_dump() for b in _beats_for(s, tid)]}
+
+
+@app.post("/api/scripts/normalize")
+def normalize_script_preview(body: NormalizeScript):
+    """Preview a validated video plan from a pasted/free-form script (or a starter
+    skeleton) WITHOUT creating a ticket — powers the creation wizard's plan step.
+
+    Any text works (labeled beats, prose, another AI's output, bullet points): it's
+    parsed deterministically, normalized, and validated. Empty/unusable input yields an
+    editable starter plan plus a plain-English note, never an error."""
+    parsed = intake.parse_script(body.script or "")
+    plan = normalize.normalize_plan(
+        beats=parsed["beats"], hook=parsed["hook"], title=body.angle,
+        fmt=body.format, target_duration_seconds=body.target_duration_seconds)
+    warnings: list[str] = []
+    if not plan["beats"]:
+        plan = normalize.starter_plan(body.angle, body.format)
+        warnings.append("We couldn't find scenes in that text — here's a starter plan you can edit.")
+    return {"plan": plan, "warnings": warnings, "errors": normalize.validate_plan(plan)}
 
 
 @app.post("/api/tickets/{tid}/import-script")

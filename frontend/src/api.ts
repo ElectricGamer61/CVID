@@ -144,6 +144,29 @@ export interface TicketWithBeats {
   beats: Beat[];
 }
 
+// A validated, canonical video plan (from POST /api/scripts/normalize) — CVideo owns
+// this structure, so a plan is renderable without any external prompt-formatting loop.
+export interface PlanBeat {
+  order_index: number;
+  spoken_line: string;
+  on_screen_text: string;
+  caption: string;
+  shot_cue: string;
+  is_proof_beat: boolean;
+}
+export interface VideoPlan {
+  title: string;
+  hook: string;
+  format: string;
+  target_duration_seconds: number | null;
+  beats: PlanBeat[];
+}
+export interface NormalizedPlan {
+  plan: VideoPlan;
+  warnings: string[];
+  errors: string[];
+}
+
 export interface NewTicketBody {
   brand: string;
   angle: string;
@@ -329,6 +352,9 @@ export const api = {
     req("/api/tickets/from-script", jsonInit("POST", body)),
   importScript: (tid: number, script: string): Promise<TicketWithBeats> =>
     req(`/api/tickets/${tid}/import-script`, jsonInit("POST", { script })),
+  // Preview a validated plan from any pasted/free-form text (no ticket created).
+  normalizeScript: (body: { script: string; angle?: string; format?: string; target_duration_seconds?: number | null }): Promise<NormalizedPlan> =>
+    req("/api/scripts/normalize", jsonInit("POST", body)),
   patchTicket: (tid: number, body: Partial<Ticket>): Promise<Ticket> =>
     req(`/api/tickets/${tid}`, jsonInit("PATCH", body)),
   deleteTicket: (tid: number): Promise<{ deleted: number }> =>

@@ -919,3 +919,15 @@ button.primary.danger-solid:hover { background: #db3a48; border-color: #db3a48; 
   .cp-phases { grid-template-columns: repeat(2, 1fr); }
   .cp-row-status { width: auto; }
 }
+
+/* ---- New-video plan preview (Section C: normalize before creating) ---- */
+.nt-preview-row { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+.nt-preview { margin-top: 10px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-sm); padding: 12px 14px; }
+.nt-preview-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+.nt-preview-hook { font-size: 12px; color: var(--text-2); font-style: italic; }
+.nt-preview-list { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 4px; }
+.nt-preview-list li { font-size: 12.5px; color: var(--text); }
+.nt-preview-line { }
+.nt-proof { font-size: 10px; font-weight: 800; text-transform: uppercase; color: var(--accent); background: var(--accent-soft); border-radius: 999px; padding: 1px 6px; margin-left: 6px; }
+.nt-preview-warn { font-size: 12px; color: var(--warn); margin-top: 7px; }
+.nt-preview-err { font-size: 12px; color: var(--danger); margin-top: 7px; }
