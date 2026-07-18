@@ -9,7 +9,8 @@ import { useRecorder } from "./useRecorder";
 import { VideoModal } from "./VideoModal";
 import { exportDirSupported, getExportDir, pickExportDir } from "./exportDir";
 import { CreatePage } from "./create/CreatePage";
-import { BRANDS, GATE_LABEL, GATE_POINTS, isGated, markRecent, modeLabel, PHASE_HINT, PHASES, phaseOf } from "./create/constants";
+import { BRANDS, GATE_POINTS, isGated, markRecent, modeLabel, PHASE_HINT, PHASES, phaseOf } from "./create/constants";
+import { deriveAutopilotActivity, deriveTicketState } from "./lib/ticketStatus";
 
 type Route =
   | { name: "home" }
@@ -111,10 +112,21 @@ export default function App() {
 // AI actions + "make it" in a sticky right rail.
 function VideoWorkspace({ tid, presets, onBack, onOpenEditor }: { tid: number; presets: Presets | null; onBack: () => void; onOpenEditor: (pid: number, cid: number) => void }) {
   const [data, setData] = useState<{ ticket: Ticket; beats: Beat[] } | null>(null);
+  const [apRunning, setApRunning] = useState(false);
   const toast = useToast();
   const confirm = useConfirm();
   const load = () => api.getTicket(tid).then(setData).catch(() => {});
   useEffect(() => { load(); markRecent(tid); }, [tid]);
+  // Poll the global Autopilot loop state so this video can honestly say "running" vs
+  // "paused" (and refresh the ticket to reflect steps Autopilot takes in the background).
+  useEffect(() => {
+    const t = setInterval(() => {
+      api.autopilotState().then((s) => setApRunning(!!s.running)).catch(() => {});
+      if (data?.ticket.autopilot) load();
+    }, 4000);
+    api.autopilotState().then((s) => setApRunning(!!s.running)).catch(() => {});
+    return () => clearInterval(t);
+  }, [tid, data?.ticket.autopilot]);
 
   const patchT = async (body: Partial<Ticket>) => { await api.patchTicket(tid, body); load(); };
   const setPhase = async (j: number) => {
@@ -190,6 +202,11 @@ function VideoWorkspace({ tid, presets, onBack, onOpenEditor }: { tid: number; p
         const { ticket, beats } = data;
         const proofGaps = beats.filter((b) => b.is_proof_beat && !b.clip_path).length;
         const phase = phaseOf(ticket.stage);
+        // getTicket() doesn't carry the scene-count summary the list endpoint does, so
+        // compute it from the real beats for an accurate derived status/activity.
+        const tk: Ticket = { ...ticket, n_beats: beats.length,
+          n_clips: beats.filter((b) => b.clip_path).length,
+          n_vo: beats.filter((b) => b.voiceover_path).length };
         return (
           <>
             <div className="vw-head">
@@ -222,21 +239,57 @@ function VideoWorkspace({ tid, presets, onBack, onOpenEditor }: { tid: number; p
               </div>
             </div>
 
-            {ticket.autopilot && !isGated(ticket) && (
-              <div className="vw-ap-hint">🤖 {GATE_POINTS}</div>
-            )}
-            {isGated(ticket) && (
-              <div className="vw-gate">
-                <div className="vw-gate-msg">⏸ <b>{GATE_LABEL[ticket.gate || "awaiting_approval"]}</b>{ticket.gate_reason ? ` — ${ticket.gate_reason}` : ""}</div>
-                <div className="vw-gate-actions">
-                  {ticket.gate === "awaiting_footage"
-                    ? <span className="muted" style={{ fontSize: 12.5 }}>Add footage to the scenes below — it continues on its own once every proof scene has a clip.</span>
-                    : <button className="primary" onClick={() => apAct(() => api.autopilotApprove(tid), "Approved — it'll continue on the next tick")}>Approve</button>}
-                  <button onClick={() => apAct(() => api.autopilotRegenerate(tid), "Regenerating this step")}>Regenerate</button>
-                  <button className="danger" onClick={() => apAct(() => api.autopilotReject(tid), "Autopilot turned off — you're driving")}>Kill autopilot</button>
+            {(() => {
+              // One clear production status + one primary next action, in plain English.
+              const st = deriveTicketState(tk, { autopilotRunning: apRunning });
+              const scrollTo = (id: string) => () => document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "center" });
+              const primary = ((): { label: string; onClick: () => void } | null => {
+                switch (st.primaryAction.action) {
+                  case "write-script": return { label: st.primaryAction.label, onClick: runScript };
+                  case "assemble": return { label: st.primaryAction.label, onClick: assembleReel };
+                  case "add-footage": case "add-voice": return { label: st.primaryAction.label, onClick: scrollTo("vw-scenes") };
+                  case "open-review": case "review-approval": return { label: st.primaryAction.label, onClick: scrollTo("vw-make") };
+                  default: return null;
+                }
+              })();
+              return (
+                <div className={"vw-status vw-pri-" + st.priority}>
+                  <div className="vw-status-main">
+                    <span className="vw-status-label">{st.label}</span>
+                    <span className="vw-status-desc">{st.description}</span>
+                  </div>
+                  {primary && <button className="primary" onClick={primary.onClick}>{primary.label}</button>}
                 </div>
-              </div>
-            )}
+              );
+            })()}
+
+            {ticket.autopilot && (() => {
+              // Autopilot control loop (Section B/D): what it's doing → what it needs
+              // from you → what happens next, plus take-over / approve / regenerate.
+              const act = deriveAutopilotActivity(tk, { autopilotRunning: apRunning });
+              return (
+                <div className={"vw-ap-panel vw-ap-" + act.state}>
+                  <div className="vw-ap-panel-head">
+                    <span className={"vw-ap-dot vw-ap-dot-" + act.state} />
+                    <span>Autopilot · <b>{act.stateLabel}</b></span>
+                    <span className="vw-ap-spacer" />
+                    <button className="link-btn" title="Turn Autopilot off for this video and drive it yourself"
+                      onClick={() => apAct(() => api.autopilotToggle(tid, false), "Autopilot off — you're driving this one")}>Take over manually</button>
+                  </div>
+                  <div className="vw-ap-loop">
+                    <div className="vw-ap-step"><span className="vw-ap-k">Doing</span><span>{act.doing}</span></div>
+                    {act.needs && <div className="vw-ap-step needs"><span className="vw-ap-k">Needs you</span><span>{act.needs}</span></div>}
+                    <div className="vw-ap-step"><span className="vw-ap-k">Next</span><span>{act.next}</span></div>
+                  </div>
+                  {isGated(ticket) && ticket.gate !== "awaiting_footage" && (
+                    <div className="vw-gate-actions">
+                      <button className="primary" onClick={() => apAct(() => api.autopilotApprove(tid), "Approved — it'll continue")}>Approve</button>
+                      <button onClick={() => apAct(() => api.autopilotRegenerate(tid), "Regenerating this step")}>Regenerate</button>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
 
             <div className="vw-stepper">
               {PHASES.map((p, j) => (
@@ -248,7 +301,7 @@ function VideoWorkspace({ tid, presets, onBack, onOpenEditor }: { tid: number; p
             </div>
 
             <div className="vw-grid">
-              <div className="vw-main">
+              <div className="vw-main" id="vw-scenes">
                 <div className="vw-sec-head">
                   <h4>Scenes ({beats.length})</h4>
                   {proofGaps > 0 && <span className="warn-chip">⚠ {proofGaps} scene{proofGaps > 1 ? "s" : ""} need a video showing proof</span>}
@@ -266,6 +319,7 @@ function VideoWorkspace({ tid, presets, onBack, onOpenEditor }: { tid: number; p
                     <div className="beats">
                       {beats.map((b, i) => (
                         <BeatRow key={b.id} b={b} first={i === 0} last={i === beats.length - 1}
+                          autoVoice={!!ticket.auto_voiceover}
                           onChanged={load} onReorder={reorder} toast={toast} />
                       ))}
                     </div>
@@ -292,7 +346,7 @@ function VideoWorkspace({ tid, presets, onBack, onOpenEditor }: { tid: number; p
                   )}
                 </div>
 
-                <div className="vw-card">
+                <div className="vw-card" id="vw-make">
                   <h4>🎬 Make the video</h4>
                   {ticket.capture_mode !== "native-short" ? (
                     <div className="muted" style={{ fontSize: 12.5 }}>
@@ -302,9 +356,9 @@ function VideoWorkspace({ tid, presets, onBack, onOpenEditor }: { tid: number; p
                     <div className="muted" style={{ fontSize: 12.5 }}>Add scenes first — then preview, record your voice, and make the final video here.</div>
                   ) : (
                     <div className="assemble-box">
-                      <div className="muted" style={{ fontSize: 12.5, marginBottom: 8 }}>Open your scenes as one video — preview it, record your voice, add captions and cut:</div>
+                      <div className="muted" style={{ fontSize: 12.5, marginBottom: 8 }}>Open your scenes in the Clip Editor — preview, record your voice, add captions and cut:</div>
                       <button className="primary big-btn" onClick={openEditor} disabled={building}>
-                        {building ? "Opening editor…" : "✏️ Open in editor"}
+                        {building ? "Opening editor…" : "✏️ Fine-tune clip (Clip Editor)"}
                       </button>
                       <div className="muted" style={{ fontSize: 12, margin: "10px 0 8px" }}>…or make the final video right away:</div>
                       <button className="big-btn" onClick={assembleReel} disabled={asm?.state === "running"}>
@@ -333,8 +387,17 @@ function VideoWorkspace({ tid, presets, onBack, onOpenEditor }: { tid: number; p
 }
 
 /* One editable beat row (uncontrolled inputs → patch on blur to avoid re-render churn). */
-function BeatRow({ b, first, last, onChanged, onReorder, toast }: {
-  b: Beat; first: boolean; last: boolean; onChanged: () => void; onReorder: (b: Beat, d: 1 | -1) => void; toast: Notify;
+// One scene's readiness, in plain English — mirrors the beat states in the redesign
+// brief (Script ready / Needs footage / Footage matched / Needs voiceover / Ready).
+function beatState(b: Beat, autoVoice: boolean): { label: string; cls: string } {
+  if (!(b.spoken_line || b.caption)) return { label: "Add script", cls: "todo" };
+  if (!b.clip_path) return { label: "Needs footage", cls: "todo" };
+  if (!autoVoice && !b.voiceover_path) return { label: "Needs voice", cls: "todo" };
+  return { label: "Ready", cls: "ready" };
+}
+
+function BeatRow({ b, first, last, autoVoice, onChanged, onReorder, toast }: {
+  b: Beat; first: boolean; last: boolean; autoVoice: boolean; onChanged: () => void; onReorder: (b: Beat, d: 1 | -1) => void; toast: Notify;
 }) {
   const clipInput = useRef<HTMLInputElement>(null);
   const voInput = useRef<HTMLInputElement>(null);
@@ -357,7 +420,10 @@ function BeatRow({ b, first, last, onChanged, onReorder, toast }: {
   };
   return (
     <div className={"beat beat-edit" + (b.is_proof_beat && !b.clip_path ? " beat-warn" : "")}>
-      <div className="beat-idx">{b.order_index + 1}</div>
+      <div className="beat-idx">
+        {b.order_index + 1}
+        {(() => { const s = beatState(b, autoVoice); return <span className={"beat-state beat-state-" + s.cls}>{s.label}</span>; })()}
+      </div>
       <div className="beat-body">
         <textarea className="beat-in spoken" rows={2} defaultValue={b.spoken_line} placeholder="What you say out loud…" onBlur={(e) => save("spoken_line", e.target.value)} />
         <input className="beat-in" defaultValue={b.on_screen_text} placeholder="Big text on screen…" onBlur={(e) => save("on_screen_text", e.target.value)} />

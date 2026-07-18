@@ -8,6 +8,7 @@ import assert from "node:assert/strict";
 import type { Ticket } from "../api";
 import {
   deriveTicketState,
+  deriveAutopilotActivity,
   phaseOfStage,
   isActionable,
   sortByPriority,
@@ -145,6 +146,32 @@ test("sortByPriority orders issue → needs-user → ready → scheduled → com
   ];
   const ordered = sortByPriority(tickets, (t) => deriveTicketState(t)).map((t) => t.id);
   assert.deepEqual(ordered, [11, 13, 14, 12, 10]);
+});
+
+test("autopilot activity: footage gate → waiting, with a footage ask", () => {
+  const a = deriveAutopilotActivity(ticket({ gate: "awaiting_footage", n_beats: 3, n_clips: 1 }));
+  assert.equal(a.state, "waiting");
+  assert.match(a.needs, /footage for 2 scenes/);
+  assert.ok(a.next.length > 0);
+});
+
+test("autopilot activity: approval gate → needs-approval", () => {
+  const a = deriveAutopilotActivity(ticket({ gate: "awaiting_approval", gate_reason: "review the reel" }));
+  assert.equal(a.state, "needs-approval");
+  assert.match(a.doing, /review the reel/);
+});
+
+test("autopilot activity: parked → error; posted → complete", () => {
+  assert.equal(deriveAutopilotActivity(ticket({ gate: "parked" })).state, "error");
+  assert.equal(deriveAutopilotActivity(ticket({ stage: "posted", posted_at: "2026-07-18T00:00:00Z" })).state, "complete");
+});
+
+test("autopilot activity: paused when the loop is off, running when on", () => {
+  const base = { stage: "sourced", n_beats: 2, n_clips: 2, n_vo: 2 } as Partial<Ticket>;
+  assert.equal(deriveAutopilotActivity(ticket(base), { autopilotRunning: false }).state, "paused");
+  const r = deriveAutopilotActivity(ticket(base), { autopilotRunning: true });
+  assert.equal(r.state, "running");
+  assert.equal(r.needs, ""); // running: nothing needed from the user
 });
 
 test("PRIORITY_ORDER is a strict ranking with issue first and complete last", () => {

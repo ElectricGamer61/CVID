@@ -920,6 +920,41 @@ button.primary.danger-solid:hover { background: #db3a48; border-color: #db3a48; 
   .cp-row-status { width: auto; }
 }
 
+/* ============================================================================
+   Video Workspace — production status banner + Autopilot activity (Section D)
+   ============================================================================ */
+.vw-pri-issue { --pri: var(--danger); } .vw-pri-needs-user { --pri: var(--primary); }
+.vw-pri-running { --pri: var(--blue); } .vw-pri-ready { --pri: var(--accent); }
+.vw-pri-scheduled { --pri: var(--muted); } .vw-pri-complete { --pri: var(--muted-2); }
+
+.vw-status { display: flex; align-items: center; gap: 16px; background: var(--surface); border: 1px solid var(--border); border-left: 4px solid var(--pri, var(--border-2)); border-radius: var(--r); padding: 12px 16px; margin-bottom: 12px; box-shadow: var(--shadow-sm); }
+.vw-status-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.vw-status-label { font-weight: 800; font-size: 15px; color: var(--pri, var(--text)); }
+.vw-status-desc { font-size: 12.5px; color: var(--text-2); }
+.vw-status .primary { flex: none; }
+
+.vw-ap-panel { background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r); padding: 12px 16px; margin-bottom: 14px; }
+.vw-ap-panel.vw-ap-error { border-color: var(--danger); background: var(--danger-soft); }
+.vw-ap-panel.vw-ap-waiting, .vw-ap-panel.vw-ap-needs-approval { border-color: var(--primary); background: var(--primary-soft); }
+.vw-ap-panel-head { display: flex; align-items: center; gap: 8px; font-size: 13.5px; color: var(--text-2); margin-bottom: 8px; }
+.vw-ap-spacer { flex: 1 1 auto; }
+.vw-ap-dot { width: 9px; height: 9px; border-radius: 50%; flex: none; background: var(--muted-2); }
+.vw-ap-dot-running { background: var(--blue); animation: cpPulse 1.1s ease-in-out infinite; }
+.vw-ap-dot-waiting, .vw-ap-dot-needs-approval { background: var(--primary); }
+.vw-ap-dot-error { background: var(--danger); }
+.vw-ap-dot-complete { background: var(--accent); }
+.vw-ap-loop { display: flex; flex-direction: column; gap: 5px; }
+.vw-ap-step { display: flex; gap: 10px; font-size: 12.5px; color: var(--text-2); line-height: 1.4; }
+.vw-ap-step.needs { color: var(--text); font-weight: 600; }
+.vw-ap-k { flex: none; width: 66px; font-size: 10.5px; font-weight: 800; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); padding-top: 2px; }
+.vw-ap-step.needs .vw-ap-k { color: var(--primary); }
+.vw-ap-panel .vw-gate-actions { margin-top: 10px; display: flex; gap: 8px; }
+
+/* per-beat readiness chip */
+.beat-state { display: block; margin-top: 6px; font-size: 9.5px; font-weight: 800; text-transform: uppercase; letter-spacing: .02em; padding: 2px 6px; border-radius: 999px; text-align: center; white-space: nowrap; }
+.beat-state-todo { background: var(--primary-soft); color: var(--primary-press); }
+.beat-state-ready { background: var(--accent-soft); color: var(--accent); }
+
 /* ---- New-video plan preview (Section C: normalize before creating) ---- */
 .nt-preview-row { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
 .nt-preview { margin-top: 10px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-sm); padding: 12px 14px; }

@@ -262,6 +262,81 @@ export function deriveTicketState(
   }
 }
 
+// --------------------------------------------------------------------------- //
+// Autopilot control-loop activity (Section B / D): the honest "what it's doing →
+// what it needs from you → what happens next" a supervised video shows in its
+// workspace. Derived from the same ticket fields, so it never contradicts the board.
+// --------------------------------------------------------------------------- //
+export type AutopilotActivityState =
+  | "running" | "waiting" | "needs-approval" | "paused" | "complete" | "error";
+
+export interface AutopilotActivity {
+  state: AutopilotActivityState;
+  stateLabel: string;
+  doing: string;  // what Autopilot just did / is doing now
+  needs: string;  // what it needs from you ("" when nothing)
+  next: string;   // what happens next
+}
+
+const RUNNING_DOING: Record<NextStep, string> = {
+  script: "Writing the script.",
+  footage: "Matching your footage to the scenes.",
+  voice: "Adding the voiceover.",
+  assemble: "Assembling the first draft.",
+};
+
+export function deriveAutopilotActivity(t: Ticket, ctx: TicketStateContext = {}): AutopilotActivity {
+  const beats = t.n_beats ?? 0;
+  const clips = t.n_clips ?? 0;
+
+  if (t.gate === "parked") {
+    return {
+      state: "error", stateLabel: "Needs attention",
+      doing: "Autopilot hit a problem and stopped.",
+      needs: t.gate_reason || "Review the last step, then regenerate to retry.",
+      next: "It resumes automatically once the problem is cleared.",
+    };
+  }
+  if (t.gate === "awaiting_footage") {
+    const missing = Math.max(0, beats - clips);
+    return {
+      state: "waiting", stateLabel: "Waiting for footage",
+      doing: "Wrote the script and is ready to build.",
+      needs: `Add footage for ${missing > 0 ? missing : "the remaining"} scene${missing === 1 ? "" : "s"} below.`,
+      next: "It assembles the first draft on its own once every scene has a clip.",
+    };
+  }
+  if (t.gate === "awaiting_approval") {
+    return {
+      state: "needs-approval", stateLabel: "Waiting for your approval",
+      doing: t.gate_reason ? `Finished: ${t.gate_reason}.` : "Finished a step.",
+      needs: "Review it and approve to continue.",
+      next: "It moves to the next step as soon as you approve.",
+    };
+  }
+  if (t.stage === "posted" || t.posted_at) {
+    return {
+      state: "complete", stateLabel: "Complete",
+      doing: "Posted this video.", needs: "",
+      next: "Nothing left to do — check Results for how it performs.",
+    };
+  }
+  if (!ctx.autopilotRunning) {
+    return {
+      state: "paused", stateLabel: "Autopilot paused",
+      doing: "Nothing right now — Autopilot is turned off.",
+      needs: "Start Autopilot (top of the Create page) to let it run this video.",
+      next: "When running, it advances this video one step at a time.",
+    };
+  }
+  const step = nextStep(t);
+  return {
+    state: "running", stateLabel: "Running",
+    doing: RUNNING_DOING[step], needs: "",
+    next: "It pauses only for footage, your approval, or a problem.",
+  };
+}
+
 // Convenience: derive display state for a whole list and sort by dashboard hierarchy.
 export function sortByPriority<T>(
   items: T[],

@@ -224,12 +224,15 @@ Plain-language UI: a ticket = "video", a beat = "scene", an outlier = an "idea".
 - **App.tsx** — routes (home | board | intake | insights | library | project | **editor** with an
   optional `from:"board"`), shell, and all screens + the **ClipEditor** workspace. A top **backend-offline
   banner** polls `GET /api/health` every 5 s and warns "edits are NOT saving" the instant the server dies.
-- **Autopilot = a mode, folded into the board** (`useAutopilot` hook + `GATE_LABEL`/`isGated`/`GATE_POINTS`).
-  The board header has an **Autopilot strip** (Start / Pause / Run once) and a **"Needs you (N)" filter**
-  that shows only gated videos. Cards carry a 🤖 badge + a "⏸ Needs your OK" gate badge. The
-  Approve / Regenerate / Kill actions live in the video workspace (`VideoWorkspace`), which also shows the
-  gate points ("Pauses for you at: script · reel · post") whenever a video is on autopilot. Backend
-  autopilot state is unchanged — this was a pure frontend re-home of the old separate tab.
+- **Autopilot = a mode, folded into the board.** The Create header has a compact Autopilot control
+  (Start / Pause / Run once) whose label is **honest**: "Autopilot paused" / "working on N videos" /
+  "waiting on you for N" / "on · nothing to advance" — it never claims "working" for a paused loop or
+  an `autonomy:off` brand (reads `/api/brands` autonomy), and shows a **"Dry-run"** chip when no
+  Upload-Post key is set (`/api/queue.dry_run`). Approve / Regenerate / **Take over manually** live in
+  the video workspace's **Autopilot activity panel** (control loop: *Doing → Needs you → Next*, from
+  `deriveAutopilotActivity`). **Backend fix (2026-07):** `autonomy:off` now truly stops the orchestrator
+  (`autopilot.is_enabled()` guard in `advance_ticket`/`feed`) — previously an empty gate set let an
+  off-brand ticket advance unattended, including posting.
 - **Home / NewProject** — paste URL or upload. A **mode toggle**: "Find viral moments" (default) vs
   **"Just caption my clip"** (caption mode → one full-length clip → auto-opens the editor).
 - **Ideas (Intake) — 📼 Shoot drop card** (`ShootDrop`): drag a whole shoot in (or the watched
@@ -243,13 +246,32 @@ Plain-language UI: a ticket = "video", a beat = "scene", an outlier = an "idea".
 - **Video workspace — 📣 Post copy card** (`PostCopyCard`, in the vw-rail): "🪄 Write my post copy"
   → editable per-platform fields (TT/IG caption+hashtags, YT title/description/tags) saved via
   `patchTicket({post_meta})` on blur, "↻ Rewrite it" regenerates.
-- **Create videos** (Board) — redesigned: the 8 DB stages collapse to **4 phase lanes** (`PHASES`:
-  Idea / Make it / Ready / Posted) with accent colors; cards show a reel thumbnail, the hook, mode
-  badge, ◀▶ phase move. **+ New video** modal: angle + **✨ Generate with AI** (create + script-
-  factory in one step) or paste/blank. Clicking a card opens **TicketDetail**; a native reel's
-  **"✏️ Open in editor"** calls `build-edit` and routes into the clip editor.
-- **TicketDetail** drawer — edit ticket + per-beat fields, add/reorder/delete scenes, proof toggle,
-  AI buttons, per-beat clip/voiceover upload, "Open in editor" + "Make my video" (assemble).
+- **Create videos** = the **Content Pipeline dashboard** (`create/CreatePage.tsx`, redesigned 2026-07).
+  A **vertical, one-screen** dashboard (no horizontal scroll at 1280px) — not the old wide Kanban:
+  1. **Header** — "Content Pipeline" + honest subtitle ("N in progress · M need you"), Autopilot
+     control, "Needs you" + brand filters, **+ Create video**.
+  2. **Action queue** — the top 3–5 actionable cards, each with one plain-English status, one reason,
+     one primary action (e.g. *Needs footage for 2 scenes → Add footage*).
+  3. **Compact phase tabs** — `Plan → Produce → Review → Publish` with counts (filter the list); the
+     8 DB stages map to these four (see `lib/ticketStatus.phaseOfStage`).
+  4. **Work list** — dense rows: human status + phase chip + next-action; raw `stage`/`gate`/
+     `autopilot` hidden behind a **⋯ details** popover (`cp-row-detail`).
+  All status text comes from **`lib/ticketStatus.deriveTicketState`** (a pure, unit-tested mapper:
+  `stage`+`gate`+`autopilot`+scene-counts → `phase`/`label`/`description`/`priority`/`primaryAction`).
+  **+ Create video** modal (`create/NewTicketModal.tsx`): angle + ✨ Generate with AI, or paste a
+  script with a live **"👁 Preview scenes"** panel (see script normalization below).
+- **Video workspace** (`VideoWorkspace` in App.tsx) — three regions: a **production-status banner**
+  (one derived status + one primary next action), the **Autopilot activity panel** (when on
+  autopilot), scenes in the main column with a **per-scene readiness chip** (Add script / Needs
+  footage / Needs voice / Ready via `beatState`), and the AI-writer / Make-video / Post-copy right
+  rail. The editor handoff is labeled **"✏️ Fine-tune clip (Clip Editor)"** (calls `build-edit`).
+- **Script normalization (2026-07, `backend/app/normalize.py`)** — the single guarantee that no
+  malformed script (pasted free-form OR LLM-generated) creates broken beats. `_replace_beats` (the
+  choke point every writer passes through) runs `normalize_beats` first: it caps count/length, drops
+  empty scenes, renumbers, and backfills fields, so bad output degrades to a clean plan instead of a
+  crash. **`POST /api/scripts/normalize`** previews a validated plan (no ticket) for the paste flow;
+  empty input returns an editable `starter_plan`. **You no longer need an external Claude chat to hit
+  "CVideo's format" — paste anything.**
 - **Downloads (Library)** — **collapsible folders**, each listing its videos as **draggable rows**
   (`.exp-rows`/`.exp-row`, not a grid). **Drag a video onto another folder to move it** (HTML5 DnD;
   folders highlight on drag-over) or onto the **"＋ new folder"** drop zone (prompts a name). The move
@@ -394,6 +416,10 @@ Plain-language UI: a ticket = "video", a beat = "scene", an outlier = an "idea".
 ## 9. Verify quickly
 
 - `cd frontend && npm run build` → 0 TS errors.
+- **`cd frontend && npm test`** → 19 unit tests for the derived status/activity mapper
+  (`src/lib/ticketStatus.test.ts`, run by Node's built-in test runner — no vitest/jest install).
+- **`cd backend && .venv\Scripts\python.exe -m unittest tests.test_normalize tests.test_autopilot_autonomy`**
+  → 14 pure unit tests (script normalization + Autopilot autonomy policy; no DB/LLM/server).
 - `cd backend && .\.venv\Scripts\python.exe -c "import app.main; print('OK')"` (imports + would migrate).
 - Schema check: `PRAGMA table_info(clip)` should include cuts_json/markers_json/voiceover_path/scene_vo_json.
 - Reel smoothness: probe an exported reel's `v:0` `pts_time` deltas — uniform ~0.0333 s, no >50 ms gaps.
