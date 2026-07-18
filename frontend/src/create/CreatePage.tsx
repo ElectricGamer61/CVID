@@ -48,6 +48,11 @@ export function CreatePage({
   const [phaseFilter, setPhaseFilter] = useState<TicketPhase | "all">("all");
   const [apBusy, setApBusy] = useState(false);
   const [brandFilter, setBrandFilter] = useState<string>("");
+  // Brand autonomy map + posting mode — so the header can be HONEST: never claim
+  // Autopilot is "working" on a brand whose autonomy is off, and always disclose when
+  // posting is dry-run (no Upload-Post key configured).
+  const [autonomyByBrand, setAutonomyByBrand] = useState<Record<string, string>>({});
+  const [dryRun, setDryRun] = useState<boolean | null>(null);
   const toast = useToast();
   const confirm = useConfirm();
 
@@ -55,11 +60,14 @@ export function CreatePage({
   const refreshAp = () => api.autopilotState().then(setAp).catch(() => {});
   useEffect(() => {
     refresh(); refreshAp();
+    api.listBrands().then((r) => setAutonomyByBrand(Object.fromEntries(r.brands.map((b) => [b.name, b.autonomy])))).catch(() => {});
+    api.getQueue().then((q) => setDryRun(q.dry_run)).catch(() => {});
     const t = setInterval(() => { refresh(); refreshAp(); }, 4000);
     return () => clearInterval(t);
   }, []);
 
   const running = !!ap?.running;
+  const brandOff = (brand: string) => autonomyByBrand[brand] === "off";
 
   // Derive every ticket's display state once; memoize keyed on the data that feeds it.
   const rows = useMemo(() => {
@@ -93,7 +101,22 @@ export function CreatePage({
     () => rows.filter((r) => r.st.priority !== "complete").length,
     [rows]
   );
-  const runningCount = rows.filter((r) => r.st.priority === "running").length;
+  // Honest Autopilot accounting: only count as "running" tickets whose brand can
+  // actually advance (autonomy != off). Waiting = autopilot tickets paused at a gate.
+  const runningCount = rows.filter((r) => r.st.priority === "running" && !brandOff(r.t.brand)).length;
+  const waitingCount = useMemo(
+    () => (tickets ?? []).filter((t) => t.autopilot && isGated(t)).length,
+    [tickets]
+  );
+  // The single, honest board-level Autopilot line. Never says "working" when nothing
+  // can actually advance (paused loop, all gated, or off-autonomy brands).
+  const apSummary = !running
+    ? "Autopilot paused"
+    : runningCount > 0
+      ? `Autopilot: working on ${runningCount} video${runningCount === 1 ? "" : "s"}`
+      : waitingCount > 0
+        ? `Autopilot: waiting on you for ${waitingCount}`
+        : "Autopilot on · nothing to advance";
 
   const brandOk = (t: Ticket) => !brandFilter || t.brand === brandFilter;
   const actionRows = rows.filter((r) => isActionable(r.st) && brandOk(r.t)).slice(0, 5);
@@ -145,11 +168,12 @@ export function CreatePage({
           <div className="cp-subtitle">{subtitle}</div>
         </div>
         <div className="cp-head-actions">
-          <div className="cp-ap" title="Autopilot advances every video that's on autopilot by one step at a time.">
-            <span className={"cp-ap-dot" + (running ? " on" : "")} />
-            <span className="cp-ap-label">
-              {running ? (runningCount ? `Autopilot: ${runningCount} running` : "Autopilot on") : "Autopilot paused"}
-            </span>
+          <div className="cp-ap" title="Autopilot advances every video that's on autopilot by one step at a time. Brands with autonomy 'off' are never advanced.">
+            <span className={"cp-ap-dot" + (running && runningCount > 0 ? " on" : running ? " idle" : "")} />
+            <span className="cp-ap-label">{apSummary}</span>
+            {dryRun && (
+              <span className="cp-dryrun" title="No Upload-Post key configured — posts are simulated (dry-run), nothing is published.">Dry-run</span>
+            )}
             {running ? (
               <button onClick={() => apAct(api.autopilotStop, "Autopilot paused")} disabled={apBusy}>Pause</button>
             ) : (

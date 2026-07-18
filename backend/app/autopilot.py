@@ -38,6 +38,17 @@ _GATE_POINTS = {
 _MAX_RETRIES = 2
 
 
+def is_enabled(brand: str) -> bool:
+    """Whether the orchestrator may advance this brand's tickets at all.
+
+    Autonomy 'off' means "the orchestrator does nothing" — the ticket stays put for
+    manual driving. This is enforced here (and in advance_ticket / feed) because an
+    empty gate set alone does NOT stop advancement, it only removes pause points, so
+    'off' must be checked explicitly or an off-brand ticket would run fully unattended.
+    """
+    return cartridge.autonomy(brand) != "off"
+
+
 def gates_for(brand: str) -> set[str]:
     """The set of stage-entries that pause for human approval for this brand."""
     return _GATE_POINTS.get(cartridge.autonomy(brand), _GATE_POINTS["supervised"])
@@ -306,6 +317,11 @@ def advance_ticket(ticket_id: int) -> str:
         t = s.get(Ticket, ticket_id)
         if not t or not t.autopilot:
             return "skip"
+        # Autonomy 'off' → the orchestrator must not advance this ticket at all, even
+        # though it's flagged autopilot. It waits for the brand to be promoted, or for
+        # the user to drive it manually. (See is_enabled.)
+        if not is_enabled(t.brand):
+            return "disabled"
         if t.gate == "awaiting_footage":
             # Footage gates self-clear: once every scene has its clip, the ticket
             # continues on the next tick without a click (as the UI promises).
@@ -376,6 +392,8 @@ def feed() -> list[int]:
         brand = meta["name"]
         c = cartridge.load(brand)
         if not c.get("feed"):                      # opt-in only
+            continue
+        if not is_enabled(brand):                  # 'off' brands never auto-generate
             continue
         target = int((c.get("cadence") or {}).get("reels_per_week") or 3)
         angles = cartridge.angle_library(brand)

@@ -834,6 +834,8 @@ button.primary.danger-solid:hover { background: #db3a48; border-color: #db3a48; 
 .cp-ap { display: inline-flex; align-items: center; gap: 8px; background: var(--surface); border: 1px solid var(--border); border-radius: 999px; padding: 5px 6px 5px 12px; box-shadow: var(--shadow-sm); }
 .cp-ap-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted-2); flex: none; }
 .cp-ap-dot.on { background: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.cp-ap-dot.idle { background: var(--warn); box-shadow: 0 0 0 3px #fdf1dc; }
+.cp-dryrun { font-size: 10.5px; font-weight: 800; text-transform: uppercase; letter-spacing: .03em; color: var(--warn); background: #fdf1dc; border-radius: 999px; padding: 2px 8px; }
 .cp-ap-label { font-size: 12.5px; font-weight: 700; color: var(--text-2); }
 .cp-ap button { padding: 5px 11px; font-size: 12.5px; border-radius: 999px; }
 .cp-new { font-size: 14px; }

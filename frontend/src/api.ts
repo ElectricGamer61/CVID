@@ -115,6 +115,13 @@ export interface AutopilotState {
   queue: Ticket[];
 }
 
+export interface BrandInfo {
+  name: string;
+  slug: string;
+  autonomy: string; // off | supervised | semi | hands_off
+  cadence?: { reels_per_week?: number; platforms?: string[] };
+}
+
 export interface ZoomKey { t: number; scale: number; duration: number }
 export interface SfxCue { t: number; name: string }
 export interface ClipEffects { zoom?: ZoomKey[]; sfx?: SfxCue[] }
@@ -380,6 +387,9 @@ export const api = {
   // AI voice for ONE scene of a reel (mirrors ttsVoiceover for the whole-clip path).
   sceneTtsVoiceover: (cid: number, idx: number, voice_id?: string, text?: string): Promise<{ voiceover_path: string; scene_vos: (string | null)[] }> =>
     req(`/api/clips/${cid}/scene-tts/${idx}`, jsonInit("POST", { voice_id, text })),
+
+  // --- Brands (cartridges) ---
+  listBrands: (): Promise<{ brands: BrandInfo[] }> => req("/api/brands"),
 
   // --- Autopilot (the autonomous orchestrator) ---
   autopilotState: (): Promise<AutopilotState> => req("/api/autopilot"),
