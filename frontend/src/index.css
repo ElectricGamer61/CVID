@@ -970,6 +970,13 @@ button.primary.danger-solid:hover { background: #db3a48; border-color: #db3a48; 
 .beat-state-todo { background: var(--primary-soft); color: var(--primary-press); }
 .beat-state-ready { background: var(--accent-soft); color: var(--accent); }
 
+/* ---- Export/save folder control ---- */
+.exp-folder-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-sm); padding: 9px 14px; margin-bottom: 16px; font-size: 13px; color: var(--text-2); box-shadow: var(--shadow-sm); }
+.exp-folder-icon { font-size: 15px; }
+.exp-folder-bar b { color: var(--text); }
+.exp-folder-actions { margin-left: auto; display: flex; align-items: center; gap: 14px; }
+.reel-save-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+
 /* ---- New-video plan preview (Section C: normalize before creating) ---- */
 .nt-preview-row { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
 .nt-preview { margin-top: 10px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-sm); padding: 12px 14px; }

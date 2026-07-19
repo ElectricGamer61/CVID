@@ -7,7 +7,7 @@ import { useToast } from "./Toast";
 import { useConfirm, usePrompt } from "./Dialog";
 import { useRecorder } from "./useRecorder";
 import { VideoModal } from "./VideoModal";
-import { exportDirSupported, getExportDir, pickExportDir } from "./exportDir";
+import { clearExportDir, exportDirSupported, getExportDir, getExportDirName, pickExportDir } from "./exportDir";
 import { CreatePage } from "./create/CreatePage";
 import { BRANDS, GATE_POINTS, isGated, markRecent, modeLabel, PHASE_HINT, PHASES, phaseOf } from "./create/constants";
 import { deriveAutopilotActivity, deriveTicketState } from "./lib/ticketStatus";
@@ -369,7 +369,15 @@ function VideoWorkspace({ tid, presets, onBack, onOpenEditor }: { tid: number; p
                         <div className="reel-out">
                           <div className="muted" style={{ fontSize: 12.5 }}>Done! Here's your video:</div>
                           <video src={api.ticketDownloadUrl(tid)} controls playsInline className="reel-video" />
-                          <button className="primary" onClick={() => downloadFile(api.ticketDownloadUrl(tid), safeFileName(ticket.angle || "reel"), toast)}>⬇ Save video</button>
+                          <div className="reel-save-row">
+                            <button className="primary" onClick={() => downloadFile(api.ticketDownloadUrl(tid), safeFileName(ticket.angle || "reel"), toast)}>⬇ Save video</button>
+                            {exportDirSupported() && (
+                              <button className="link-btn" title="Choose which folder saved videos go to"
+                                onClick={async () => { const d = await pickExportDir(); if (d) toast(`Videos will save to “${d.name}”`, "ok"); }}>
+                                Change save folder
+                              </button>
+                            )}
+                          </div>
                         </div>
                       )}
                     </div>
@@ -756,6 +764,36 @@ function Intake({ onSpun }: { onSpun: () => void }) {
 }
 
 /* ------------------------------ Library -------------------------------- */
+// Shows where saved videos land and lets the user change it (Chromium only). On
+// Firefox/Safari there's no picker — files go to the browser's Downloads folder.
+function ExportFolderBar() {
+  const supported = exportDirSupported();
+  const [name, setName] = useState<string | null>(null);
+  const toast = useToast();
+  useEffect(() => { if (supported) getExportDirName().then(setName).catch(() => setName(null)); }, [supported]);
+  if (!supported) {
+    return <div className="exp-folder-bar"><span className="exp-folder-icon">📁</span>
+      <span className="muted">Saved videos go to your browser’s <b>Downloads</b> folder. (Use Chrome or Edge to pick a specific folder.)</span></div>;
+  }
+  const change = async () => {
+    const dir = await pickExportDir();
+    if (dir) { setName(dir.name); toast(`Videos will save to “${dir.name}”`, "ok"); }
+  };
+  const useBrowser = async () => { await clearExportDir(); setName(null); toast("Videos will save to your browser’s Downloads folder", "ok"); };
+  return (
+    <div className="exp-folder-bar">
+      <span className="exp-folder-icon">📁</span>
+      {name
+        ? <span>Saving videos to <b>{name}</b></span>
+        : <span className="muted">Videos save to your browser’s <b>Downloads</b> folder</span>}
+      <span className="exp-folder-actions">
+        <button className="link-btn" onClick={change}>{name ? "Change folder" : "Choose a folder"}</button>
+        {name && <button className="link-btn" onClick={useBrowser}>Use browser downloads</button>}
+      </span>
+    </div>
+  );
+}
+
 function Library() {
   const [items, setItems] = useState<ExportItem[] | null>(null);
   const [preview, setPreview] = useState<ExportItem | null>(null);
@@ -791,6 +829,7 @@ function Library() {
   return (
     <div className="page">
       <div className="page-head"><h2>Downloads</h2><span className="muted">{items.length} finished video{items.length === 1 ? "" : "s"} · drag a video to move it between folders</span></div>
+      <ExportFolderBar />
       {items.length === 0 ? (
         <div className="empty">
           <div className="big" style={{ fontSize: 28 }}>⬇</div>
@@ -1680,24 +1719,33 @@ const safeFileName = (title: string) =>
    after the first time. If no folder is set yet it prompts once. Firefox/Safari
    fall back to a normal browser download. */
 async function downloadFile(url: string, name: string, notify?: Notify) {
+  // Chromium: save straight into the user's chosen folder (remembered across sessions).
+  // Any failure here (folder moved/deleted, permission lost, picker cancelled) must NOT
+  // dead-end the save — we always fall through to a normal browser download so the file
+  // still lands somewhere and the user gets a clear message.
   if (exportDirSupported()) {
-    try {
-      let dir = await getExportDir();          // remembered folder (re-verifies permission)
-      if (!dir) dir = await pickExportDir();    // first time → choose + remember
-      if (!dir) return;                         // user cancelled the folder picker
-      const fileHandle = await dir.getFileHandle(name, { create: true });
-      const res = await fetch(url);
-      if (!res.ok) throw new Error(`server ${res.status}`);
-      const writable = await fileHandle.createWritable();
-      if (res.body) await res.body.pipeTo(writable);
-      else { await writable.write(await res.blob()); await writable.close(); }
-      notify?.(`Saved to "${dir.name}"`, "ok");
-    } catch (err: any) {
-      notify?.(`Save failed: ${err?.message || err}`, "err");
+    let dir = null;
+    try { dir = await getExportDir(); } catch { dir = null; }   // remembered folder (re-verifies permission)
+    if (!dir) { try { dir = await pickExportDir(); } catch { dir = null; } } // first time → choose + remember
+    if (dir) {
+      try {
+        const res = await fetch(url);
+        if (!res.ok) throw new Error(`server ${res.status}`);
+        const fileHandle = await dir.getFileHandle(name, { create: true });
+        const writable = await fileHandle.createWritable();
+        if (res.body) await res.body.pipeTo(writable);
+        else { await writable.write(await res.blob()); await writable.close(); }
+        notify?.(`Saved to "${dir.name}"`, "ok");
+        return;
+      } catch (err: any) {
+        // Stale/again-denied folder → forget it so next time re-prompts, and fall back now.
+        await clearExportDir().catch(() => {});
+        notify?.(`Couldn't save to that folder (${err?.message || err}) — sending it to your browser's Downloads instead.`, "err");
+      }
     }
-    return;
+    // dir === null (picker cancelled/unsupported) → fall through to the browser download.
   }
-  // Fallback (Firefox/Safari): normal download to the browser's download location.
+  // Fallback (Firefox/Safari, or a failed/declined folder save): normal browser download.
   try {
     const res = await fetch(url);
     if (!res.ok) throw new Error(`server ${res.status}`);
@@ -1706,7 +1754,7 @@ async function downloadFile(url: string, name: string, notify?: Notify) {
     a.href = objUrl; a.download = name;
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(objUrl), 4000);
-    notify?.("Downloaded", "ok");
+    notify?.("Saved to your browser's Downloads folder", "ok");
   } catch (err: any) {
     notify?.(`Download failed: ${err?.message || err}`, "err");
   }
