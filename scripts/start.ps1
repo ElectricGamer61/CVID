@@ -20,7 +20,7 @@ Write-Host "Starting Cvideo backend (http://127.0.0.1:8000)..." -ForegroundColor
 $backendCmd = "$refresh; Set-Location '$root\backend'; " +
   "while (`$true) { " +
   ".\.venv\Scripts\python.exe -m uvicorn app.main:app --port 8000 2>&1 | Tee-Object -FilePath '$log' -Append; " +
-  "Add-Content '$log' (\"=== backend exited {0} - restarting ===\" -f (Get-Date)); " +
+  "Add-Content '$log' ('=== backend exited {0} - restarting ===' -f (Get-Date)); " +
   "Start-Sleep -Seconds 2 }"
 Start-Process powershell -ArgumentList @("-NoExit", "-Command", $backendCmd) -WindowStyle Minimized
 
