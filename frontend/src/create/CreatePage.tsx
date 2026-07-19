@@ -21,6 +21,16 @@ import { BRANDS, getRecent, isGated, markRecent, modeIcon, modeLabel } from "./c
 import { NewTicketModal } from "./NewTicketModal";
 
 const PHASE_ORDER: TicketPhase[] = ["plan", "produce", "review", "publish"];
+
+// "Dismiss from the attention queue" memory. Keyed by ticket id → a signature of the
+// state it was dismissed AT (priority:label), so a dismissed card reappears the moment
+// its situation actually changes (e.g. it advances to a new blocker) — dismissing a
+// wrong/stale card hides it without burying genuinely new work later.
+const DISMISS_KEY = "cv.dismissedActions";
+const loadDismissed = (): Record<number, string> => {
+  try { return JSON.parse(localStorage.getItem(DISMISS_KEY) || "{}"); } catch { return {}; }
+};
+const actionSig = (st: TicketDisplayState) => `${st.priority}:${st.label}`;
 const PHASE_SUB: Record<TicketPhase, string> = {
   plan: "Idea & script",
   produce: "Footage & assembly",
@@ -53,8 +63,18 @@ export function CreatePage({
   // posting is dry-run (no Upload-Post key configured).
   const [autonomyByBrand, setAutonomyByBrand] = useState<Record<string, string>>({});
   const [dryRun, setDryRun] = useState<boolean | null>(null);
+  const [dismissed, setDismissed] = useState<Record<number, string>>(loadDismissed);
   const toast = useToast();
   const confirm = useConfirm();
+
+  const persistDismissed = (next: Record<number, string>) => {
+    setDismissed(next);
+    try { localStorage.setItem(DISMISS_KEY, JSON.stringify(next)); } catch { /* private mode */ }
+  };
+  const dismissAction = (t: Ticket, st: TicketDisplayState) => {
+    persistDismissed({ ...dismissed, [t.id]: actionSig(st) });
+    toast("Removed from your attention queue", "ok");
+  };
 
   const refresh = () => api.listTickets().then(setTickets).catch(() => {});
   const refreshAp = () => api.autopilotState().then(setAp).catch(() => {});
@@ -119,7 +139,10 @@ export function CreatePage({
         : "Autopilot on · nothing to advance";
 
   const brandOk = (t: Ticket) => !brandFilter || t.brand === brandFilter;
-  const actionRows = rows.filter((r) => isActionable(r.st) && brandOk(r.t)).slice(0, 5);
+  // Actionable, minus anything the user dismissed AT its current state signature.
+  const actionRows = rows
+    .filter((r) => isActionable(r.st) && brandOk(r.t) && dismissed[r.t.id] !== actionSig(r.st))
+    .slice(0, 5);
   const listRows = rows.filter(
     (r) =>
       brandOk(r.t) &&
@@ -150,7 +173,11 @@ export function CreatePage({
 
   const del = async (t: Ticket) => {
     if (!(await confirm({ title: "Delete this video?", body: t.angle ? `“${t.angle}” and its scenes will be removed.` : "Its scenes will be removed.", confirmLabel: "Delete", danger: true }))) return;
-    try { await api.deleteTicket(t.id); toast("Video deleted", "ok"); refresh(); }
+    try {
+      await api.deleteTicket(t.id); toast("Video deleted", "ok");
+      if (dismissed[t.id]) { const { [t.id]: _drop, ...rest } = dismissed; persistDismissed(rest); }
+      refresh();
+    }
     catch (e: any) { toast(`Delete failed: ${e?.message || e}`, "err"); }
   };
 
@@ -223,7 +250,8 @@ export function CreatePage({
               </div>
               <div className="cp-queue-cards">
                 {actionRows.map(({ t, st }) => (
-                  <ActionCard key={t.id} t={t} st={st} onPrimary={() => runAction(t, st)} onOpen={() => open(t.id)} />
+                  <ActionCard key={t.id} t={t} st={st} onPrimary={() => runAction(t, st)} onOpen={() => open(t.id)}
+                    onDismiss={() => dismissAction(t, st)} onDelete={() => del(t)} />
                 ))}
               </div>
             </section>
@@ -267,10 +295,13 @@ export function CreatePage({
 }
 
 /* --------------------------- Action-queue card --------------------------- */
-function ActionCard({ t, st, onPrimary, onOpen }: { t: Ticket; st: TicketDisplayState; onPrimary: () => void; onOpen: () => void }) {
+function ActionCard({ t, st, onPrimary, onOpen, onDismiss, onDelete }: {
+  t: Ticket; st: TicketDisplayState; onPrimary: () => void; onOpen: () => void; onDismiss: () => void; onDelete: () => void;
+}) {
   const made = !!t.clip_url;
   return (
     <div className={"cp-acard cp-pri-" + st.priority}>
+      <button className="cp-acard-x" title="This doesn't need my attention — hide it from this list" onClick={onDismiss}>✕</button>
       <div className="cp-acard-thumb" onClick={onOpen} title="Open workspace">
         {made ? (
           <img src={api.ticketThumbUrl(t.id)} alt="" loading="lazy" onError={(e) => ((e.target as HTMLImageElement).style.display = "none")} />
@@ -289,6 +320,9 @@ function ActionCard({ t, st, onPrimary, onOpen }: { t: Ticket; st: TicketDisplay
       <div className="cp-acard-actions">
         <button className="primary" onClick={onPrimary}>{st.primaryAction.label}</button>
         <button className="link-btn" onClick={onOpen}>Open workspace</button>
+        <span className="cp-acard-spacer" />
+        <button className="link-btn" onClick={onDismiss} title="Hide from this list (comes back if its status changes)">Not now</button>
+        <button className="link-btn danger" onClick={onDelete} title="Delete this video permanently">Delete</button>
       </div>
     </div>
   );
