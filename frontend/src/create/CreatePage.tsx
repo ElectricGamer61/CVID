@@ -64,8 +64,12 @@ export function CreatePage({
   const [autonomyByBrand, setAutonomyByBrand] = useState<Record<string, string>>({});
   const [dryRun, setDryRun] = useState<boolean | null>(null);
   const [dismissed, setDismissed] = useState<Record<number, string>>(loadDismissed);
+  const [collapsed, setCollapsed] = useState<Set<TicketPhase>>(new Set());
   const toast = useToast();
   const confirm = useConfirm();
+
+  const togglePhase = (p: TicketPhase) =>
+    setCollapsed((s) => { const n = new Set(s); n.has(p) ? n.delete(p) : n.add(p); return n; });
 
   const persistDismissed = (next: Record<number, string>) => {
     setDismissed(next);
@@ -278,13 +282,33 @@ export function CreatePage({
 
           {/* ---- Work list ---- */}
           <div className="cp-list">
-            {listRows.length === 0 ? (
-              <div className="cp-list-empty muted">{needsYouOnly ? "Nothing is waiting on you here." : "Nothing in this phase."}</div>
-            ) : (
-              listRows.map(({ t, st }) => (
+            {(() => {
+              const renderRow = ({ t, st }: { t: Ticket; st: TicketDisplayState }) => (
                 <WorkRow key={t.id} t={t} st={st} onPrimary={() => runAction(t, st)} onOpen={() => open(t.id)} onDelete={() => del(t)} />
-              ))
-            )}
+              );
+              if (listRows.length === 0) {
+                return <div className="cp-list-empty muted">{needsYouOnly ? "Nothing is waiting on you here." : "Nothing in this phase."}</div>;
+              }
+              // A single phase is already scoped → flat list. "All" → grouped, collapsible
+              // sections by phase so the full pipeline reads as tidy stacks, not one wall.
+              if (phaseFilter !== "all") return listRows.map(renderRow);
+              return PHASE_ORDER.map((ph) => {
+                const group = listRows.filter((r) => r.st.phase === ph);
+                if (!group.length) return null;
+                const isCollapsed = collapsed.has(ph);
+                return (
+                  <div className="cp-group" key={ph}>
+                    <button className="cp-group-head" onClick={() => togglePhase(ph)} aria-expanded={!isCollapsed}>
+                      <span className="cp-group-caret">{isCollapsed ? "▸" : "▾"}</span>
+                      <span className="cp-group-name">{PHASE_LABELS[ph]}</span>
+                      <span className="cp-group-sub">{PHASE_SUB[ph]}</span>
+                      <span className="cp-group-count">{group.length}</span>
+                    </button>
+                    {!isCollapsed && <div className="cp-group-rows">{group.map(renderRow)}</div>}
+                  </div>
+                );
+              });
+            })()}
           </div>
         </>
       )}
