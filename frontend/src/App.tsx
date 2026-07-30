@@ -8,6 +8,7 @@ import { useConfirm, usePrompt } from "./Dialog";
 import { useRecorder } from "./useRecorder";
 import { VideoModal } from "./VideoModal";
 import { exportDirSupported, getExportDir, pickExportDir } from "./exportDir";
+import { ACTIVE_BRAND, BRANDS, brandChoices, useAdvanced } from "./advanced";
 
 type Route =
   | { name: "home" }
@@ -113,11 +114,15 @@ const isGated = (t: Ticket) => t.gate === "awaiting_approval" || t.gate === "awa
 const GATE_POINTS = "Pauses for you at: ✍️ script · 🎬 reel · 📤 post";
 
 // Shared autopilot loop controls (start/stop/run-once) + the gated queue, polled together.
-// Used by the board header strip and to drive card badges.
-function useAutopilot() {
+// Used by the board header strip and to drive card badges. Only polls when advanced mode is
+// on — the default board never shows autopilot, so it shouldn't be asking about it either.
+function useAutopilot(enabled: boolean) {
   const [state, setState] = useState<AutopilotState | null>(null);
-  const refresh = () => api.autopilotState().then(setState).catch(() => {});
-  useEffect(() => { refresh(); const t = setInterval(refresh, 5000); return () => clearInterval(t); }, []);
+  const refresh = () => { if (enabled) api.autopilotState().then(setState).catch(() => {}); };
+  useEffect(() => {
+    if (!enabled) { setState(null); return; }
+    refresh(); const t = setInterval(refresh, 5000); return () => clearInterval(t);
+  }, [enabled]);
   const gated = (state?.queue ?? []).filter(isGated);
   return { state, refresh, gated };
 }
@@ -185,7 +190,8 @@ function Board({ presets, onOpenTicket }: { presets: Presets | null; onOpenTicke
   const [apBusy, setApBusy] = useState(false);
   const toast = useToast();
   const confirm = useConfirm();
-  const { state: apState, refresh: refreshAp, gated } = useAutopilot();
+  const advanced = useAdvanced();
+  const { state: apState, refresh: refreshAp, gated } = useAutopilot(advanced);
 
   const refresh = () => api.listTickets().then(setTickets).catch(() => {});
   useEffect(() => { refresh(); const t = setInterval(refresh, 4000); return () => clearInterval(t); }, []);
@@ -212,7 +218,7 @@ function Board({ presets, onOpenTicket }: { presets: Presets | null; onOpenTicke
     catch (e: any) { toast(`Delete failed: ${e?.message || e}`, "err"); }
   };
 
-  const visible = (list: Ticket[]) => needsYouOnly ? list.filter((t) => gateById.has(t.id)) : list;
+  const visible = (list: Ticket[]) => (advanced && needsYouOnly) ? list.filter((t) => gateById.has(t.id)) : list;
 
   // Recently-opened first (the ones you were working on), then newest.
   const recent = getRecent();
@@ -231,7 +237,9 @@ function Board({ presets, onOpenTicket }: { presets: Presets | null; onOpenTicke
         <button className="primary" onClick={() => setShowNew(true)}>+ New video</button>
       </div>
 
-      {/* Autopilot control strip — the whole autonomous flow lives here now, not a separate tab. */}
+      {/* Autopilot control strip — the whole autonomous flow lives here, and only in advanced
+          mode. The everyday board is just the 4 lanes + "New video". */}
+      {advanced && (
       <div className="ap-strip">
         <span className={"ap-dot" + (apState?.running ? " on" : "")} />
         <span className="ap-strip-label">Autopilot {apState?.running ? "running" : "paused"}</span>
@@ -244,6 +252,7 @@ function Board({ presets, onOpenTicket }: { presets: Presets | null; onOpenTicke
           {needsYouOnly ? "✓ " : ""}Needs you ({gatedCount})
         </button>
       </div>
+      )}
 
       {showHow && (
         <div className="how-banner">
@@ -259,7 +268,7 @@ function Board({ presets, onOpenTicket }: { presets: Presets | null; onOpenTicke
           {PHASES.map((ph) => {
             const col = sortCol(visible(tickets.filter((t) => ph.stages.includes(t.stage))));
             const card = (t: Ticket) => (
-              <TicketCard key={t.id} t={t} gate={gateById.get(t.id)} recent={recent.indexOf(t.id) > -1 && recent.indexOf(t.id) < 3}
+              <TicketCard key={t.id} t={t} gate={gateById.get(t.id)} advanced={advanced} recent={recent.indexOf(t.id) > -1 && recent.indexOf(t.id) < 3}
                 onOpen={() => { markRecent(t.id); onOpenTicket(t.id); }} onMove={move} onDelete={del} />
             );
             return (
@@ -291,19 +300,20 @@ function Board({ presets, onOpenTicket }: { presets: Presets | null; onOpenTicke
   );
 }
 
-function TicketCard({ t, gate, recent, onOpen, onMove, onDelete }: {
-  t: Ticket; gate?: Ticket; recent?: boolean; onOpen: () => void; onMove: (t: Ticket, d: 1 | -1) => void; onDelete: (t: Ticket) => void;
+function TicketCard({ t, gate, advanced, recent, onOpen, onMove, onDelete }: {
+  t: Ticket; gate?: Ticket; advanced?: boolean; recent?: boolean; onOpen: () => void; onMove: (t: Ticket, d: 1 | -1) => void; onDelete: (t: Ticket) => void;
 }) {
   const i = phaseOf(t.stage);
   const made = !!t.clip_url;
   const beats = t.n_beats ?? 0, clips = t.n_clips ?? 0, vo = t.n_vo ?? 0;
   const inMake = PHASES[i]?.key === "make";
+  const onAp = advanced && t.autopilot;   // the 🤖 chip is autopilot vocabulary — advanced only
   return (
     <div className={"tkt-card" + (gate ? " tkt-gated" : "") + (recent ? " tkt-recent" : "")} onClick={onOpen} title="Open">
-      {(gate || t.autopilot || recent) && (
+      {(gate || onAp || recent) && (
         <div className="tkt-badges">
           {recent && !gate && <span className="tkt-recent-chip" title="You opened this recently">⏱</span>}
-          {t.autopilot && <span className="tkt-ap" title="On autopilot">🤖</span>}
+          {onAp && <span className="tkt-ap" title="On autopilot">🤖</span>}
           {gate && <span className="tkt-gate" title={gate.gate_reason || ""}>⏸ {GATE_LABEL[gate.gate || "awaiting_approval"]}</span>}
         </div>
       )}
@@ -342,17 +352,19 @@ function TicketCard({ t, gate, recent, onOpen, onMove, onDelete }: {
   );
 }
 
-// Slim starter: 3 choices, then straight into the full-page workspace (no bounce back to the board).
-// "I have a script" flips open a paste box + the autopilot / AI-voice toggles, so the whole
-// script-in → clips-in → auto-voiced → ready-to-post flow starts from one place.
+// Slim starter, then straight into the full-page workspace (no bounce back to the board).
+// The primary path is PASTE THE SCRIPT: ideas and voiceover scripts are written outside CVID
+// (the Claude project behind docs/autopilot/*) and pasted in — `intake.parse_script` splits
+// them into scenes deterministically, no LLM. Writing it by hand and the in-app AI draft are
+// both still here, just as fallbacks under the paste box.
 function NewTicketModal({ presets, onClose, onCreated }: { presets: Presets | null; onClose: () => void; onCreated: (tid: number) => void }) {
-  const [brand, setBrand] = useState("NoCrapDiet");
+  const advanced = useAdvanced();
+  const [brand, setBrand] = useState(ACTIVE_BRAND);
   const [angle, setAngle] = useState("");
   const [format, setFormat] = useState("reel");
   const [capture, setCapture] = useState("native-short");
   const [script, setScript] = useState("");
-  const [showScript, setShowScript] = useState(false);
-  const [autopilot, setAutopilot] = useState(true);
+  const [autopilot, setAutopilot] = useState(advanced);   // never runs itself when its controls are hidden
   const [autoVoice, setAutoVoice] = useState(true);
   const [busy, setBusy] = useState<"" | "create" | "ai" | "script">("");
   const toast = useToast();
@@ -406,9 +418,11 @@ function NewTicketModal({ presets, onClose, onCreated }: { presets: Presets | nu
           <input value={angle} autoFocus placeholder="e.g. hidden sugar in sauces" onChange={(e) => setAngle(e.target.value)} />
         </label>
         <div className="form-row">
-          <label className="field">Brand
-            <select value={brand} onChange={(e) => setBrand(e.target.value)}>{BRANDS.map((b) => <option key={b} value={b}>{b}</option>)}</select>
-          </label>
+          {advanced && (
+            <label className="field">Brand
+              <select value={brand} onChange={(e) => setBrand(e.target.value)}>{BRANDS.map((b) => <option key={b} value={b}>{b}</option>)}</select>
+            </label>
+          )}
           <label className="field">How will you make it?
             <select value={capture} onChange={(e) => setCapture(e.target.value)}>{modes.map((m) => <option key={m} value={m}>{modeLabel(m)}</option>)}</select>
           </label>
@@ -418,39 +432,43 @@ function NewTicketModal({ presets, onClose, onCreated }: { presets: Presets | nu
             </label>
           )}
         </div>
-        {!showScript ? (
-          <button className="link-btn" style={{ alignSelf: "flex-start" }} onClick={() => setShowScript(true)}>
-            📝 I already have a script — paste it
-          </button>
-        ) : (
-          <div className="nt-script">
-            <textarea rows={7} value={script} autoFocus
+        <div className="nt-script">
+          <label className="field">Paste your script
+            <textarea rows={7} value={script}
               placeholder={"Paste your script — plain lines work, or the labeled format:\nHOOK: the first line\n\nBEAT\nSpoken: what the voiceover says\nShot: what to film"}
               onChange={(e) => setScript(e.target.value)} />
+          </label>
+          <label className="nt-toggle" title="Reads the whole script in your AI voice (MasterDee) as ONE continuous voiceover over all your clips — for silent B-roll">
+            <input type="checkbox" checked={autoVoice} onChange={(e) => setAutoVoice(e.target.checked)} />
+            <span>🎙 AI voiceover (one read over the whole video)</span>
+          </label>
+          {advanced && (
             <label className="nt-toggle" title="Autopilot voices the scenes, builds the reel, writes captions & tags, and queues the post — pausing for your OK">
               <input type="checkbox" checked={autopilot} onChange={(e) => setAutopilot(e.target.checked)} />
               <span>🤖 Run on autopilot (build &amp; prep the post once clips are in)</span>
             </label>
-            <label className="nt-toggle" title="Reads the whole script in your AI voice (MasterDee) as ONE continuous voiceover over all your clips — for silent B-roll">
-              <input type="checkbox" checked={autoVoice} onChange={(e) => setAutoVoice(e.target.checked)} />
-              <span>🎙 AI voiceover (one read over the whole video)</span>
-            </label>
-          </div>
-        )}
-        <div className="muted" style={{ fontSize: 12.5 }}>Next you'll land in the workspace — script, scenes, and “make my video” all live there.</div>
+          )}
+        </div>
+        <div className="muted" style={{ fontSize: 12.5 }}>Next you'll land in the workspace — scenes, clips, and “make my video” all live there.</div>
         <div className="modal-actions">
           <button onClick={onClose} disabled={!!busy}>Cancel</button>
-          {showScript ? (
-            <button className="primary" onClick={startFromScript} disabled={!!busy || !script.trim()}
-              title={!script.trim() ? "Paste your script first" : "Split into scenes — then add your clips"}>
-              {busy === "script" ? "Making scenes…" : "Use this script →"}
-            </button>
-          ) : (
-            <>
-              <button onClick={startBlank} disabled={!!busy}>{busy === "create" ? "Creating…" : "Start writing myself"}</button>
-              <button className="primary" onClick={generateWithAI} disabled={!!busy || !angle.trim()} title={!angle.trim() ? "Enter a topic first" : "Create + write the script with AI"}>{busy === "ai" ? "Writing your script…" : "✨ Write it with AI"}</button>
-            </>
-          )}
+          <button className="primary" onClick={startFromScript} disabled={!!busy || !script.trim()}
+            title={!script.trim() ? "Paste your script first" : "Split into scenes — then add your clips"}>
+            {busy === "script" ? "Making scenes…" : "Use this script →"}
+          </button>
+        </div>
+        {/* Fallbacks for a day with no script written yet — deliberately below the fold and
+            plain-looking, so the pasted-script path stays the obvious one. */}
+        <div className="nt-fallbacks">
+          <span className="muted">No script yet?</span>
+          <button className="link-btn" onClick={startBlank} disabled={!!busy}>
+            {busy === "create" ? "Creating…" : "Write it in the workspace"}
+          </button>
+          <span className="muted">·</span>
+          <button className="link-btn" onClick={generateWithAI} disabled={!!busy || !angle.trim()}
+            title={!angle.trim() ? "Enter a topic first" : "Create + let the in-app AI write a rough draft"}>
+            {busy === "ai" ? "Writing a draft…" : "✨ Let AI draft one"}
+          </button>
         </div>
       </div>
     </div>
@@ -463,6 +481,7 @@ function NewTicketModal({ presets, onClose, onCreated }: { presets: Presets | nu
 // AI actions + "make it" in a sticky right rail.
 function VideoWorkspace({ tid, presets, onBack, onOpenEditor }: { tid: number; presets: Presets | null; onBack: () => void; onOpenEditor: (pid: number, cid: number) => void }) {
   const [data, setData] = useState<{ ticket: Ticket; beats: Beat[] } | null>(null);
+  const advanced = useAdvanced();
   const toast = useToast();
   const confirm = useConfirm();
   const load = () => api.getTicket(tid).then(setData).catch(() => {});
@@ -554,7 +573,8 @@ function VideoWorkspace({ tid, presets, onBack, onOpenEditor }: { tid: number; p
                   onBlur={(e) => e.target.value !== ticket.angle && patchT({ angle: e.target.value })} />
               </div>
               <div className="vw-meta">
-                {ticket.brand && <span className="vw-brand-chip">{ticket.brand}</span>}
+                {/* Only worth a chip when it isn't the one live cartridge everything defaults to. */}
+                {ticket.brand && (advanced || ticket.brand !== ACTIVE_BRAND) && <span className="vw-brand-chip">{ticket.brand}</span>}
                 <select value={ticket.capture_mode} title="How you'll make it"
                   onChange={(e) => patchT({ capture_mode: e.target.value })}>
                   {modes.map((m) => <option key={m} value={m}>{modeLabel(m)}</option>)}
@@ -565,19 +585,21 @@ function VideoWorkspace({ tid, presets, onBack, onOpenEditor }: { tid: number; p
                     ticket.auto_voiceover ? "AI voiceover off" : "AI voiceover on — one read over the whole video when it's built")}>
                   🎙 {ticket.auto_voiceover ? "AI voice on" : "AI voice"}
                 </button>
-                <button className={"vw-ap-toggle" + (ticket.autopilot ? " on" : "")}
-                  title={ticket.autopilot ? GATE_POINTS : "Let Autopilot draft, assemble, and queue this video — pausing for your OK at each step"}
-                  onClick={() => apAct(() => api.autopilotToggle(tid, !ticket.autopilot),
-                    ticket.autopilot ? "Autopilot off for this video" : "On autopilot — it'll pause here for your approval at each step")}>
-                  🤖 {ticket.autopilot ? "On autopilot" : "Autopilot"}
-                </button>
+                {advanced && (
+                  <button className={"vw-ap-toggle" + (ticket.autopilot ? " on" : "")}
+                    title={ticket.autopilot ? GATE_POINTS : "Let Autopilot draft, assemble, and queue this video — pausing for your OK at each step"}
+                    onClick={() => apAct(() => api.autopilotToggle(tid, !ticket.autopilot),
+                      ticket.autopilot ? "Autopilot off for this video" : "On autopilot — it'll pause here for your approval at each step")}>
+                    🤖 {ticket.autopilot ? "On autopilot" : "Autopilot"}
+                  </button>
+                )}
               </div>
             </div>
 
-            {ticket.autopilot && !isGated(ticket) && (
+            {advanced && ticket.autopilot && !isGated(ticket) && (
               <div className="vw-ap-hint">🤖 {GATE_POINTS}</div>
             )}
-            {isGated(ticket) && (
+            {advanced && isGated(ticket) && (
               <div className="vw-gate">
                 <div className="vw-gate-msg">⏸ <b>{GATE_LABEL[ticket.gate || "awaiting_approval"]}</b>{ticket.gate_reason ? ` — ${ticket.gate_reason}` : ""}</div>
                 <div className="vw-gate-actions">
@@ -607,10 +629,12 @@ function VideoWorkspace({ tid, presets, onBack, onOpenEditor }: { tid: number; p
                 </div>
                 {beats.length === 0 ? (
                   <div className="vw-empty">
-                    <div className="muted" style={{ fontSize: 13, marginBottom: 12 }}>No scenes yet — add a scene and start writing, paste a full script, or let AI write one (right side).</div>
-                    <div className="beat-add-row">
-                      <button className="primary" onClick={addBeat}>+ Add a scene</button>
-                      <ReimportBox tid={tid} onDone={load} />
+                    <div className="muted" style={{ fontSize: 13, marginBottom: 12 }}>No scenes yet — paste the script and it becomes your scenes.</div>
+                    <ReimportBox tid={tid} onDone={load} empty />
+                    <div className="beat-add-row" style={{ marginTop: 10 }}>
+                      <span className="muted" style={{ fontSize: 12.5 }}>No script? </span>
+                      <button className="link-btn" onClick={addBeat}>Write scenes by hand</button>
+                      <span className="muted" style={{ fontSize: 12.5 }}>or use ✨ AI draft on the right.</span>
                     </div>
                   </div>
                 ) : (
@@ -631,7 +655,10 @@ function VideoWorkspace({ tid, presets, onBack, onOpenEditor }: { tid: number; p
 
               <div className="vw-rail">
                 <div className="vw-card">
-                  <h4>✨ AI writer</h4>
+                  <h4>✨ AI draft</h4>
+                  <div className="muted" style={{ fontSize: 12.5, marginBottom: 8 }}>
+                    Fallback for a blank day — normally you paste the script Claude wrote (“Paste a script” by the scenes).
+                  </div>
                   <div className="ai-row" style={{ margin: 0 }}>
                     <button onClick={runScript} disabled={!!aiBusy}>{aiBusy === "script" ? "Writing…" : "✨ Write my script"}</button>
                     <button onClick={runHooks} disabled={!!aiBusy}>{aiBusy === "hook" ? "Thinking…" : "✨ Suggest first lines"}</button>
@@ -1558,14 +1585,17 @@ function VideoTracker({ videos, onLogged }: { videos: VideoPerf[]; onLogged: () 
   );
 }
 
-// Dennis's real brands (see marketing memory). "Real Dennis"/tmpbrand were test cartridges, cut.
-const BRANDS = ["NoCrapDiet", "SemSeo", "Missedyu"];
-
 function PlatformEditor({ video, onLogged }: { video: VideoPerf; onLogged: () => void }) {
   const zero = { views: 0, follows: 0, saves: 0, sends: 0 };
   const [m, setM] = useState({ tt: video.platforms.tt ?? zero, ig: video.platforms.ig ?? zero, yt: video.platforms.yt ?? zero });
   // Pre-fill the brand ONLY if it resolved to a known brand; otherwise leave blank — never guess.
   const [brand, setBrand] = useState(BRANDS.includes(video.brand) ? video.brand : "");
+  const advanced = useAdvanced();
+  // Only the live cartridge is offered unless you're in advanced mode — but an already-set
+  // dormant brand stays in the list so opening its row can't silently drop it.
+  const choices = useMemo(
+    () => Array.from(new Set([...brandChoices(advanced), ...(brand ? [brand] : [])])),
+    [advanced, brand]);
   const [busy, setBusy] = useState(false);
   const toast = useToast();
   const set = (pf: "tt" | "ig" | "yt", k: keyof typeof zero, val: number) =>
@@ -1610,7 +1640,7 @@ function PlatformEditor({ video, onLogged }: { video: VideoPerf; onLogged: () =>
       <label className="plat-brand">Brand
         <select value={brand} onChange={(e) => changeBrand(e.target.value)}>
           <option value="">— select brand —</option>
-          {BRANDS.map((b) => <option key={b} value={b}>{b}</option>)}
+          {choices.map((b) => <option key={b} value={b}>{b}</option>)}
         </select>
       </label>
       {platRow("tt", "🎵 TikTok")}
@@ -1836,7 +1866,8 @@ function NewProject({ presets, onCreated }: { presets: Presets | null; onCreated
   const [name, setName] = useState(""); const [url, setUrl] = useState(""); const [file, setFile] = useState<File | null>(null);
   const [brain, setBrain] = useState("ollama"); const [aspect, setAspect] = useState("9:16"); const [preset, setPreset] = useState("capcut");
   const [transcribe, setTranscribe] = useState("local");
-  const [brand, setBrand] = useState("NoCrapDiet");
+  const [brand, setBrand] = useState(ACTIVE_BRAND);
+  const advanced = useAdvanced();
   const [busy, setBusy] = useState(false); const toast = useToast();
   // Default the transcription + brain picks to the backend defaults (CVIDEO_DEFAULT_TRANSCRIBE /
   // CVIDEO_DEFAULT_BRAIN). Fires once when presets load; the stable dep never clobbers a later pick.
@@ -1890,7 +1921,7 @@ function NewProject({ presets, onCreated }: { presets: Presets | null; onCreated
         </label>
       </div>
       <div className="row" style={{ marginTop: 14, alignItems: "flex-end" }}>
-        {genMode === "caption" && <label className="field">Brand<select value={brand} onChange={(e) => setBrand(e.target.value)}>{BRANDS.map((b) => <option key={b} value={b}>{b}</option>)}</select></label>}
+        {genMode === "caption" && advanced && <label className="field">Brand<select value={brand} onChange={(e) => setBrand(e.target.value)}>{BRANDS.map((b) => <option key={b} value={b}>{b}</option>)}</select></label>}
         {genMode === "moments" && <label className="field">Brain<select value={brain} onChange={(e) => setBrain(e.target.value)}>{(presets?.brains ?? ["ollama"]).map((b) => <option key={b} value={b}>{b === "claude" ? "Claude (smartest)" : b === "ollama" ? "Local (free)" : b === "gemini" ? "Gemini" : "Basic (no AI)"}</option>)}</select></label>}
         <label className="field">Transcription<select value={transcribe} onChange={(e) => setTranscribe(e.target.value)}>{(presets?.transcribe ?? ["local"]).map((t) => <option key={t} value={t}>{t === "local" ? "Local (free)" : "ElevenLabs"}</option>)}</select></label>
         <label className="field">Aspect<select value={aspect} onChange={(e) => setAspect(e.target.value)}>{(presets?.aspects ?? ["9:16"]).map((a) => <option key={a}>{a}</option>)}</select></label>

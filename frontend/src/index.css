@@ -541,6 +541,10 @@ button.primary.danger-solid:hover { background: #db3a48; border-color: #db3a48; 
 .nt-script textarea { width: 100%; resize: vertical; }
 .nt-toggle { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text-2); cursor: pointer; }
 .nt-toggle input { accent-color: var(--primary); }
+/* The two fallbacks (write by hand / AI draft) sit under the actions, quiet on purpose —
+   pasting the script Claude wrote is the everyday path and keeps the primary button. */
+.nt-fallbacks { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px; margin-top: 4px; padding-top: 10px; border-top: 1px solid var(--border); font-size: 12.5px; }
+.nt-fallbacks .link-btn { padding: 0; align-self: baseline; font-size: 12.5px; }
 /* Whole-reel AI voice block in the editor (above the per-scene panel) */
 .whole-reel-vo { background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-sm); padding: 11px 12px; margin-bottom: 12px; display: flex; flex-direction: column; gap: 6px; }
 .wrv-head { font-weight: 800; font-size: 13.5px; color: var(--text); }

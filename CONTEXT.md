@@ -218,14 +218,26 @@ uploads AND by `build-edit` reels).
 
 Light "Soft-UI" theme (Plus Jakarta Sans). **Sidebar:** Home · **Ideas** · **Create videos** ·
 **Schedule** · Results · Downloads (internal routes: home/intake/board/queue/insights/library).
-**There is no Autopilot tab** — autopilot is a per-video *mode*, not a place (see below).
+**There is no Autopilot tab** — autopilot is a per-video *mode*, not a place (see below),
+and by default it isn't visible at all (see **Advanced mode**).
 Plain-language UI: a ticket = "video", a beat = "scene", an outlier = an "idea".
+
+- **Advanced mode** (`frontend/src/advanced.ts`) — one flag that separates the daily loop from the
+  launch-gated machinery. **Off by default.** Turn it on with `?advanced=1` or the ⚙ **Advanced**
+  button at the bottom of the sidebar (`?advanced=0` / clicking again turns it off; the choice is
+  kept in `localStorage["cv.advanced"]`). OFF hides: the board's Autopilot strip + "Needs you"
+  filter, card 🤖/gate badges, the per-video Autopilot toggle and the Approve/Regenerate/Kill gate
+  panel, and every multi-brand picker (everything uses `ACTIVE_BRAND` = NoCrapDiet, the only loaded
+  cartridge). Nothing is deleted and no backend behavior changed — `useAutopilot` simply stops
+  polling `/api/autopilot/state` when the flag is off, and new videos are created with
+  `autopilot: false` so the loop can't quietly drive a video whose controls are hidden.
 
 - **App.tsx** — routes (home | board | intake | insights | library | project | **editor** with an
   optional `from:"board"`), shell, and all screens + the **ClipEditor** workspace. A top **backend-offline
   banner** polls `GET /api/health` every 5 s and warns "edits are NOT saving" the instant the server dies.
-- **Autopilot = a mode, folded into the board** (`useAutopilot` hook + `GATE_LABEL`/`isGated`/`GATE_POINTS`).
-  The board header has an **Autopilot strip** (Start / Pause / Run once) and a **"Needs you (N)" filter**
+- **Autopilot = a mode, folded into the board, behind Advanced mode** (`useAutopilot(enabled)` hook +
+  `GATE_LABEL`/`isGated`/`GATE_POINTS`).
+  In Advanced mode the board header has an **Autopilot strip** (Start / Pause / Run once) and a **"Needs you (N)" filter**
   that shows only gated videos. Cards carry a 🤖 badge + a "⏸ Needs your OK" gate badge. The
   Approve / Regenerate / Kill actions live in the video workspace (`VideoWorkspace`), which also shows the
   gate points ("Pauses for you at: script · reel · post") whenever a video is on autopilot. Backend
@@ -245,8 +257,10 @@ Plain-language UI: a ticket = "video", a beat = "scene", an outlier = an "idea".
   `patchTicket({post_meta})` on blur, "↻ Rewrite it" regenerates.
 - **Create videos** (Board) — redesigned: the 8 DB stages collapse to **4 phase lanes** (`PHASES`:
   Idea / Make it / Ready / Posted) with accent colors; cards show a reel thumbnail, the hook, mode
-  badge, ◀▶ phase move. **+ New video** modal: angle + **✨ Generate with AI** (create + script-
-  factory in one step) or paste/blank. Clicking a card opens **TicketDetail**; a native reel's
+  badge, ◀▶ phase move. **+ New video** modal is **paste-first**: angle + a always-open "Paste your
+  script" box (→ `intake.parse_script`, deterministic, no LLM) as the primary action, with "write it
+  in the workspace" and "✨ Let AI draft one" (create + script-factory) demoted to link-sized
+  fallbacks underneath. A scene-less video workspace opens the same paste box expanded. Clicking a card opens **TicketDetail**; a native reel's
   **"✏️ Open in editor"** calls `build-edit` and routes into the clip editor.
 - **TicketDetail** drawer — edit ticket + per-beat fields, add/reorder/delete scenes, proof toggle,
   AI buttons, per-beat clip/voiceover upload, "Open in editor" + "Make my video" (assemble).

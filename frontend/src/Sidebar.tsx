@@ -1,4 +1,6 @@
-type View = "home" | "board" | "intake" | "queue" | "insights" | "library" | "autopilot";
+import { setAdvanced, useAdvanced } from "./advanced";
+
+type View = "home" | "board" | "intake" | "queue" | "insights" | "library";
 
 const ICONS: Record<string, JSX.Element> = {
   home: (
@@ -33,12 +35,6 @@ const ICONS: Record<string, JSX.Element> = {
       <rect x="3" y="14" width="7" height="6" rx="1.5" /><rect x="14" y="14" width="7" height="6" rx="1.5" />
     </svg>
   ),
-  autopilot: (
-    <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <rect x="5" y="7" width="14" height="12" rx="3" /><path d="M12 7V3" /><circle cx="12" cy="3" r="1" />
-      <circle cx="9.5" cy="13" r="1.2" /><circle cx="14.5" cy="13" r="1.2" /><path d="M9 17h6" />
-    </svg>
-  ),
   settings: (
     <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <circle cx="12" cy="12" r="3" />
@@ -48,8 +44,9 @@ const ICONS: Record<string, JSX.Element> = {
 };
 
 export function Sidebar({ view, onHome, onBoard, onIntake, onQueue, onInsights, onLibrary }: { view: View; onHome: () => void; onBoard?: () => void; onIntake?: () => void; onQueue?: () => void; onInsights?: () => void; onLibrary?: () => void }) {
-  const item = (key: string, label: string, active: boolean, onClick?: () => void) => (
-    <button className={"nav-item" + (active ? " on" : "")} onClick={onClick} title={label} disabled={!onClick}>
+  const advanced = useAdvanced();
+  const item = (key: string, label: string, active: boolean, onClick?: () => void, title?: string) => (
+    <button className={"nav-item" + (active ? " on" : "")} onClick={onClick} title={title ?? label} disabled={!onClick}>
       {ICONS[key]}
       <span>{label}</span>
     </button>
@@ -67,7 +64,12 @@ export function Sidebar({ view, onHome, onBoard, onIntake, onQueue, onInsights, 
         {item("insights", "Results", view === "insights", onInsights)}
         {item("library", "Downloads", view === "library", onLibrary)}
       </nav>
-      <div className="nav-bottom">{item("settings", "Settings", false)}</div>
+      {/* Advanced mode: autopilot, gates and the multi-brand picker. Off by default so the
+          daily path stays one path; this is how you get them back. */}
+      <div className="nav-bottom">
+        {item("settings", advanced ? "Advanced on" : "Advanced", advanced, () => setAdvanced(!advanced),
+          advanced ? "Hide autopilot, gates & the brand picker" : "Show autopilot, gates & the brand picker")}
+      </div>
     </aside>
   );
 }
