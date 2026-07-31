@@ -61,10 +61,30 @@ def _centers_yunet(frames: list) -> list[float]:
     return centers
 
 
+def _haar_cascade():
+    """The Haar face cascade, or None when this OpenCV build doesn't ship it.
+
+    Headless / slim OpenCV wheels can be missing `cv2.data` or the XML itself, and an
+    unloaded CascadeClassifier raises `!empty()` from detectMultiScale rather than just
+    finding nothing — which used to abort the whole export. Check it up front instead.
+    """
+    try:
+        cascade = cv2.CascadeClassifier(
+            cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+        )
+    except Exception as e:  # noqa: BLE001 - no cv2.data in this build
+        print(f"[reframe] Haar cascade unavailable ({e}); centering the crop")
+        return None
+    if cascade.empty():
+        print("[reframe] Haar cascade file missing; centering the crop")
+        return None
+    return cascade
+
+
 def _centers_haar(frames: list, width: float) -> list[float]:
-    cascade = cv2.CascadeClassifier(
-        cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
-    )
+    cascade = _haar_cascade()
+    if cascade is None:
+        return []
     centers = []
     for frame in frames:
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -94,7 +114,14 @@ def detect_center(video_path: Path, start: float, end: float, samples: int = 12)
         cap.release()
     if not frames:
         return 0.5
-    centers = _centers_yunet(frames) or _centers_haar(frames, width)
+    # Framing is a nicety; the export is not. Any detector blowing up (missing model,
+    # unsupported build, odd frame) falls back to a mid-frame crop instead of failing
+    # the render the user is waiting on.
+    try:
+        centers = _centers_yunet(frames) or _centers_haar(frames, width)
+    except Exception as e:  # noqa: BLE001
+        print(f"[reframe] face detection failed ({e}); centering the crop")
+        return 0.5
     if not centers:
         return 0.5
     return float(statistics.median(centers))  # outlier-robust

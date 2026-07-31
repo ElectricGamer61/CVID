@@ -3,9 +3,11 @@ import { setAdvanced, useAdvanced } from "./advanced";
 type View = "home" | "board" | "intake" | "queue" | "insights" | "library";
 
 const ICONS: Record<string, JSX.Element> = {
+  // "Projects" = source videos you've clipped, so a film strip rather than a house.
   home: (
     <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M3 11l9-8 9 8" /><path d="M5 10v10h14V10" />
+      <rect x="2.5" y="5" width="19" height="14" rx="2" /><path d="M7 5v14" /><path d="M17 5v14" />
+      <path d="M2.5 9.5h4.5" /><path d="M2.5 14.5h4.5" /><path d="M17 9.5h4.5" /><path d="M17 14.5h4.5" />
     </svg>
   ),
   board: (
@@ -53,13 +55,16 @@ export function Sidebar({ view, onHome, onBoard, onIntake, onQueue, onInsights, 
   );
   return (
     <aside className="sidebar">
-      <button className="brand sb-brand" onClick={onHome}>
+      <button className="brand sb-brand" onClick={onBoard ?? onHome} title="Create videos">
         <div className="logo">C</div>
       </button>
+      {/* Ordered by the daily loop: make a video first, then the things around it.
+          "Projects" is the long-form clipper + its library — same screen as before,
+          renamed so the label matches its own heading and breadcrumb. */}
       <nav className="nav">
-        {item("home", "Home", view === "home", onHome)}
-        {item("intake", "Ideas", view === "intake", onIntake)}
         {item("board", "Create videos", view === "board", onBoard)}
+        {item("intake", "Ideas", view === "intake", onIntake)}
+        {item("home", "Projects", view === "home", onHome, "Long videos you've clipped, and their reels")}
         {item("queue", "Schedule", view === "queue", onQueue)}
         {item("insights", "Results", view === "insights", onInsights)}
         {item("library", "Downloads", view === "library", onLibrary)}

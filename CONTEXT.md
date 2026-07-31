@@ -89,7 +89,11 @@ via `render_scene_reel` (voice-first) or `assemble_ticket`.
 - **brain.py** — viral-moment picker: `claude`/`ollama`/`gemini`/`heuristic`. Virality-framework prompt,
   chunking + cross-chunk de-dupe, sentence-boundary snapping. Fields must be in `_CLIPS_SCHEMA` required.
 - **reframe.py** — 9:16 crop center via OpenCV **YuNet DNN** (+ Haar fallback). `crop_filter()` builds
-  the ffmpeg crop+scale. **No MediaPipe.**
+  the ffmpeg crop+scale. **No MediaPipe.** **Detection never fails the export:** an OpenCV build
+  without the Haar XML raises `!empty()` out of `detectMultiScale` (it doesn't just find nothing),
+  which used to kill the render and dump a raw C++ assertion into the editor. `_haar_cascade()`
+  checks `cascade.empty()` up front and `detect_center()` catches anything else, falling back to a
+  mid-frame crop — the behavior the docstring always promised. Covered by `backend/test_reframe.py`.
 - **captions.py** — word-synced ASS. `PRESETS` capcut/hormozi/beasty/clean (mirrored in
   `captionStyles.ts`). `build_ass(words, clip_start, clip_end, preset, overrides, out_w, out_h)`.
   **Inline color must be `{\1c&HBBGGRR&}`** (6-digit + trailing &). ASS keeps a 1080×1920 PlayRes
@@ -216,11 +220,16 @@ uploads AND by `build-edit` reels).
 
 ## 6. Frontend (frontend/src/, React + Vite + TS, plain CSS)
 
-Light "Soft-UI" theme (Plus Jakarta Sans). **Sidebar:** Home · **Ideas** · **Create videos** ·
-**Schedule** · Results · Downloads (internal routes: home/intake/board/queue/insights/library).
+Light "Soft-UI" theme (Plus Jakarta Sans). **Sidebar:** **Create videos** · **Ideas** · Projects ·
+**Schedule** · Results · Downloads (internal routes: board/intake/home/queue/insights/library).
+**The app opens on Create videos** — making a video is the daily loop; the long-form clipper and
+its library live one click away under **Projects** (the old "Home", renamed so the label matches
+its own heading and breadcrumb; the logo button goes to the board too).
 **There is no Autopilot tab** — autopilot is a per-video *mode*, not a place (see below),
 and by default it isn't visible at all (see **Advanced mode**).
 Plain-language UI: a ticket = "video", a beat = "scene", an outlier = an "idea".
+`sidebarViewFor(route)` maps a route to the lit sidebar item — a video **and the editor opened from
+it** both stay under Create videos, so the sidebar never disagrees with where you came from.
 
 - **Advanced mode** (`frontend/src/advanced.ts`) — one flag that separates the daily loop from the
   launch-gated machinery. **Off by default.** Turn it on with `?advanced=1` or the ⚙ **Advanced**
@@ -242,8 +251,11 @@ Plain-language UI: a ticket = "video", a beat = "scene", an outlier = an "idea".
   Approve / Regenerate / Kill actions live in the video workspace (`VideoWorkspace`), which also shows the
   gate points ("Pauses for you at: script · reel · post") whenever a video is on autopilot. Backend
   autopilot state is unchanged — this was a pure frontend re-home of the old separate tab.
-- **Home / NewProject** — paste URL or upload. A **mode toggle**: "Find viral moments" (default) vs
-  **"Just caption my clip"** (caption mode → one full-length clip → auto-opens the editor).
+- **Projects / NewProject** ("Clip a long video") — paste URL or upload. A **mode toggle**: "Find
+  viral moments" (default) vs **"Just caption my clip"** (caption mode → one full-length clip →
+  auto-opens the editor). Brain / transcription / aspect / caption style are folded into an
+  **`<details>` "Options"** disclosure whose summary lists the current picks (`optionsSummary`), so
+  four technical menus aren't the loudest thing on the screen while the defaults are nearly always right.
 - **Ideas (Intake) — 📼 Shoot drop card** (`ShootDrop`): drag a whole shoot in (or the watched
   folder); live per-clip list (⏳/👂 listening/→ matched chip with ticket · scene · confidence),
   an **editor-style drag-and-drop sorting board** (`.sd-board`): left = clip **thumbnail cards**
@@ -262,6 +274,20 @@ Plain-language UI: a ticket = "video", a beat = "scene", an outlier = an "idea".
   in the workspace" and "✨ Let AI draft one" (create + script-factory) demoted to link-sized
   fallbacks underneath. A scene-less video workspace opens the same paste box expanded. Clicking a card opens **TicketDetail**; a native reel's
   **"✏️ Open in editor"** calls `build-edit` and routes into the clip editor.
+  An **empty board** replaces the four blank lanes with one "Make your first video" panel + CTA.
+- **Video workspace guidance** — a **Next line** under the stage stepper says what to do now
+  (`nextStepFor` → `NEXT_STEP_HINT`): the same rule the board groups "Make it" by (`makeStepOf`,
+  re-run against the scenes actually loaded via `makeStepOfBeats`), plus a `done` step once
+  `clip_url` exists. The rail is ordered by use — **🎬 Make the video** (the only primary button) ·
+  **📣 Post copy** · **✨ AI draft** collapsed into a `<details>`, since pasting a script is the
+  normal path and the AI draft is the blank-day fallback. Scene rows show only "what you say" +
+  "what to film"; the on-screen-text and caption fields sit behind **More options**
+  (`beatHasCustomDetails` keeps them open when they hold something other than an echo of the spoken
+  line, which is what `intake.parse_script` writes into `caption`).
+  **"Make my video" is disabled while a proof scene has no clip** — that's the same precondition
+  `POST /api/tickets/{id}/assemble` enforces with a 400, said before the click instead of after.
+  With AI voice on and no `ELEVENLABS_API_KEY`, the card warns up front (`GET /api/tts/voices`
+  → `available`) rather than letting the build run and fail partway.
 - **TicketDetail** drawer — edit ticket + per-beat fields, add/reorder/delete scenes, proof toggle,
   AI buttons, per-beat clip/voiceover upload, "Open in editor" + "Make my video" (assemble).
 - **Downloads (Library)** — **collapsible folders**, each listing its videos as **draggable rows**
@@ -408,6 +434,11 @@ Plain-language UI: a ticket = "video", a beat = "scene", an outlier = an "idea".
 ## 9. Verify quickly
 
 - `cd frontend && npm run build` → 0 TS errors.
+- `cd frontend && npm test` (vitest) — unit tests for App.tsx's pure UI logic in
+  `frontend/src/App.test.ts`: which sidebar item a route lights up, what a video needs next, when a
+  scene's extra fields open, the New-project options summary. No DOM, no server.
+- `cd backend && .\.venv\Scripts\python.exe test_reframe.py` — crop math + the face-detection
+  fallbacks. Standalone (no pytest, no ffmpeg, no test asset).
 - `cd backend && .\.venv\Scripts\python.exe -c "import app.main; print('OK')"` (imports + would migrate).
 - Schema check: `PRAGMA table_info(clip)` should include cuts_json/markers_json/voiceover_path/scene_vo_json.
 - Reel smoothness: probe an exported reel's `v:0` `pts_time` deltas — uniform ~0.0333 s, no >50 ms gaps.
