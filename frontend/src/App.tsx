@@ -188,13 +188,18 @@ const markRecent = (tid: number) => {
 // What a "Make it" video needs NEXT, derived from its real scene progress (not the stage
 // field, which nobody remembers to bump) — this is what unclutters the Make It column.
 type MakeStep = { key: string; label: string };
-const MAKE_STEPS: MakeStep[] = [
+export const MAKE_STEPS: MakeStep[] = [
   { key: "script", label: "✍️ Needs a script" },
   { key: "clips",  label: "🎬 Needs clips" },
   { key: "voice",  label: "🎙 Needs a voice" },
   { key: "build",  label: "🧩 Ready to build" },
+  { key: "footage", label: "📼 From footage — ingest on Projects" },
 ];
 export const makeStepOf = (t: Ticket): string => {
+  // Only a native short is built here from scenes; the other modes come from footage you
+  // already have, which is ingested and exported on Projects — so the scene checklist
+  // would be naming controls neither the board nor the workspace rail puts on screen.
+  if (t.capture_mode !== "native-short") return "footage";
   const beats = t.n_beats ?? 0, clips = t.n_clips ?? 0, vo = t.n_vo ?? 0;
   if (beats === 0) return "script";
   if (clips < beats) return "clips";
@@ -222,18 +227,11 @@ export const NEXT_STEP_HINT: Record<string, string> = {
   done: "Your video's made — save it, write the post copy, then log its numbers on Results.",
 };
 
-/** The workspace's next step. Once the reel exists, what's left is posting it — the
- *  build checklist has nothing more to say (the board keeps using {@link makeStepOf},
- *  which only ever groups videos that aren't made yet).
- *
- *  Only a native short is built here from scenes; the other capture modes have no build
- *  or editor button in the rail, so the scene checklist would point at controls that
- *  aren't on screen. They get the footage line instead. */
-export const nextStepFor = (t: Ticket, beats: { clip_path?: string | null; voiceover_path?: string | null }[]): string => {
-  if (t.clip_url) return "done";
-  if (t.capture_mode !== "native-short") return "footage";
-  return makeStepOfBeats(t, beats);
-};
+/** The workspace's next step — the same {@link makeStepOf} rule the board groups by, so the
+ *  two never disagree, plus a `done` step the board has no use for (it only ever groups
+ *  videos that aren't made yet). */
+export const nextStepFor = (t: Ticket, beats: { clip_path?: string | null; voiceover_path?: string | null }[]): string =>
+  t.clip_url ? "done" : makeStepOfBeats(t, beats);
 
 function Board({ presets, onOpenTicket }: { presets: Presets | null; onOpenTicket: (tid: number) => void }) {
   const [tickets, setTickets] = useState<Ticket[] | null>(null);

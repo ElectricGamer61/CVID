@@ -276,9 +276,13 @@ it** both stay under Create videos, so the sidebar never disagrees with where yo
   **"✏️ Open in editor"** calls `build-edit` and routes into the clip editor.
   An **empty board** replaces the four blank lanes with one "Make your first video" panel + CTA.
 - **Video workspace guidance** — a **Next line** under the stage stepper says what to do now
-  (`nextStepFor` → `NEXT_STEP_HINT`): the same rule the board groups "Make it" by (`makeStepOf`,
-  re-run against the scenes actually loaded via `makeStepOfBeats`), plus a `done` step once
-  `clip_url` exists. The rail is ordered by use — **🎬 Make the video** (the only primary button) ·
+  (`nextStepFor` → `NEXT_STEP_HINT`): the same rule the board groups "Make it" by, so the two can't
+  disagree. `makeStepOf` short-circuits to `footage` for every non-`native-short` capture mode (they
+  come from footage you already have, ingested and exported on **Projects**, so the scene checklist
+  would name controls neither screen renders) and otherwise walks script → clips → voice → build;
+  the workspace re-runs it against the scenes actually loaded (`makeStepOfBeats`) and adds a `done`
+  step once `clip_url` exists. Every key `makeStepOf` returns needs a `MAKE_STEPS` lane heading or
+  the board drops those cards silently. The rail is ordered by use — **🎬 Make the video** (the only primary button) ·
   **📣 Post copy** · **✨ AI draft** collapsed into a `<details>`, since pasting a script is the
   normal path and the AI draft is the blank-day fallback. Scene rows show only "what you say" +
   "what to film"; the on-screen-text and caption fields sit behind **More options**

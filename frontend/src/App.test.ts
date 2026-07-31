@@ -3,7 +3,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  beatHasCustomDetails, brainLabel, makeStepOf, makeStepOfBeats, nextStepFor,
+  beatHasCustomDetails, brainLabel, MAKE_STEPS, makeStepOf, makeStepOfBeats, nextStepFor,
   NEXT_STEP_HINT, optionsSummary, SECTION_LABELS, sidebarViewFor,
 } from "./App";
 import type { Ticket } from "./api";
@@ -65,23 +65,33 @@ describe("makeStepOf", () => {
     expect(makeStepOf(ticket({ n_beats: 3, n_clips: 3, n_vo: 1 }))).toBe("build");
   });
 
-  it("has a next-step line for every step it can return", () => {
-    for (const step of ["script", "clips", "voice", "build"]) {
-      expect(NEXT_STEP_HINT[step]).toBeTruthy();
+  it("sends the footage modes to Projects instead of down the scene checklist", () => {
+    for (const capture_mode of ["longform-clip", "repurpose"]) {
+      expect(makeStepOf(ticket({ capture_mode, n_beats: 0, n_clips: 0, n_vo: 0 }))).toBe("footage");
+      expect(makeStepOf(ticket({ capture_mode, n_beats: 3, n_clips: 3, n_vo: 1 }))).toBe("footage");
+    }
+  });
+
+  it("has a Make It lane heading for every step it can return", () => {
+    const lanes = new Set(MAKE_STEPS.map((s) => s.key));
+    for (const step of ["script", "clips", "voice", "build", "footage"]) {
+      expect(lanes.has(step)).toBe(true);   // a step with no lane drops its cards silently
     }
   });
 });
 
-describe("nextStepFor across capture modes", () => {
+describe("nextStepFor", () => {
   const beats = [{ clip_path: "/a.mp4", voiceover_path: null }];
 
   it("walks the scene checklist for a native short", () => {
-    expect(nextStepFor(ticket({ capture_mode: "native-short" }), [])).toBe("script");
-    expect(nextStepFor(ticket({ capture_mode: "native-short", auto_voiceover: true }),
-      [{ clip_path: null, voiceover_path: null }])).toBe("clips");
-    expect(nextStepFor(ticket({ capture_mode: "native-short" }), beats)).toBe("voice");
-    expect(nextStepFor(ticket({ capture_mode: "native-short", auto_voiceover: true }), beats)).toBe("build");
-    expect(nextStepFor(ticket({ capture_mode: "native-short", clip_url: "/reel.mp4" }), beats)).toBe("done");
+    expect(nextStepFor(ticket(), [])).toBe("script");
+    expect(nextStepFor(ticket({ auto_voiceover: true }), [{ clip_path: null, voiceover_path: null }])).toBe("clips");
+    expect(nextStepFor(ticket({ auto_voiceover: false }), beats)).toBe("voice");
+    expect(nextStepFor(ticket({ auto_voiceover: true }), beats)).toBe("build");
+  });
+
+  it("switches to posting once the reel exists", () => {
+    expect(nextStepFor(ticket({ clip_url: "/reel.mp4", auto_voiceover: true }), beats)).toBe("done");
   });
 
   it("points the footage modes at Projects instead of a build button they don't have", () => {
@@ -93,25 +103,19 @@ describe("nextStepFor across capture modes", () => {
     }
   });
 
+  it("agrees with the board's grouping for a footage-mode video", () => {
+    // One rule: a longform-clip filed under "Needs clips" on the board while its workspace
+    // said "ingest it on Projects" is exactly the drift this shares makeStepOf to avoid.
+    for (const capture_mode of ["longform-clip", "repurpose"]) {
+      const t = ticket({ capture_mode, n_beats: 3, n_clips: 1, n_vo: 0 });
+      expect(nextStepFor(t, beats)).toBe(makeStepOf(t));
+    }
+  });
+
   it("has a next-step line for every key the rule can return", () => {
     for (const step of ["script", "clips", "voice", "build", "footage", "done"]) {
       expect(NEXT_STEP_HINT[step]).toBeTruthy();
     }
-  });
-});
-
-describe("nextStepFor", () => {
-  const beats = [{ clip_path: "/a.mp4", voiceover_path: null }];
-
-  it("switches to posting once the reel exists", () => {
-    expect(nextStepFor(ticket({ clip_url: "/reel.mp4", auto_voiceover: true }), beats)).toBe("done");
-    expect(NEXT_STEP_HINT.done).toBeTruthy();
-  });
-
-  it("still walks the build checklist while there's no reel", () => {
-    expect(nextStepFor(ticket({ auto_voiceover: true }), beats)).toBe("build");
-    expect(nextStepFor(ticket({ auto_voiceover: false }), beats)).toBe("voice");
-    expect(nextStepFor(ticket(), [])).toBe("script");
   });
 });
 

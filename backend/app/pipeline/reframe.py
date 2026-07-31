@@ -25,8 +25,9 @@ _YUNET_URL = ("https://github.com/opencv/opencv_zoo/raw/main/models/"
               "face_detection_yunet/face_detection_yunet_2023mar.onnx")
 _yunet = None
 _yunet_failed = False
-_haar = None
-_haar_failed = False
+_HAAR_XML = "haarcascade_frontalface_default.xml"
+_haar_path = None
+_haar_unavailable = False
 
 
 def _yunet_detector():
@@ -64,31 +65,32 @@ def _centers_yunet(frames: list) -> list[float]:
 
 
 def _haar_cascade():
-    """Lazy singleton Haar face cascade, or None when this OpenCV build doesn't ship it.
+    """A freshly loaded Haar face cascade, or None when this OpenCV build doesn't ship it.
 
     Headless / slim OpenCV wheels can be missing `cv2.data` or the XML itself, and an
     unloaded CascadeClassifier raises `!empty()` from detectMultiScale rather than just
-    finding nothing — which used to abort the whole export. Check it up front instead,
-    and remember the answer so the XML is parsed (and the warning printed) once per
-    process rather than once per clip per render.
+    finding nothing — which used to abort the whole export. Check it up front instead.
+
+    Only the *negative* answer is memoised: detectMultiScale mutates the classifier, so a
+    shared instance isn't safe across the render pool's threads, and each caller gets its
+    own. A build without the XML still parses nothing and warns once per process.
     """
-    global _haar, _haar_failed
-    if _haar is not None or _haar_failed:
-        return _haar
+    global _haar_path, _haar_unavailable
+    if _haar_unavailable:
+        return None
     try:
-        cascade = cv2.CascadeClassifier(
-            cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
-        )
+        if _haar_path is None:
+            _haar_path = cv2.data.haarcascades + _HAAR_XML
+        cascade = cv2.CascadeClassifier(_haar_path)
     except Exception as e:  # noqa: BLE001 - no cv2.data in this build
         print(f"[reframe] Haar cascade unavailable ({e}); centering the crop")
-        _haar_failed = True
+        _haar_unavailable = True
         return None
     if cascade.empty():
         print("[reframe] Haar cascade file missing; centering the crop")
-        _haar_failed = True
+        _haar_unavailable = True
         return None
-    _haar = cascade
-    return _haar
+    return cascade
 
 
 def _centers_haar(frames: list, width: float) -> list[float]:

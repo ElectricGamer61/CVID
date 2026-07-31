@@ -84,21 +84,32 @@ def test_haar_returns_nothing_when_the_cascade_is_unavailable():
 
 def test_haar_cascade_is_none_when_the_xml_is_missing():
     # The headless wheel has cv2.data but ships no XML, so the classifier loads empty.
-    with fresh_cascade(_CascadeStub(empty=True)):
+    with fresh_cascade(empty=True):
         assert reframe._haar_cascade() is None
 
 
 def test_haar_cascade_is_none_when_the_build_has_no_cascade_data():
-    with fresh_cascade(_CascadeStub(empty=False), with_data=False):
+    with fresh_cascade(empty=False, with_data=False):
         assert reframe._haar_cascade() is None
 
 
-def test_haar_cascade_is_only_loaded_once():
+def test_a_missing_haar_cascade_is_only_looked_up_once():
     loads = []
-    with fresh_cascade(_CascadeStub(empty=True), loads=loads):
+    with fresh_cascade(empty=True, loads=loads):
         assert reframe._haar_cascade() is None
         assert reframe._haar_cascade() is None
     assert len(loads) == 1, loads   # the failure is remembered, not re-warned per clip
+
+
+def test_a_working_haar_cascade_is_never_shared_between_calls():
+    # detectMultiScale mutates the classifier, and two renders run at once in the pool —
+    # so a usable cascade must be built per call, not memoised into one shared instance.
+    loads = []
+    with fresh_cascade(empty=False, loads=loads):
+        first, second = reframe._haar_cascade(), reframe._haar_cascade()
+    assert first is not None and second is not None
+    assert first is not second, "the cascade must not be shared across threads"
+    assert len(loads) == 2, loads
 
 
 def test_detect_center_is_centered_when_detection_raises():
@@ -138,13 +149,13 @@ class _CascadeStub:
 class _Cv2NoDataStub:
     """A build with no `cv2.data` at all — reading it raises AttributeError."""
 
-    def __init__(self, cascade, loads):
-        self._cascade = cascade
+    def __init__(self, empty, loads):
+        self._empty = empty
         self._loads = loads
 
     def CascadeClassifier(self, path):   # noqa: N802 - mirrors the cv2 name
         self._loads.append(path)
-        return self._cascade
+        return _CascadeStub(empty=self._empty)   # a fresh one per call, as cv2 does
 
 
 class _Cv2CascadeStub(_Cv2NoDataStub):
@@ -155,11 +166,11 @@ class _Cv2CascadeStub(_Cv2NoDataStub):
 
 
 @contextmanager
-def fresh_cascade(cascade, with_data: bool = True, loads: list | None = None):
-    """Run with an empty cascade cache and a stubbed cv2, so cases can't leak into each other."""
+def fresh_cascade(empty: bool, with_data: bool = True, loads: list | None = None):
+    """Run with an empty cascade memo and a stubbed cv2, so cases can't leak into each other."""
     stub_cls = _Cv2CascadeStub if with_data else _Cv2NoDataStub
-    with patched(cv2=stub_cls(cascade, loads if loads is not None else []),
-                 _haar=None, _haar_failed=False):
+    with patched(cv2=stub_cls(empty, loads if loads is not None else []),
+                 _haar_path=None, _haar_unavailable=False):
         yield
 
 
