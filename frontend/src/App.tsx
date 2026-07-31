@@ -215,17 +215,25 @@ export const makeStepOfBeats = (t: Ticket, beats: { clip_path?: string | null; v
 // The board says what a video is waiting on; the workspace says what to DO about it.
 export const NEXT_STEP_HINT: Record<string, string> = {
   script: "Paste the script you wrote — it turns into your scenes.",
-  clips: "Add a video to every scene, then build the reel.",
+  clips: "Add a video to every scene, then make and export your video.",
   voice: "Record a voiceover per scene, or switch on 🎙 AI voice up top.",
-  build: "Everything's in — open the editor, or make the video right away.",
-  done: "Your video's made — save it, then write the post copy.",
+  build: "Everything's in — make and export your video, or open the editor first.",
+  footage: "This one comes from footage you already have — ingest it on Projects, then edit and export it there.",
+  done: "Your video's made — save it, write the post copy, then log its numbers on Results.",
 };
 
 /** The workspace's next step. Once the reel exists, what's left is posting it — the
  *  build checklist has nothing more to say (the board keeps using {@link makeStepOf},
- *  which only ever groups videos that aren't made yet). */
-export const nextStepFor = (t: Ticket, beats: { clip_path?: string | null; voiceover_path?: string | null }[]): string =>
-  t.clip_url ? "done" : makeStepOfBeats(t, beats);
+ *  which only ever groups videos that aren't made yet).
+ *
+ *  Only a native short is built here from scenes; the other capture modes have no build
+ *  or editor button in the rail, so the scene checklist would point at controls that
+ *  aren't on screen. They get the footage line instead. */
+export const nextStepFor = (t: Ticket, beats: { clip_path?: string | null; voiceover_path?: string | null }[]): string => {
+  if (t.clip_url) return "done";
+  if (t.capture_mode !== "native-short") return "footage";
+  return makeStepOfBeats(t, beats);
+};
 
 function Board({ presets, onOpenTicket }: { presets: Presets | null; onOpenTicket: (tid: number) => void }) {
   const [tickets, setTickets] = useState<Ticket[] | null>(null);
@@ -544,10 +552,9 @@ function VideoWorkspace({ tid, presets, onBack, onOpenEditor }: { tid: number; p
   const load = () => api.getTicket(tid).then(setData).catch(() => {});
   useEffect(() => { load(); markRecent(tid); }, [tid]);
   // AI voice is on by default, and without an ElevenLabs key every build dies partway
-  // through with "ELEVENLABS_API_KEY not set". Ask once, up front, so the warning lands
-  // before the wait instead of after it. null = not checked yet, so say nothing.
-  const [ttsReady, setTtsReady] = useState<boolean | null>(null);
-  useEffect(() => { api.ttsVoices().then((v) => setTtsReady(v.available)).catch(() => setTtsReady(null)); }, []);
+  // through with "ELEVENLABS_API_KEY not set". /api/presets carries the flag (it's already
+  // loaded once at startup), so the warning costs nothing. undefined = not known, so say nothing.
+  const ttsMissing = presets?.tts_available === false;
 
   const patchT = async (body: Partial<Ticket>) => { await api.patchTicket(tid, body); load(); };
   const setPhase = async (j: number) => {
@@ -736,7 +743,7 @@ function VideoWorkspace({ tid, presets, onBack, onOpenEditor }: { tid: number; p
                     <div className="muted" style={{ fontSize: 12.5 }}>Add scenes first — then preview, record your voice, and make the final video here.</div>
                   ) : (
                     <div className="assemble-box">
-                      {ticket.auto_voiceover && ttsReady === false && (
+                      {ticket.auto_voiceover && ttsMissing && (
                         <div className="vw-warn">
                           🎙 AI voice is on, but no ElevenLabs key is set — building will fail.
                           Add <code>ELEVENLABS_API_KEY</code> to <code>backend/.env</code>, or turn AI voice off and record the scenes yourself.
@@ -819,11 +826,7 @@ function BeatRow({ b, first, last, onChanged, onReorder, toast }: {
   const clipInput = useRef<HTMLInputElement>(null);
   const voInput = useRef<HTMLInputElement>(null);
   const [up, setUp] = useState<"" | "clip" | "vo">("");
-  // A scene is "say this, film that" — the on-screen title and the caption override are
-  // per-scene tweaks almost nobody sets. An imported script copies the spoken line into
-  // `caption` (intake.parse_script), so that field rendered as a duplicate of the one right
-  // above it; an echo like that doesn't count as set. Anything genuinely custom stays open,
-  // so nothing hides silently.
+  // Open only for scenes with real per-scene tweaks — see beatHasCustomDetails.
   const [more, setMore] = useState(() => beatHasCustomDetails(b));
   const save = async (field: keyof Beat, val: string) => {
     if ((b[field] ?? "") === val) return;

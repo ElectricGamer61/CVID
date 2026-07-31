@@ -286,8 +286,9 @@ it** both stay under Create videos, so the sidebar never disagrees with where yo
   line, which is what `intake.parse_script` writes into `caption`).
   **"Make my video" is disabled while a proof scene has no clip** — that's the same precondition
   `POST /api/tickets/{id}/assemble` enforces with a 400, said before the click instead of after.
-  With AI voice on and no `ELEVENLABS_API_KEY`, the card warns up front (`GET /api/tts/voices`
-  → `available`) rather than letting the build run and fail partway.
+  With AI voice on and no `ELEVENLABS_API_KEY`, the card warns up front (`GET /api/presets`
+  → `tts_available`, the key check only — `GET /api/tts/voices` also calls ElevenLabs and is
+  reserved for the editor's voice picker) rather than letting the build run and fail partway.
 - **TicketDetail** drawer — edit ticket + per-beat fields, add/reorder/delete scenes, proof toggle,
   AI buttons, per-beat clip/voiceover upload, "Open in editor" + "Make my video" (assemble).
 - **Downloads (Library)** — **collapsible folders**, each listing its videos as **draggable rows**

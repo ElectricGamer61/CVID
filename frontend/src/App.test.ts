@@ -72,6 +72,34 @@ describe("makeStepOf", () => {
   });
 });
 
+describe("nextStepFor across capture modes", () => {
+  const beats = [{ clip_path: "/a.mp4", voiceover_path: null }];
+
+  it("walks the scene checklist for a native short", () => {
+    expect(nextStepFor(ticket({ capture_mode: "native-short" }), [])).toBe("script");
+    expect(nextStepFor(ticket({ capture_mode: "native-short", auto_voiceover: true }),
+      [{ clip_path: null, voiceover_path: null }])).toBe("clips");
+    expect(nextStepFor(ticket({ capture_mode: "native-short" }), beats)).toBe("voice");
+    expect(nextStepFor(ticket({ capture_mode: "native-short", auto_voiceover: true }), beats)).toBe("build");
+    expect(nextStepFor(ticket({ capture_mode: "native-short", clip_url: "/reel.mp4" }), beats)).toBe("done");
+  });
+
+  it("points the footage modes at Projects instead of a build button they don't have", () => {
+    // The rail renders no editor/build control for these, so the scene checklist would
+    // be telling you to press something that isn't on screen.
+    for (const capture_mode of ["longform-clip", "repurpose"]) {
+      expect(nextStepFor(ticket({ capture_mode }), [])).toBe("footage");
+      expect(nextStepFor(ticket({ capture_mode }), beats)).toBe("footage");
+    }
+  });
+
+  it("has a next-step line for every key the rule can return", () => {
+    for (const step of ["script", "clips", "voice", "build", "footage", "done"]) {
+      expect(NEXT_STEP_HINT[step]).toBeTruthy();
+    }
+  });
+});
+
 describe("nextStepFor", () => {
   const beats = [{ clip_path: "/a.mp4", voiceover_path: null }];
 

@@ -82,6 +82,25 @@ def test_haar_returns_nothing_when_the_cascade_is_unavailable():
         assert reframe._centers_haar([object()], 1920) == []
 
 
+def test_haar_cascade_is_none_when_the_xml_is_missing():
+    # The headless wheel has cv2.data but ships no XML, so the classifier loads empty.
+    with fresh_cascade(_CascadeStub(empty=True)):
+        assert reframe._haar_cascade() is None
+
+
+def test_haar_cascade_is_none_when_the_build_has_no_cascade_data():
+    with fresh_cascade(_CascadeStub(empty=False), with_data=False):
+        assert reframe._haar_cascade() is None
+
+
+def test_haar_cascade_is_only_loaded_once():
+    loads = []
+    with fresh_cascade(_CascadeStub(empty=True), loads=loads):
+        assert reframe._haar_cascade() is None
+        assert reframe._haar_cascade() is None
+    assert len(loads) == 1, loads   # the failure is remembered, not re-warned per clip
+
+
 def test_detect_center_is_centered_when_detection_raises():
     with patched(cv2=_Cv2Stub(), _centers_yunet=_boom, _centers_haar=_boom):
         assert reframe.detect_center(FAKE_VIDEO, 0.0, 1.0) == 0.5
@@ -104,6 +123,44 @@ def test_detect_center_is_centered_when_the_file_will_not_open():
         def release(self): return None
     with patched(cv2=_Cv2Stub(capture=lambda _p: _Closed())):
         assert reframe.detect_center(FAKE_VIDEO, 0.0, 1.0) == 0.5
+
+
+class _CascadeStub:
+    """A CascadeClassifier that reports whether it managed to load."""
+
+    def __init__(self, empty: bool):
+        self._empty = empty
+
+    def empty(self):
+        return self._empty
+
+
+class _Cv2NoDataStub:
+    """A build with no `cv2.data` at all — reading it raises AttributeError."""
+
+    def __init__(self, cascade, loads):
+        self._cascade = cascade
+        self._loads = loads
+
+    def CascadeClassifier(self, path):   # noqa: N802 - mirrors the cv2 name
+        self._loads.append(path)
+        return self._cascade
+
+
+class _Cv2CascadeStub(_Cv2NoDataStub):
+    """The same, plus the `cv2.data.haarcascades` path the slim wheel does expose."""
+
+    class data:                     # noqa: N801 - mirrors the cv2 submodule name
+        haarcascades = "/no/such/dir/"
+
+
+@contextmanager
+def fresh_cascade(cascade, with_data: bool = True, loads: list | None = None):
+    """Run with an empty cascade cache and a stubbed cv2, so cases can't leak into each other."""
+    stub_cls = _Cv2CascadeStub if with_data else _Cv2NoDataStub
+    with patched(cv2=stub_cls(cascade, loads if loads is not None else []),
+                 _haar=None, _haar_failed=False):
+        yield
 
 
 class _Cv2Stub:

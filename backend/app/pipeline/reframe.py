@@ -25,6 +25,8 @@ _YUNET_URL = ("https://github.com/opencv/opencv_zoo/raw/main/models/"
               "face_detection_yunet/face_detection_yunet_2023mar.onnx")
 _yunet = None
 _yunet_failed = False
+_haar = None
+_haar_failed = False
 
 
 def _yunet_detector():
@@ -62,23 +64,31 @@ def _centers_yunet(frames: list) -> list[float]:
 
 
 def _haar_cascade():
-    """The Haar face cascade, or None when this OpenCV build doesn't ship it.
+    """Lazy singleton Haar face cascade, or None when this OpenCV build doesn't ship it.
 
     Headless / slim OpenCV wheels can be missing `cv2.data` or the XML itself, and an
     unloaded CascadeClassifier raises `!empty()` from detectMultiScale rather than just
-    finding nothing — which used to abort the whole export. Check it up front instead.
+    finding nothing — which used to abort the whole export. Check it up front instead,
+    and remember the answer so the XML is parsed (and the warning printed) once per
+    process rather than once per clip per render.
     """
+    global _haar, _haar_failed
+    if _haar is not None or _haar_failed:
+        return _haar
     try:
         cascade = cv2.CascadeClassifier(
             cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
         )
     except Exception as e:  # noqa: BLE001 - no cv2.data in this build
         print(f"[reframe] Haar cascade unavailable ({e}); centering the crop")
+        _haar_failed = True
         return None
     if cascade.empty():
         print("[reframe] Haar cascade file missing; centering the crop")
+        _haar_failed = True
         return None
-    return cascade
+    _haar = cascade
+    return _haar
 
 
 def _centers_haar(frames: list, width: float) -> list[float]:
