@@ -71,6 +71,7 @@ export interface Presets {
   stages: string[];
   formats: string[];
   capture_modes: string[];
+  tts_available?: boolean;       // is ELEVENLABS_API_KEY set? (no round trip to ElevenLabs)
 }
 
 export interface PostMeta {

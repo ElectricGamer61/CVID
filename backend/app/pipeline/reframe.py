@@ -25,6 +25,9 @@ _YUNET_URL = ("https://github.com/opencv/opencv_zoo/raw/main/models/"
               "face_detection_yunet/face_detection_yunet_2023mar.onnx")
 _yunet = None
 _yunet_failed = False
+_HAAR_XML = "haarcascade_frontalface_default.xml"
+_haar_path = None
+_haar_unavailable = False
 
 
 def _yunet_detector():
@@ -61,10 +64,39 @@ def _centers_yunet(frames: list) -> list[float]:
     return centers
 
 
+def _haar_cascade():
+    """A freshly loaded Haar face cascade, or None when this OpenCV build doesn't ship it.
+
+    Headless / slim OpenCV wheels can be missing `cv2.data` or the XML itself, and an
+    unloaded CascadeClassifier raises `!empty()` from detectMultiScale rather than just
+    finding nothing — which used to abort the whole export. Check it up front instead.
+
+    Only the *negative* answer is memoised: detectMultiScale mutates the classifier, so a
+    shared instance isn't safe across the render pool's threads, and each caller gets its
+    own. A build without the XML still parses nothing and warns once per process.
+    """
+    global _haar_path, _haar_unavailable
+    if _haar_unavailable:
+        return None
+    try:
+        if _haar_path is None:
+            _haar_path = cv2.data.haarcascades + _HAAR_XML
+        cascade = cv2.CascadeClassifier(_haar_path)
+    except Exception as e:  # noqa: BLE001 - no cv2.data in this build
+        print(f"[reframe] Haar cascade unavailable ({e}); centering the crop")
+        _haar_unavailable = True
+        return None
+    if cascade.empty():
+        print("[reframe] Haar cascade file missing; centering the crop")
+        _haar_unavailable = True
+        return None
+    return cascade
+
+
 def _centers_haar(frames: list, width: float) -> list[float]:
-    cascade = cv2.CascadeClassifier(
-        cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
-    )
+    cascade = _haar_cascade()
+    if cascade is None:
+        return []
     centers = []
     for frame in frames:
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -94,7 +126,14 @@ def detect_center(video_path: Path, start: float, end: float, samples: int = 12)
         cap.release()
     if not frames:
         return 0.5
-    centers = _centers_yunet(frames) or _centers_haar(frames, width)
+    # Framing is a nicety; the export is not. Any detector blowing up (missing model,
+    # unsupported build, odd frame) falls back to a mid-frame crop instead of failing
+    # the render the user is waiting on.
+    try:
+        centers = _centers_yunet(frames) or _centers_haar(frames, width)
+    except Exception as e:  # noqa: BLE001
+        print(f"[reframe] face detection failed ({e}); centering the crop")
+        return 0.5
     if not centers:
         return 0.5
     return float(statistics.median(centers))  # outlier-robust

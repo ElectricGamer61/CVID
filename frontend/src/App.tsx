@@ -21,9 +21,29 @@ type Route =
   | { name: "project"; pid: number }
   | { name: "editor"; pid: number; cid: number; from?: "board" | "project" | "home" | "video"; tid?: number };
 
+/** The sidebar sections, and the name each one shows in the breadcrumb. */
+export const SECTION_LABELS: Record<string, string> = {
+  home: "Projects", board: "Create videos", intake: "Ideas",
+  queue: "Schedule", insights: "Results", library: "Downloads",
+};
+
+/** Which sidebar item lights up for a route.
+ *
+ *  A video and the editor you opened from it both belong to "Create videos" — highlighting
+ *  Projects there made the sidebar disagree with where you actually came from.
+ */
+export const sidebarViewFor = (route: Route): string => {
+  if (route.name === "video") return "board";
+  if (route.name === "editor") return route.from === "video" ? "board" : "home";
+  return route.name === "project" ? "home" : route.name;
+};
+
 export default function App() {
   const [presets, setPresets] = useState<Presets | null>(null);
-  const [route, setRoute] = useState<Route>({ name: "home" });
+  // Land on the board. Making a video is what the app is FOR; "Projects" (the long-form
+  // clipper + its library) is the other, rarer path, so it's a click away instead of the
+  // first thing you see.
+  const [route, setRoute] = useState<Route>({ name: "board" });
   const [projName, setProjName] = useState("");
   const [backendDown, setBackendDown] = useState(false);
 
@@ -44,10 +64,9 @@ export default function App() {
   const goInsights = () => setRoute({ name: "insights" });
   const goLibrary = () => setRoute({ name: "library" });
 
-  const NAMED: Record<string, string> = { board: "Create videos", intake: "Ideas", queue: "Schedule", insights: "Results", library: "Downloads" };
-  const crumbLabel = NAMED[route.name] ?? null;
-  const sbView = (route.name === "video" ? "board"
-    : ["board", "intake", "queue", "insights", "library"].includes(route.name) ? route.name : "home") as any;
+  const crumbLabel = SECTION_LABELS[route.name] ?? null;
+  const fromVideo = route.name === "editor" && route.from === "video";
+  const sbView = sidebarViewFor(route) as any;
 
   return (
     <div className="shell">
@@ -60,13 +79,13 @@ export default function App() {
         )}
         <header className="topbar">
           <div className="crumbs">
-            {route.name === "video"
-              ? <button className="back" onClick={goBoard}>Create videos</button>
-              : crumbLabel
-                ? <span className="cur">{crumbLabel}</span>
+            {crumbLabel
+              ? <span className="cur">{crumbLabel}</span>
+              : route.name === "video" || fromVideo
+                ? <button className="back" onClick={goBoard}>Create videos</button>
                 : <button className="back" onClick={goHome}>Projects</button>}
-            {route.name !== "home" && route.name !== "video" && !crumbLabel && (<><span className="sep">/</span><span className="cur">{projName}</span></>)}
-            {route.name === "editor" && route.from !== "video" && (<><span className="sep">/</span><button className="back" onClick={() => setRoute({ name: "project", pid: route.pid })}>moments</button></>)}
+            {(route.name === "project" || route.name === "editor") && (<><span className="sep">/</span><span className="cur">{projName}</span></>)}
+            {route.name === "editor" && !fromVideo && (<><span className="sep">/</span><button className="back" onClick={() => setRoute({ name: "project", pid: route.pid })}>moments</button></>)}
           </div>
           <div className="spacer" />
         </header>
@@ -169,19 +188,50 @@ const markRecent = (tid: number) => {
 // What a "Make it" video needs NEXT, derived from its real scene progress (not the stage
 // field, which nobody remembers to bump) — this is what unclutters the Make It column.
 type MakeStep = { key: string; label: string };
-const MAKE_STEPS: MakeStep[] = [
+export const MAKE_STEPS: MakeStep[] = [
   { key: "script", label: "✍️ Needs a script" },
   { key: "clips",  label: "🎬 Needs clips" },
   { key: "voice",  label: "🎙 Needs a voice" },
   { key: "build",  label: "🧩 Ready to build" },
+  { key: "footage", label: "📼 From footage — ingest on Projects" },
 ];
-const makeStepOf = (t: Ticket): string => {
+export const makeStepOf = (t: Ticket): string => {
+  // Only a native short is built here from scenes; the other modes come from footage you
+  // already have, which is ingested and exported on Projects — so the scene checklist
+  // would be naming controls neither the board nor the workspace rail puts on screen.
+  if (t.capture_mode !== "native-short") return "footage";
   const beats = t.n_beats ?? 0, clips = t.n_clips ?? 0, vo = t.n_vo ?? 0;
   if (beats === 0) return "script";
   if (clips < beats) return "clips";
   if (!t.auto_voiceover && vo === 0) return "voice";   // AI-voice tickets skip this — TTS covers it
   return "build";
 };
+
+/** Same rule, but against the scenes the workspace already has loaded (the ticket's
+ *  cached counters lag a just-uploaded clip by one poll). */
+export const makeStepOfBeats = (t: Ticket, beats: { clip_path?: string | null; voiceover_path?: string | null }[]): string =>
+  makeStepOf({
+    ...t,
+    n_beats: beats.length,
+    n_clips: beats.filter((b) => b.clip_path).length,
+    n_vo: beats.filter((b) => b.voiceover_path).length,
+  });
+
+// The board says what a video is waiting on; the workspace says what to DO about it.
+export const NEXT_STEP_HINT: Record<string, string> = {
+  script: "Paste the script you wrote — it turns into your scenes.",
+  clips: "Add a video to every scene, then make and export your video.",
+  voice: "Record a voiceover per scene, or switch on 🎙 AI voice up top.",
+  build: "Everything's in — make and export your video, or open the editor first.",
+  footage: "This one comes from footage you already have — ingest it on Projects, then edit and export it there.",
+  done: "Your video's made — save it, write the post copy, then log its numbers on Results.",
+};
+
+/** The workspace's next step — the same {@link makeStepOf} rule the board groups by, so the
+ *  two never disagree, plus a `done` step the board has no use for (it only ever groups
+ *  videos that aren't made yet). */
+export const nextStepFor = (t: Ticket, beats: { clip_path?: string | null; voiceover_path?: string | null }[]): string =>
+  t.clip_url ? "done" : makeStepOfBeats(t, beats);
 
 function Board({ presets, onOpenTicket }: { presets: Presets | null; onOpenTicket: (tid: number) => void }) {
   const [tickets, setTickets] = useState<Ticket[] | null>(null);
@@ -233,8 +283,10 @@ function Board({ presets, onOpenTicket }: { presets: Presets | null; onOpenTicke
     <div className="board-page">
       <div className="page-head">
         <h2>Create videos</h2>
-        <button className="link-btn" onClick={toggleHow}>{showHow ? "Hide the steps" : "How it works"}</button>
-        <button className="primary" onClick={() => setShowNew(true)}>+ New video</button>
+        <div className="page-head-actions">
+          <button className="ghost sm" onClick={toggleHow}>{showHow ? "Hide the steps" : "How it works"}</button>
+          <button className="primary" onClick={() => setShowNew(true)}>+ New video</button>
+        </div>
       </div>
 
       {/* Autopilot control strip — the whole autonomous flow lives here, and only in advanced
@@ -263,7 +315,16 @@ function Board({ presets, onOpenTicket }: { presets: Presets | null; onOpenTicke
           <span className="how-tip">Each video is a card below. Use ◀ ▶ to move it forward as you finish each step.</span>
         </div>
       )}
-      {tickets == null ? <div className="muted">Loading…</div> : (
+      {/* Nothing on the board yet → four empty lanes say nothing useful. Ask for the one
+          thing that starts everything instead. */}
+      {tickets != null && tickets.length === 0 ? (
+        <div className="empty board-empty">
+          <div className="big" style={{ fontSize: 26 }}>🎬</div>
+          <div className="empty-title">Make your first video</div>
+          <div>Paste the script you wrote, drop in your clips, and CVideo builds the reel.</div>
+          <button className="primary big-cta" onClick={() => setShowNew(true)}>+ New video</button>
+        </div>
+      ) : tickets == null ? <div className="muted">Loading…</div> : (
         <div className="board">
           {PHASES.map((ph) => {
             const col = sortCol(visible(tickets.filter((t) => ph.stages.includes(t.stage))));
@@ -414,26 +475,28 @@ function NewTicketModal({ presets, onClose, onCreated }: { presets: Presets | nu
     <div className="modal-back" onClick={onClose}>
       <div className="modal modal-slim" onClick={(e) => e.stopPropagation()}>
         <h3>New video</h3>
-        <label className="field">What's it about?
+        <label className="field"><span className="field-lab">What's it about?</span>
           <input value={angle} autoFocus placeholder="e.g. hidden sugar in sauces" onChange={(e) => setAngle(e.target.value)} />
         </label>
         <div className="form-row">
           {advanced && (
-            <label className="field">Brand
+            <label className="field"><span className="field-lab">Brand</span>
               <select value={brand} onChange={(e) => setBrand(e.target.value)}>{BRANDS.map((b) => <option key={b} value={b}>{b}</option>)}</select>
             </label>
           )}
-          <label className="field">How will you make it?
+          <label className="field grow"><span className="field-lab">How will you make it?</span>
             <select value={capture} onChange={(e) => setCapture(e.target.value)}>{modes.map((m) => <option key={m} value={m}>{modeLabel(m)}</option>)}</select>
           </label>
-          {formats.length > 1 && (
-            <label className="field">Video type
+          {/* "Carousel" is a stack of photos, not a video — an odd thing to be asked in a
+              dialog called New video. Reel is the only answer on the default path. */}
+          {advanced && formats.length > 1 && (
+            <label className="field"><span className="field-lab">Video type</span>
               <select value={format} onChange={(e) => setFormat(e.target.value)}>{formats.map((f) => <option key={f} value={f}>{f === "reel" ? "Reel (tall video)" : f === "carousel" ? "Carousel (photos)" : f}</option>)}</select>
             </label>
           )}
         </div>
         <div className="nt-script">
-          <label className="field">Paste your script
+          <label className="field"><span className="field-lab">Paste your script</span>
             <textarea rows={7} value={script}
               placeholder={"Paste your script — plain lines work, or the labeled format:\nHOOK: the first line\n\nBEAT\nSpoken: what the voiceover says\nShot: what to film"}
               onChange={(e) => setScript(e.target.value)} />
@@ -486,6 +549,10 @@ function VideoWorkspace({ tid, presets, onBack, onOpenEditor }: { tid: number; p
   const confirm = useConfirm();
   const load = () => api.getTicket(tid).then(setData).catch(() => {});
   useEffect(() => { load(); markRecent(tid); }, [tid]);
+  // AI voice is on by default, and without an ElevenLabs key every build dies partway
+  // through with "ELEVENLABS_API_KEY not set". /api/presets carries the flag (it's already
+  // loaded once at startup), so the warning costs nothing. undefined = not known, so say nothing.
+  const ttsMissing = presets?.tts_available === false;
 
   const patchT = async (body: Partial<Ticket>) => { await api.patchTicket(tid, body); load(); };
   const setPhase = async (j: number) => {
@@ -621,11 +688,19 @@ function VideoWorkspace({ tid, presets, onBack, onOpenEditor }: { tid: number; p
               ))}
             </div>
 
+            {/* One line, always answering "so what do I do now?" — the same rule the board
+                groups Make It by, worded as an instruction. */}
+            <div className="vw-next"><span className="vw-next-k">Next</span>{NEXT_STEP_HINT[nextStepFor(ticket, beats)]}</div>
+
             <div className="vw-grid">
               <div className="vw-main">
                 <div className="vw-sec-head">
                   <h4>Scenes ({beats.length})</h4>
-                  {proofGaps > 0 && <span className="warn-chip">⚠ {proofGaps} scene{proofGaps > 1 ? "s" : ""} need a video showing proof</span>}
+                  {proofGaps > 0 && (
+                    <span className="warn-chip">
+                      ⚠ {proofGaps} scene{proofGaps > 1 ? "s" : ""} need{proofGaps > 1 ? "" : "s"} a video showing proof
+                    </span>
+                  )}
                 </div>
                 {beats.length === 0 ? (
                   <div className="vw-empty">
@@ -653,42 +728,42 @@ function VideoWorkspace({ tid, presets, onBack, onOpenEditor }: { tid: number; p
                 )}
               </div>
 
+              {/* Rail order = the order you use it: build the video, write the post copy,
+                  and only then the AI draft, which is the fallback for a blank day. */}
               <div className="vw-rail">
-                <div className="vw-card">
-                  <h4>✨ AI draft</h4>
-                  <div className="muted" style={{ fontSize: 12.5, marginBottom: 8 }}>
-                    Fallback for a blank day — normally you paste the script Claude wrote (“Paste a script” by the scenes).
-                  </div>
-                  <div className="ai-row" style={{ margin: 0 }}>
-                    <button onClick={runScript} disabled={!!aiBusy}>{aiBusy === "script" ? "Writing…" : "✨ Write my script"}</button>
-                    <button onClick={runHooks} disabled={!!aiBusy}>{aiBusy === "hook" ? "Thinking…" : "✨ Suggest first lines"}</button>
-                  </div>
-                  {hooks && (
-                    <div className="hook-options">
-                      <div className="muted" style={{ fontSize: 12.5, marginBottom: 4 }}>Tap one to use it:</div>
-                      {hooks.map((h, i) => <button key={i} className="hook-chip" onClick={() => pickHook(h)}>{h}</button>)}
-                    </div>
-                  )}
-                </div>
-
                 <div className="vw-card">
                   <h4>🎬 Make the video</h4>
                   {ticket.capture_mode !== "native-short" ? (
                     <div className="muted" style={{ fontSize: 12.5 }}>
-                      This video comes from existing footage — ingest it on <b>Home</b>, then edit and export from there.
+                      This video comes from existing footage — ingest it on <b>Projects</b>, then edit and export from there.
                     </div>
                   ) : beats.length === 0 ? (
                     <div className="muted" style={{ fontSize: 12.5 }}>Add scenes first — then preview, record your voice, and make the final video here.</div>
                   ) : (
                     <div className="assemble-box">
+                      {ticket.auto_voiceover && ttsMissing && (
+                        <div className="vw-warn">
+                          🎙 AI voice is on, but no ElevenLabs key is set — building will fail.
+                          Add <code>ELEVENLABS_API_KEY</code> to <code>backend/.env</code>, or turn AI voice off and record the scenes yourself.
+                        </div>
+                      )}
                       <div className="muted" style={{ fontSize: 12.5, marginBottom: 8 }}>Open your scenes as one video — preview it, record your voice, add captions and cut:</div>
                       <button className="primary big-btn" onClick={openEditor} disabled={building}>
                         {building ? "Opening editor…" : "✏️ Open in editor"}
                       </button>
                       <div className="muted" style={{ fontSize: 12, margin: "10px 0 8px" }}>…or make the final video right away:</div>
-                      <button className="big-btn" onClick={assembleReel} disabled={asm?.state === "running"}>
+                      {/* The backend refuses to assemble while a proof scene has no footage
+                          (POST /assemble → 400). Say so here instead of offering a button whose
+                          only outcome is an error toast. */}
+                      <button className="big-btn" onClick={assembleReel} disabled={asm?.state === "running" || proofGaps > 0}
+                        title={proofGaps > 0 ? "Add the product/label footage to the highlighted scene first" : ""}>
                         {asm?.state === "running" ? `⏳ ${asm.stage}…` : ticket.clip_url ? "↻ Make it again" : "🎬 Make my video"}
                       </button>
+                      {proofGaps > 0 && (
+                        <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>
+                          Add footage to the {proofGaps > 1 ? `${proofGaps} highlighted scenes` : "highlighted scene"} first.
+                        </div>
+                      )}
                       {asm?.state === "error" && <div className="err">{asm.error}</div>}
                       {ticket.clip_url && asm?.state !== "running" && (
                         <div className="reel-out">
@@ -702,6 +777,24 @@ function VideoWorkspace({ tid, presets, onBack, onOpenEditor }: { tid: number; p
                 </div>
 
                 <PostCopyCard ticket={ticket} onChanged={load} toast={toast} />
+
+                <details className="vw-card vw-aside" open={beats.length === 0}>
+                  <summary>✨ AI draft <span className="muted">— no script yet?</span></summary>
+                  <div className="muted" style={{ fontSize: 12.5, margin: "8px 0" }}>
+                    Normally you paste the script you already wrote (“Paste a script” by the scenes).
+                    This writes a rough one for you instead.
+                  </div>
+                  <div className="ai-row" style={{ margin: 0 }}>
+                    <button onClick={runScript} disabled={!!aiBusy}>{aiBusy === "script" ? "Writing…" : "Write my script"}</button>
+                    <button onClick={runHooks} disabled={!!aiBusy}>{aiBusy === "hook" ? "Thinking…" : "Suggest first lines"}</button>
+                  </div>
+                  {hooks && (
+                    <div className="hook-options">
+                      <div className="muted" style={{ fontSize: 12.5, marginBottom: 4 }}>Tap one to use it:</div>
+                      {hooks.map((h, i) => <button key={i} className="hook-chip" onClick={() => pickHook(h)}>{h}</button>)}
+                    </div>
+                  )}
+                </details>
               </div>
             </div>
           </>
@@ -711,6 +804,19 @@ function VideoWorkspace({ tid, presets, onBack, onOpenEditor }: { tid: number; p
   );
 }
 
+/** Has this scene got per-scene tweaks worth showing without asking?
+ *
+ *  A scene is "say this, film that". The on-screen title and the caption override are
+ *  extras almost nobody sets, and an imported script copies the spoken line straight into
+ *  `caption` (intake.parse_script), which rendered as a duplicate of the field right above
+ *  it — an echo like that doesn't count as set. Anything genuinely custom keeps the extra
+ *  fields open so nothing hides silently.
+ */
+export const beatHasCustomDetails = (b: { on_screen_text?: string | null; caption?: string | null; spoken_line?: string | null }): boolean => {
+  const caption = (b.caption ?? "").trim();
+  return !!(b.on_screen_text ?? "").trim() || (!!caption && caption !== (b.spoken_line ?? "").trim());
+};
+
 /* One editable beat row (uncontrolled inputs → patch on blur to avoid re-render churn). */
 function BeatRow({ b, first, last, onChanged, onReorder, toast }: {
   b: Beat; first: boolean; last: boolean; onChanged: () => void; onReorder: (b: Beat, d: 1 | -1) => void; toast: Notify;
@@ -718,6 +824,8 @@ function BeatRow({ b, first, last, onChanged, onReorder, toast }: {
   const clipInput = useRef<HTMLInputElement>(null);
   const voInput = useRef<HTMLInputElement>(null);
   const [up, setUp] = useState<"" | "clip" | "vo">("");
+  // Open only for scenes with real per-scene tweaks — see beatHasCustomDetails.
+  const [more, setMore] = useState(() => beatHasCustomDetails(b));
   const save = async (field: keyof Beat, val: string) => {
     if ((b[field] ?? "") === val) return;
     await api.patchBeat(b.id, { [field]: val } as Partial<Beat>); onChanged();
@@ -739,9 +847,13 @@ function BeatRow({ b, first, last, onChanged, onReorder, toast }: {
       <div className="beat-idx">{b.order_index + 1}</div>
       <div className="beat-body">
         <textarea className="beat-in spoken" rows={2} defaultValue={b.spoken_line} placeholder="What you say out loud…" onBlur={(e) => save("spoken_line", e.target.value)} />
-        <input className="beat-in" defaultValue={b.on_screen_text} placeholder="Big text on screen…" onBlur={(e) => save("on_screen_text", e.target.value)} />
-        <input className="beat-in" defaultValue={b.caption} placeholder="Captions (words along the bottom)…" onBlur={(e) => save("caption", e.target.value)} />
         <input className="beat-in" defaultValue={b.shot_cue} placeholder="What to film…" onBlur={(e) => save("shot_cue", e.target.value)} />
+        {more && (
+          <div className="beat-details">
+            <input className="beat-in" defaultValue={b.on_screen_text} placeholder="Big text on screen…" onBlur={(e) => save("on_screen_text", e.target.value)} />
+            <input className="beat-in" defaultValue={b.caption} placeholder="Captions (defaults to what you say)…" onBlur={(e) => save("caption", e.target.value)} />
+          </div>
+        )}
         <div className="beat-media">
           <button className={"slot" + (b.clip_path ? " filled" : "")} onClick={() => clipInput.current?.click()} disabled={up === "clip"}>
             {up === "clip" ? "…" : b.clip_path ? "✓ Video added" : "＋ Add video"}
@@ -751,6 +863,10 @@ function BeatRow({ b, first, last, onChanged, onReorder, toast }: {
           </button>
           <input ref={clipInput} type="file" accept="video/*" hidden onChange={(e) => upClip(e.target.files?.[0])} />
           <input ref={voInput} type="file" accept="audio/*" hidden onChange={(e) => upVo(e.target.files?.[0])} />
+          <button className="link-btn beat-more" onClick={() => setMore((v) => !v)}
+            title="On-screen title and a custom caption for this scene">
+            {more ? "Fewer options" : "More options"}
+          </button>
         </div>
         {b.is_proof_beat && !b.clip_path && <div className="beat-warn-txt">⚠ This scene says a real number — add a video that shows the product/label</div>}
       </div>
@@ -789,7 +905,9 @@ function PostCopyCard({ ticket, onChanged, toast }: { ticket: Ticket; onChanged:
           <div className="muted" style={{ fontSize: 12.5, marginBottom: 8 }}>
             Captions, hashtags & YouTube title — written from this video's own script.
           </div>
-          <button className="primary" onClick={gen} disabled={busy}>{busy ? "Writing…" : "🪄 Write my post copy"}</button>
+          {/* Secondary on purpose: the rail has exactly one primary ("Open in editor"), and
+              post copy is a step you take after the video exists. */}
+          <button onClick={gen} disabled={busy}>{busy ? "Writing…" : "🪄 Write my post copy"}</button>
         </>
       ) : (
         <div className="postcopy">
@@ -1034,12 +1152,12 @@ function Intake({ onSpun }: { onSpun: () => void }) {
       <ShootDrop />
       <div className="page-head" style={{ marginTop: 28 }}><h2>Ideas</h2><span className="muted">Save videos that inspire you — turn any one into a new video</span></div>
       <div className="intake-form">
-        <label className="field">What's the idea?<input value={f.angle} placeholder="e.g. hidden sugar in sauces" onChange={(e) => setF({ ...f, angle: e.target.value })} /></label>
+        <label className="field"><span className="field-lab">What's the idea?</span><input value={f.angle} placeholder="e.g. hidden sugar in sauces" onChange={(e) => setF({ ...f, angle: e.target.value })} /></label>
         <div className="form-row">
-          <label className="field">Their first line <span className="muted">(optional)</span><input value={f.hook} placeholder="the line that grabbed you" onChange={(e) => setF({ ...f, hook: e.target.value })} /></label>
-          <label className="field">Link <span className="muted">(optional)</span><input value={f.url} placeholder="https://…" onChange={(e) => setF({ ...f, url: e.target.value })} /></label>
+          <label className="field grow"><span className="field-lab">Their first line <span className="muted">(optional)</span></span><input value={f.hook} placeholder="the line that grabbed you" onChange={(e) => setF({ ...f, hook: e.target.value })} /></label>
+          <label className="field grow"><span className="field-lab">Link <span className="muted">(optional)</span></span><input value={f.url} placeholder="https://…" onChange={(e) => setF({ ...f, url: e.target.value })} /></label>
         </div>
-        <label className="field">Why it worked <span className="muted">(optional)</span><textarea rows={2} value={f.why_popped} onChange={(e) => setF({ ...f, why_popped: e.target.value })} /></label>
+        <label className="field"><span className="field-lab">Why it worked <span className="muted">(optional)</span></span><textarea rows={2} value={f.why_popped} onChange={(e) => setF({ ...f, why_popped: e.target.value })} /></label>
         <div className="modal-actions"><button className="primary" onClick={add} disabled={busy}>{busy ? "Saving…" : "Save this idea"}</button></div>
       </div>
 
@@ -1731,7 +1849,7 @@ function Home({ presets, onOpen }: { presets: Presets | null; onOpen: (id: numbe
       ) : projects.length === 0 ? (
         <div className="empty">
           <div className="big" style={{ fontSize: 28 }}>★</div>
-          <div style={{ fontWeight: 700, color: "var(--text)", fontSize: 16 }}>No projects yet</div>
+          <div className="empty-title">No clipped videos yet</div>
           <div>Paste a YouTube link or upload a video above to get your first clips.</div>
         </div>
       ) : (
@@ -1895,43 +2013,68 @@ function NewProject({ presets, onCreated }: { presets: Presets | null; onCreated
     } finally { setBusy(false); }
   };
 
+  const summary = optionsSummary({ genMode, brain, transcribe, aspect, preset, advanced, brand });
+
   return (
     <div className="card">
       <div className="row" style={{ justifyContent: "space-between", marginBottom: 16 }}>
-        <h2 style={{ margin: 0, fontSize: 18, fontWeight: 800 }}>New project</h2>
+        <div>
+          <h2 style={{ margin: 0, fontSize: 18, fontWeight: 800 }}>Clip a long video</h2>
+          <div className="muted" style={{ fontSize: 12.5, marginTop: 3 }}>Turn one long video into vertical shorts.</div>
+        </div>
         <div className="seg">
           <button className={mode === "url" ? "on" : ""} onClick={() => setMode("url")}>YouTube link</button>
           <button className={mode === "file" ? "on" : ""} onClick={() => setMode("file")}>Upload file</button>
         </div>
       </div>
       <div className="row">
-        <label className="field grow">Project name<input value={name} onChange={(e) => setName(e.target.value)} placeholder="My video" /></label>
+        <label className="field grow"><span className="field-lab">Project name</span><input value={name} onChange={(e) => setName(e.target.value)} placeholder="My video" /></label>
         {mode === "url" ? (
-          <label className="field grow">YouTube URL<input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://youtube.com/watch?v=…" /></label>
+          <label className="field grow"><span className="field-lab">YouTube URL</span><input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://youtube.com/watch?v=…" /></label>
         ) : (
-          <label className="field grow">Video file<input type="file" accept="video/*" onChange={(e) => setFile(e.target.files?.[0] ?? null)} /></label>
+          <label className="field grow"><span className="field-lab">Video file</span><input type="file" accept="video/*" onChange={(e) => setFile(e.target.files?.[0] ?? null)} /></label>
         )}
       </div>
       <div className="row" style={{ marginTop: 14 }}>
-        <label className="field grow">What do you want?
+        <label className="field grow"><span className="field-lab">What do you want?</span>
           <div className="seg" style={{ marginTop: 4 }}>
             <button className={genMode === "moments" ? "on" : ""} onClick={() => setGenMode("moments")}>Find viral moments</button>
             <button className={genMode === "caption" ? "on" : ""} onClick={() => setGenMode("caption")}>Just caption my clip</button>
           </div>
         </label>
       </div>
-      <div className="row" style={{ marginTop: 14, alignItems: "flex-end" }}>
-        {genMode === "caption" && advanced && <label className="field">Brand<select value={brand} onChange={(e) => setBrand(e.target.value)}>{BRANDS.map((b) => <option key={b} value={b}>{b}</option>)}</select></label>}
-        {genMode === "moments" && <label className="field">Brain<select value={brain} onChange={(e) => setBrain(e.target.value)}>{(presets?.brains ?? ["ollama"]).map((b) => <option key={b} value={b}>{b === "claude" ? "Claude (smartest)" : b === "ollama" ? "Local (free)" : b === "gemini" ? "Gemini" : "Basic (no AI)"}</option>)}</select></label>}
-        <label className="field">Transcription<select value={transcribe} onChange={(e) => setTranscribe(e.target.value)}>{(presets?.transcribe ?? ["local"]).map((t) => <option key={t} value={t}>{t === "local" ? "Local (free)" : "ElevenLabs"}</option>)}</select></label>
-        <label className="field">Aspect<select value={aspect} onChange={(e) => setAspect(e.target.value)}>{(presets?.aspects ?? ["9:16"]).map((a) => <option key={a}>{a}</option>)}</select></label>
-        <label className="field">Caption style<select value={preset} onChange={(e) => setPreset(e.target.value)}>{(presets?.captions ?? ["capcut"]).map((c) => <option key={c}>{c}</option>)}</select></label>
-        <div style={{ flex: 1 }} />
-        <button className="primary" disabled={busy} onClick={submit}>{busy ? "Starting…" : genMode === "caption" ? "✨ Caption my clip" : "✨ Generate clips"}</button>
+      {/* Brain / transcription / aspect / caption style are four technical menus that were
+          the loudest thing on the landing screen, and the defaults are right nearly always.
+          Folded away, with the current picks summarised so nothing is hidden. */}
+      <details className="np-more">
+        <summary>Options <span className="muted">· {summary}</span></summary>
+        <div className="row" style={{ marginTop: 12 }}>
+          {genMode === "caption" && advanced && <label className="field"><span className="field-lab">Brand</span><select value={brand} onChange={(e) => setBrand(e.target.value)}>{BRANDS.map((b) => <option key={b} value={b}>{b}</option>)}</select></label>}
+          {genMode === "moments" && <label className="field"><span className="field-lab">Brain</span><select value={brain} onChange={(e) => setBrain(e.target.value)}>{(presets?.brains ?? ["ollama"]).map((b) => <option key={b} value={b}>{brainLabel(b)}</option>)}</select></label>}
+          <label className="field"><span className="field-lab">Transcription</span><select value={transcribe} onChange={(e) => setTranscribe(e.target.value)}>{(presets?.transcribe ?? ["local"]).map((t) => <option key={t} value={t}>{t === "local" ? "Local (free)" : "ElevenLabs"}</option>)}</select></label>
+          <label className="field"><span className="field-lab">Shape</span><select value={aspect} onChange={(e) => setAspect(e.target.value)}>{(presets?.aspects ?? ["9:16"]).map((a) => <option key={a}>{a}</option>)}</select></label>
+          <label className="field"><span className="field-lab">Caption style</span><select value={preset} onChange={(e) => setPreset(e.target.value)}>{(presets?.captions ?? ["capcut"]).map((c) => <option key={c}>{c}</option>)}</select></label>
+        </div>
+      </details>
+      <div className="row" style={{ marginTop: 16, justifyContent: "flex-end" }}>
+        <button className="primary" disabled={busy} onClick={submit}>{busy ? "Starting…" : genMode === "caption" ? "Caption my clip" : "Generate clips"}</button>
       </div>
     </div>
   );
 }
+
+const BRAIN_LABELS: Record<string, string> = {
+  claude: "Claude (smartest)", ollama: "Local (free)", gemini: "Gemini",
+};
+/** Anything the backend offers that we have no friendly name for is the heuristic scorer. */
+export const brainLabel = (b: string) => BRAIN_LABELS[b] ?? "Basic (no AI)";
+
+/** The folded-away Options summary — so a non-default pick is still visible at a glance. */
+export const optionsSummary = (o: { genMode: string; brain: string; transcribe: string; aspect: string; preset: string; advanced?: boolean; brand?: string }) =>
+  [o.genMode === "moments" ? brainLabel(o.brain) : null,
+   o.genMode === "caption" && o.advanced && o.brand && o.brand !== ACTIVE_BRAND ? o.brand : null,
+   o.transcribe === "local" ? "local transcription" : "ElevenLabs",
+   o.aspect, o.preset].filter(Boolean).join(" · ");
 
 /* ---------------------------- Moments grid ----------------------------- */
 function MomentsGrid({ pid, onName, onEdit, onEditReel, onBack }: {

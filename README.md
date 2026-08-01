@@ -55,7 +55,7 @@ models, ~1 GB total, no GPU needed.
 
 ## Quick start (after first-time setup below)
 Double-click **`scripts\start.ps1`** (or `powershell -ExecutionPolicy Bypass -File scripts\start.ps1`).
-It launches the backend + frontend and opens http://localhost:5173. Make sure Ollama is running.
+It launches the backend + frontend and opens http://localhost:3000. Make sure Ollama is running.
 
 > ✅ Verified on RTX 5070: transcription runs **on the GPU** (`device=cuda`, ~126 words in 5s)
 > via faster-whisper / CTranslate2 4.8.0. The full pipeline (upload → transcribe → Ollama
@@ -78,7 +78,7 @@ cd frontend
 npm install
 npm run dev
 ```
-Open http://localhost:5173. The Vite dev server proxies `/api` to the backend on :8000.
+Open http://localhost:3000. The Vite dev server proxies `/api` to the backend on :8000.
 
 ## Configuration (env vars / `backend/.env`)
 - `CVIDEO_WHISPER_MODEL` (default `large-v3`) · `CVIDEO_WHISPER_DEVICE` (`auto`/`cuda`/`cpu`)

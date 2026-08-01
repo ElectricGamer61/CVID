@@ -2160,6 +2160,8 @@ def delete_project(pid: int):
 @app.get("/api/presets")
 def list_presets():
     from dataclasses import asdict
+
+    from .pipeline import tts
     _labels = {"1080p": "1080p", "1440p": "1440p (2K)", "4k": "4K"}
     resolutions = []
     for rid in settings.RESOLUTIONS:
@@ -2176,7 +2178,10 @@ def list_presets():
             "resolutions": resolutions,
             "stages": STAGES,
             "formats": sorted(_TICKET_FORMATS),
-            "capture_modes": sorted(_CAPTURE_MODES)}
+            "capture_modes": sorted(_CAPTURE_MODES),
+            # Just the key check, no call out to ElevenLabs — /api/tts/voices does the
+            # round trip and is only worth it when you actually need the voice list.
+            "tts_available": tts.available()}
 
 
 @app.get("/api/health")
