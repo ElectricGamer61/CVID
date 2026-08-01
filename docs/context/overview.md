@@ -16,7 +16,7 @@ Both paths share the same downstream engine, so the final format is entirely up 
 
 ## Screens
 - **Ideas** — swipe file of reference videos ("outliers"): hook, structure, why they worked.
-- **Home** — projects (ingested source videos) in folders; caption projects collect into **Reels**.
+- **Projects** — long videos you've ingested, in folders; caption projects collect into **Reels**.
 - **Create videos** — a kanban of the content lifecycle; new videos pick a brand/format and paste
   or AI-generate a script.
 - **Editor** — trim, cuts, caption editing/styling, multi-clip timeline, per-scene voiceover with

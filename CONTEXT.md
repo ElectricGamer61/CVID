@@ -24,7 +24,7 @@ $env:Path = [System.Environment]::GetEnvironmentVariable('Path','Machine') + ';'
 
 - **Backend** (FastAPI, port 8000):
   `cd backend; .\.venv\Scripts\python.exe -m uvicorn app.main:app --port 8000`
-- **Frontend** (Vite, port 5173, proxies `/api` → 8000): `cd frontend; npm run dev`
+- **Frontend** (Vite, port 3000 per `vite.config.ts`, proxies `/api` → 8000): `cd frontend; npm run dev`
 - One-click: **double-click `start.cmd`** (repo root) → `scripts\start.ps1` launches both + opens
   http://localhost:3000. (`start.ps1` is ASCII-only — em-dash/`…` chars broke PowerShell 5.1 parsing.)
   **The backend runs in a supervised restart loop** (auto-restarts in ~2 s if uvicorn dies) with all
