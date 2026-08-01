@@ -55,7 +55,7 @@ export function Sidebar({ view, onHome, onBoard, onIntake, onQueue, onInsights, 
   );
   return (
     <aside className="sidebar">
-      <button className="brand sb-brand" onClick={onBoard ?? onHome} title="Create videos">
+      <button className="brand sb-brand" onClick={onBoard} disabled={!onBoard} title="Create videos">
         <div className="logo">C</div>
       </button>
       {/* Ordered by the daily loop: make a video first, then the things around it.

@@ -6,6 +6,7 @@ import {
   beatHasCustomDetails, brainLabel, MAKE_STEPS, makeStepOf, makeStepOfBeats, nextStepFor,
   NEXT_STEP_HINT, optionsSummary, SECTION_LABELS, sidebarViewFor,
 } from "./App";
+import { ACTIVE_BRAND } from "./advanced";
 import type { Ticket } from "./api";
 
 const ticket = (over: Partial<Ticket> = {}): Ticket => ({
@@ -184,5 +185,17 @@ describe("new-project options summary", () => {
   it("drops the brain when there are no moments to score", () => {
     expect(optionsSummary({ genMode: "caption", brain: "ollama", transcribe: "elevenlabs", aspect: "1:1", preset: "clean" }))
       .toBe("ElevenLabs · 1:1 · clean");
+  });
+
+  it("shows a non-default brand only in advanced mode", () => {
+    const base = { genMode: "caption", brain: "ollama", transcribe: "local", aspect: "9:16", preset: "capcut" };
+    expect(optionsSummary({ ...base, advanced: true, brand: "SemSeo" }))
+      .toBe("SemSeo · local transcription · 9:16 · capcut");
+    expect(optionsSummary({ ...base, advanced: false, brand: "SemSeo" }))
+      .toBe("local transcription · 9:16 · capcut");
+    expect(optionsSummary({ ...base, advanced: true, brand: ACTIVE_BRAND }))
+      .toBe("local transcription · 9:16 · capcut");
+    expect(optionsSummary({ ...base, genMode: "moments", advanced: true, brand: "SemSeo" }))
+      .toBe("Local (free) · local transcription · 9:16 · capcut");
   });
 });

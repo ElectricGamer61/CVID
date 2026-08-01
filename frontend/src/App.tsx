@@ -2013,7 +2013,7 @@ function NewProject({ presets, onCreated }: { presets: Presets | null; onCreated
     } finally { setBusy(false); }
   };
 
-  const summary = optionsSummary({ genMode, brain, transcribe, aspect, preset });
+  const summary = optionsSummary({ genMode, brain, transcribe, aspect, preset, advanced, brand });
 
   return (
     <div className="card">
@@ -2070,8 +2070,9 @@ const BRAIN_LABELS: Record<string, string> = {
 export const brainLabel = (b: string) => BRAIN_LABELS[b] ?? "Basic (no AI)";
 
 /** The folded-away Options summary — so a non-default pick is still visible at a glance. */
-export const optionsSummary = (o: { genMode: string; brain: string; transcribe: string; aspect: string; preset: string }) =>
+export const optionsSummary = (o: { genMode: string; brain: string; transcribe: string; aspect: string; preset: string; advanced?: boolean; brand?: string }) =>
   [o.genMode === "moments" ? brainLabel(o.brain) : null,
+   o.genMode === "caption" && o.advanced && o.brand && o.brand !== ACTIVE_BRAND ? o.brand : null,
    o.transcribe === "local" ? "local transcription" : "ElevenLabs",
    o.aspect, o.preset].filter(Boolean).join(" · ");
 
