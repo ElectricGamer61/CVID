@@ -42,7 +42,8 @@ for voice/transcription + OpenAI for writing — no local AI models, ~1 GB total
   ingest (yt-dlp / upload) → transcribe (faster-whisper) → brain (Ollama / Gemini /
   heuristic) → reframe (OpenCV 9:16) → captions (ffmpeg ASS) → render (ffmpeg).
 - **Frontend** (`frontend/`) — React + Vite editor: create projects, review scored
-  clips, trim, pick caption style, export.
+  clips, trim, pick caption style, give the clip a **cinematic Look** (one colour-grade
+  preset + a strength) and a **big cinematic title** beside the subject, export.
 
 ## Prerequisites (installed in Phase 0)
 - **ffmpeg** (on PATH) — `ffmpeg -version`
@@ -55,9 +56,17 @@ for voice/transcription + OpenAI for writing — no local AI models, ~1 GB total
 > so the Blackwell/`sm_120` PyTorch issue does not block transcription. It uses the GPU
 > if CTranslate2 supports it, otherwise falls back to CPU automatically.
 
-## Quick start (after first-time setup below)
-Double-click **`scripts\start.ps1`** (or `powershell -ExecutionPolicy Bypass -File scripts\start.ps1`).
-It launches the backend + frontend and opens http://localhost:3000. Make sure Ollama is running.
+## Opening it again later (one click)
+Double-click the **`Cvideo`** icon on your Desktop (`install.cmd` puts it there; run
+**`install-shortcut.cmd`** any time to recreate it). It starts the local app only if it isn't
+already running and opens it in its own window — no terminal, nothing to type. It is a plain
+Windows shortcut to `scripts\open-cvideo.ps1`; there is no desktop app to install.
+
+Other ways in, if you want them:
+- **`serve.cmd`** — one port, `http://127.0.0.1:8000`, also reachable from your phone on the
+  same wifi (run `allow-network.cmd` once).
+- **`scripts\start.ps1`** — the two-server dev setup (backend + Vite on
+  http://localhost:3000), for working on the code.
 
 > ✅ Verified on RTX 5070: transcription runs **on the GPU** (`device=cuda`, ~126 words in 5s)
 > via faster-whisper / CTranslate2 4.8.0. The full pipeline (upload → transcribe → Ollama
