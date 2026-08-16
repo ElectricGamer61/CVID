@@ -17,30 +17,37 @@ const ticket = (over: Partial<Ticket> = {}): Ticket => ({
 
 describe("sidebarViewFor", () => {
   it("lights up the section you're in", () => {
-    for (const name of ["home", "board", "intake", "queue", "insights", "library"]) {
+    for (const name of ["home", "board", "queue", "library"]) {
       expect(sidebarViewFor({ name } as any)).toBe(name);
     }
   });
 
-  it("keeps a video under Create videos", () => {
+  it("keeps a video under Create", () => {
     expect(sidebarViewFor({ name: "video", tid: 7 })).toBe("board");
   });
 
-  it("keeps the editor under Create videos when it was opened from a video", () => {
-    expect(sidebarViewFor({ name: "editor", pid: 1, cid: 2, from: "video", tid: 7 })).toBe("board");
+  it("lights up Editor in the editor, however you got there", () => {
+    expect(sidebarViewFor({ name: "editor", pid: 1, cid: 2 })).toBe("editor");
+    expect(sidebarViewFor({ name: "editor", pid: 1, cid: 2, from: "project" })).toBe("editor");
+    expect(sidebarViewFor({ name: "editor", pid: 1, cid: 2, from: "video", tid: 7 })).toBe("editor");
   });
 
-  it("keeps the editor and its moments grid under Projects otherwise", () => {
-    expect(sidebarViewFor({ name: "editor", pid: 1, cid: 2 })).toBe("home");
-    expect(sidebarViewFor({ name: "editor", pid: 1, cid: 2, from: "project" })).toBe("home");
+  it("keeps a project's moments grid under Clipping", () => {
     expect(sidebarViewFor({ name: "project", pid: 1 })).toBe("home");
   });
 
   it("names every section it can return", () => {
-    const routes = [{ name: "home" }, { name: "board" }, { name: "intake" }, { name: "queue" },
-      { name: "insights" }, { name: "library" }, { name: "video", tid: 1 },
+    const routes = [{ name: "home" }, { name: "board" }, { name: "queue" },
+      { name: "library" }, { name: "video", tid: 1 },
       { name: "project", pid: 1 }, { name: "editor", pid: 1, cid: 1 }] as any[];
     for (const r of routes) expect(SECTION_LABELS[sidebarViewFor(r)]).toBeTruthy();
+  });
+
+  it("has one sidebar section per label, and no folded-away ones left", () => {
+    // Ideas folded into Create, Results into Schedule. A leftover label here would
+    // mean a route still points at a section the sidebar no longer shows.
+    expect(Object.keys(SECTION_LABELS).sort()).toEqual(["board", "editor", "home", "library", "queue"]);
+    expect(SECTION_LABELS.home).toBe("Clipping");
   });
 });
 
@@ -66,7 +73,7 @@ describe("makeStepOf", () => {
     expect(makeStepOf(ticket({ n_beats: 3, n_clips: 3, n_vo: 1 }))).toBe("build");
   });
 
-  it("sends the footage modes to Projects instead of down the scene checklist", () => {
+  it("sends the footage modes to Clipping instead of down the scene checklist", () => {
     for (const capture_mode of ["longform-clip", "repurpose"]) {
       expect(makeStepOf(ticket({ capture_mode, n_beats: 0, n_clips: 0, n_vo: 0 }))).toBe("footage");
       expect(makeStepOf(ticket({ capture_mode, n_beats: 3, n_clips: 3, n_vo: 1 }))).toBe("footage");
@@ -95,7 +102,7 @@ describe("nextStepFor", () => {
     expect(nextStepFor(ticket({ clip_url: "/reel.mp4", auto_voiceover: true }), beats)).toBe("done");
   });
 
-  it("points the footage modes at Projects instead of a build button they don't have", () => {
+  it("points the footage modes at Clipping instead of a build button they don't have", () => {
     // The rail renders no editor/build control for these, so the scene checklist would
     // be telling you to press something that isn't on screen.
     for (const capture_mode of ["longform-clip", "repurpose"]) {
@@ -106,7 +113,7 @@ describe("nextStepFor", () => {
 
   it("agrees with the board's grouping for a footage-mode video", () => {
     // One rule: a longform-clip filed under "Needs clips" on the board while its workspace
-    // said "ingest it on Projects" is exactly the drift this shares makeStepOf to avoid.
+    // said "ingest it on Clipping" is exactly the drift this shares makeStepOf to avoid.
     for (const capture_mode of ["longform-clip", "repurpose"]) {
       const t = ticket({ capture_mode, n_beats: 3, n_clips: 1, n_vo: 0 });
       expect(nextStepFor(t, beats)).toBe(makeStepOf(t));
@@ -178,24 +185,24 @@ describe("new-project options summary", () => {
   });
 
   it("summarises the folded-away picks", () => {
-    expect(optionsSummary({ genMode: "moments", brain: "ollama", transcribe: "local", aspect: "9:16", preset: "capcut" }))
-      .toBe("Local (free) · local transcription · 9:16 · capcut");
+    expect(optionsSummary({ genMode: "moments", brain: "ollama", transcribe: "local", aspect: "9:16" }))
+      .toBe("Local (free) · local transcription · 9:16");
   });
 
   it("drops the brain when there are no moments to score", () => {
-    expect(optionsSummary({ genMode: "caption", brain: "ollama", transcribe: "elevenlabs", aspect: "1:1", preset: "clean" }))
-      .toBe("ElevenLabs · 1:1 · clean");
+    expect(optionsSummary({ genMode: "caption", brain: "ollama", transcribe: "elevenlabs", aspect: "1:1" }))
+      .toBe("ElevenLabs · 1:1");
   });
 
   it("shows a non-default brand only in advanced mode", () => {
-    const base = { genMode: "caption", brain: "ollama", transcribe: "local", aspect: "9:16", preset: "capcut" };
+    const base = { genMode: "caption", brain: "ollama", transcribe: "local", aspect: "9:16" };
     expect(optionsSummary({ ...base, advanced: true, brand: "SemSeo" }))
-      .toBe("SemSeo · local transcription · 9:16 · capcut");
+      .toBe("SemSeo · local transcription · 9:16");
     expect(optionsSummary({ ...base, advanced: false, brand: "SemSeo" }))
-      .toBe("local transcription · 9:16 · capcut");
+      .toBe("local transcription · 9:16");
     expect(optionsSummary({ ...base, advanced: true, brand: ACTIVE_BRAND }))
-      .toBe("local transcription · 9:16 · capcut");
+      .toBe("local transcription · 9:16");
     expect(optionsSummary({ ...base, genMode: "moments", advanced: true, brand: "SemSeo" }))
-      .toBe("Local (free) · local transcription · 9:16 · capcut");
+      .toBe("Local (free) · local transcription · 9:16");
   });
 });

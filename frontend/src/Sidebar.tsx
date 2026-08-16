@@ -1,9 +1,9 @@
 import { setAdvanced, useAdvanced } from "./advanced";
 
-type View = "home" | "board" | "intake" | "queue" | "insights" | "library";
+type View = "home" | "board" | "editor" | "queue" | "library";
 
 const ICONS: Record<string, JSX.Element> = {
-  // "Projects" = source videos you've clipped, so a film strip rather than a house.
+  // "Clipping" = source videos you have clipped, so a film strip rather than a house.
   home: (
     <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <rect x="2.5" y="5" width="19" height="14" rx="2" /><path d="M7 5v14" /><path d="M17 5v14" />
@@ -16,14 +16,9 @@ const ICONS: Record<string, JSX.Element> = {
       <rect x="17" y="3" width="4" height="8" rx="1.5" />
     </svg>
   ),
-  intake: (
+  editor: (
     <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M12 3v12" /><path d="M7 10l5 5 5-5" /><path d="M4 21h16" />
-    </svg>
-  ),
-  insights: (
-    <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M4 19V5" /><path d="M4 19h16" /><rect x="7" y="11" width="3" height="5" /><rect x="13" y="7" width="3" height="9" />
+      <path d="M4 20h4l10-10a2.1 2.1 0 0 0-3-3L5 17v3z" /><path d="M14.5 6.5l3 3" />
     </svg>
   ),
   queue: (
@@ -45,7 +40,7 @@ const ICONS: Record<string, JSX.Element> = {
   ),
 };
 
-export function Sidebar({ view, onHome, onBoard, onIntake, onQueue, onInsights, onLibrary }: { view: View; onHome: () => void; onBoard?: () => void; onIntake?: () => void; onQueue?: () => void; onInsights?: () => void; onLibrary?: () => void }) {
+export function Sidebar({ view, onHome, onBoard, onEditor, onQueue, onLibrary }: { view: View; onHome: () => void; onBoard?: () => void; onEditor?: () => void; onQueue?: () => void; onLibrary?: () => void }) {
   const advanced = useAdvanced();
   const item = (key: string, label: string, active: boolean, onClick?: () => void, title?: string) => (
     <button className={"nav-item" + (active ? " on" : "")} onClick={onClick} title={title ?? label} disabled={!onClick}>
@@ -55,18 +50,18 @@ export function Sidebar({ view, onHome, onBoard, onIntake, onQueue, onInsights, 
   );
   return (
     <aside className="sidebar">
-      <button className="brand sb-brand" onClick={onBoard} disabled={!onBoard} title="Create videos">
+      <button className="brand sb-brand" onClick={onHome} disabled={!onHome} title="Clipping">
         <div className="logo">C</div>
       </button>
-      {/* Ordered by the daily loop: make a video first, then the things around it.
-          "Projects" is the long-form clipper + its library — same screen as before,
-          renamed so the label matches its own heading and breadcrumb. */}
+      {/* The stops, in the order you move through them: Clipping (the home page — long videos
+          you've cut, and their reels), Create (the board, with its ideas and footage on
+          the same page), Editor (straight back into the clip you had open last), then
+          Schedule & Results, and Downloads at the bottom. */}
       <nav className="nav">
-        {item("board", "Create videos", view === "board", onBoard)}
-        {item("intake", "Ideas", view === "intake", onIntake)}
-        {item("home", "Projects", view === "home", onHome, "Long videos you've clipped, and their reels")}
-        {item("queue", "Schedule", view === "queue", onQueue)}
-        {item("insights", "Results", view === "insights", onInsights)}
+        {item("home", "Clipping", view === "home", onHome, "Long videos you've clipped, and their reels")}
+        {item("board", "Create", view === "board", onBoard, "Make a video — board, ideas & footage")}
+        {item("editor", "Editor", view === "editor", onEditor, "Open the clip you were last editing")}
+        {item("queue", "Schedule & Results", view === "queue", onQueue, "Post your videos, and see how they did")}
         {item("library", "Downloads", view === "library", onLibrary)}
       </nav>
       {/* Advanced mode: autopilot, gates and the multi-brand picker. Off by default so the

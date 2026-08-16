@@ -15,37 +15,53 @@ import { ACTIVE_BRAND, BRANDS, brandChoices, useAdvanced } from "./advanced";
 type Route =
   | { name: "home" }
   | { name: "board" }
-  | { name: "intake" }
   | { name: "queue" }
-  | { name: "insights" }
   | { name: "library" }
   | { name: "video"; tid: number }
   | { name: "project"; pid: number }
   | { name: "editor"; pid: number; cid: number; from?: "board" | "project" | "home" | "video"; tid?: number };
 
-/** The sidebar sections, and the name each one shows in the breadcrumb. */
+/** The sidebar sections, and the name each one shows in the breadcrumb.
+ *
+ *  One stop per thing you actually do. "Ideas" folded into Create (the swipe
+ *  file sits next to the board it feeds) and "Results" folded into Schedule (you post a video
+ *  and then watch how it did, so they're one page). "Clipping" is the long-form clipper —
+ *  the home page. */
 export const SECTION_LABELS: Record<string, string> = {
-  home: "Projects", board: "Create videos", intake: "Ideas",
-  queue: "Schedule", insights: "Results", library: "Downloads",
+  home: "Clipping", board: "Create", editor: "Editor",
+  queue: "Schedule & Results", library: "Downloads",
+};
+
+/* The editor is where the actual work happens, so the sidebar links straight at it: remember
+   the last clip you had open and reopen exactly that one. */
+const LAST_EDIT_KEY = "cv.lastEdit";
+export type LastEdit = { pid: number; cid: number; from?: "board" | "project" | "home" | "video"; tid?: number };
+export const readLastEdit = (): LastEdit | null => {
+  try {
+    const v = JSON.parse(localStorage.getItem(LAST_EDIT_KEY) || "null");
+    return v && typeof v.pid === "number" && typeof v.cid === "number" ? v : null;
+  } catch { return null; }
+};
+const writeLastEdit = (e: LastEdit) => {
+  try { localStorage.setItem(LAST_EDIT_KEY, JSON.stringify(e)); } catch { /* private mode */ }
 };
 
 /** Which sidebar item lights up for a route.
  *
- *  A video and the editor you opened from it both belong to "Create videos" — highlighting
- *  Projects there made the sidebar disagree with where you actually came from.
+ *  A video belongs to "Create" and a project's moments grid to "Clipping". The editor
+ *  is its own sidebar stop now, so it lights itself up however you got there.
  */
 export const sidebarViewFor = (route: Route): string => {
   if (route.name === "video") return "board";
-  if (route.name === "editor") return route.from === "video" ? "board" : "home";
+  if (route.name === "editor") return "editor";
   return route.name === "project" ? "home" : route.name;
 };
 
 export default function App() {
   const [presets, setPresets] = useState<Presets | null>(null);
-  // Land on the board. Making a video is what the app is FOR; "Projects" (the long-form
-  // clipper + its library) is the other, rarer path, so it's a click away instead of the
-  // first thing you see.
-  const [route, setRoute] = useState<Route>({ name: "board" });
+  // Land on Clipping — the long-form clipper and everything you've already cut. It's the
+  // home page: what you open the app to look at, with "Create" one click away.
+  const [route, setRoute] = useState<Route>({ name: "home" });
   const [projName, setProjName] = useState("");
   const [backendDown, setBackendDown] = useState(false);
 
@@ -61,18 +77,30 @@ export default function App() {
   }, []);
   const goHome = () => setRoute({ name: "home" });
   const goBoard = () => setRoute({ name: "board" });
-  const goIntake = () => setRoute({ name: "intake" });
   const goQueue = () => setRoute({ name: "queue" });
-  const goInsights = () => setRoute({ name: "insights" });
   const goLibrary = () => setRoute({ name: "library" });
+  // Sidebar → Editor: straight back into the clip you had open last. Nothing edited yet?
+  // Say so and drop you where you pick one, instead of opening an empty editor.
+  const toast = useToast();
+  const goEditor = () => {
+    const last = readLastEdit();
+    if (last) { setRoute({ name: "editor", ...last }); return; }
+    toast("Nothing edited yet — open a video below and pick a moment", "info");
+    setRoute({ name: "home" });
+  };
+  // Remember where the editor was, so that button has somewhere to go next time.
+  useEffect(() => {
+    if (route.name === "editor") writeLastEdit({ pid: route.pid, cid: route.cid, from: route.from, tid: route.tid });
+  }, [route]);
 
-  const crumbLabel = SECTION_LABELS[route.name] ?? null;
+  // The editor builds its own trail (section / project / moments), so it takes no flat label.
+  const crumbLabel = route.name === "editor" ? null : SECTION_LABELS[route.name] ?? null;
   const fromVideo = route.name === "editor" && route.from === "video";
   const sbView = sidebarViewFor(route) as any;
 
   return (
     <div className="shell">
-      <Sidebar view={sbView} onHome={goHome} onBoard={goBoard} onIntake={goIntake} onQueue={goQueue} onInsights={goInsights} onLibrary={goLibrary} />
+      <Sidebar view={sbView} onHome={goHome} onBoard={goBoard} onEditor={goEditor} onQueue={goQueue} onLibrary={goLibrary} />
       <main className="main">
         {backendDown && (
           <div className="backend-down-banner" role="alert">
@@ -84,8 +112,8 @@ export default function App() {
             {crumbLabel
               ? <span className="cur">{crumbLabel}</span>
               : route.name === "video" || fromVideo
-                ? <button className="back" onClick={goBoard}>Create videos</button>
-                : <button className="back" onClick={goHome}>Projects</button>}
+                ? <button className="back" onClick={goBoard}>Create</button>
+                : <button className="back" onClick={goHome}>Clipping</button>}
             {(route.name === "project" || route.name === "editor") && (<><span className="sep">/</span><span className="cur">{projName}</span></>)}
             {route.name === "editor" && !fromVideo && (<><span className="sep">/</span><button className="back" onClick={() => setRoute({ name: "project", pid: route.pid })}>moments</button></>)}
           </div>
@@ -97,9 +125,7 @@ export default function App() {
           <VideoWorkspace tid={route.tid} presets={presets} onBack={goBoard}
             onOpenEditor={(pid, cid) => setRoute({ name: "editor", pid, cid, from: "video", tid: route.tid })} />
         )}
-        {route.name === "intake" && <Intake onSpun={goBoard} />}
-        {route.name === "queue" && <Queue />}
-        {route.name === "insights" && <Insights />}
+        {route.name === "queue" && <SchedulePage />}
         {route.name === "library" && <Library />}
         {route.name === "home" && <Home presets={presets} onOpen={(pid) => setRoute({ name: "project", pid })} />}
         {route.name === "project" && (
@@ -195,11 +221,11 @@ export const MAKE_STEPS: MakeStep[] = [
   { key: "clips",  label: "🎬 Needs clips" },
   { key: "voice",  label: "🎙 Needs a voice" },
   { key: "build",  label: "🧩 Ready to build" },
-  { key: "footage", label: "📼 From footage — ingest on Projects" },
+  { key: "footage", label: "📼 From footage — ingest on Clipping" },
 ];
 export const makeStepOf = (t: Ticket): string => {
   // Only a native short is built here from scenes; the other modes come from footage you
-  // already have, which is ingested and exported on Projects — so the scene checklist
+  // already have, which is ingested and exported on Clipping — so the scene checklist
   // would be naming controls neither the board nor the workspace rail puts on screen.
   if (t.capture_mode !== "native-short") return "footage";
   const beats = t.n_beats ?? 0, clips = t.n_clips ?? 0, vo = t.n_vo ?? 0;
@@ -225,7 +251,7 @@ export const NEXT_STEP_HINT: Record<string, string> = {
   clips: "Add a video to every scene, then make and export your video.",
   voice: "Record a voiceover per scene, or switch on 🎙 AI voice up top.",
   build: "Everything's in — make and export your video, or open the editor first.",
-  footage: "This one comes from footage you already have — ingest it on Projects, then edit and export it there.",
+  footage: "This one comes from footage you already have — ingest it on Clipping, then edit and export it there.",
   done: "Your video's made — save it, write the post copy, then log its numbers on Results.",
 };
 
@@ -284,7 +310,7 @@ function Board({ presets, onOpenTicket }: { presets: Presets | null; onOpenTicke
   return (
     <div className="board-page">
       <div className="page-head">
-        <h2>Create videos</h2>
+        <h2>Create</h2>
         <div className="page-head-actions">
           <button className="ghost sm" onClick={toggleHow}>{showHow ? "Hide the steps" : "How it works"}</button>
           <button className="primary" onClick={() => setShowNew(true)}>+ New video</button>
@@ -358,6 +384,12 @@ function Board({ presets, onOpenTicket }: { presets: Presets | null; onOpenTicke
           })}
         </div>
       )}
+      {/* The two things that FEED the board, on the same page as the board: raw footage you
+          dump in, and the ideas you're saving for later. Both used to be a separate sidebar
+          stop that you had to remember to visit. */}
+      <ShootDrop />
+      <Ideas onSpun={refresh} />
+
       {showNew && <NewTicketModal presets={presets} onClose={() => setShowNew(false)} onCreated={(tid) => { setShowNew(false); onOpenTicket(tid); }} />}
     </div>
   );
@@ -633,7 +665,7 @@ function VideoWorkspace({ tid, presets, onBack, onOpenEditor }: { tid: number; p
         return (
           <>
             <div className="vw-head">
-              <button className="icon-btn vw-back" onClick={onBack} title="Back to Create videos">←</button>
+              <button className="icon-btn vw-back" onClick={onBack} title="Back to Create">←</button>
               <div className="vw-title">
                 <input className="vw-hook-input" key={"h" + ticket.hook_text} defaultValue={ticket.hook_text}
                   placeholder="First line (the hook) — the line that stops people scrolling"
@@ -737,7 +769,7 @@ function VideoWorkspace({ tid, presets, onBack, onOpenEditor }: { tid: number; p
                   <h4>🎬 Make the video</h4>
                   {ticket.capture_mode !== "native-short" ? (
                     <div className="muted" style={{ fontSize: 12.5 }}>
-                      This video comes from existing footage — ingest it on <b>Projects</b>, then edit and export from there.
+                      This video comes from existing footage — ingest it on <b>Clipping</b>, then edit and export from there.
                     </div>
                   ) : beats.length === 0 ? (
                     <div className="muted" style={{ fontSize: 12.5 }}>Add scenes first — then preview, record your voice, and make the final video here.</div>
@@ -1042,9 +1074,9 @@ function ShootDrop() {
   };
 
   return (
-    <div className="shootdrop">
+    <div className="shootdrop board-section">
       <div className="page-head" style={{ marginBottom: 10 }}>
-        <h3 style={{ margin: 0 }}>📼 Shoot drop</h3>
+        <h3 style={{ margin: 0 }}>📼 Your footage</h3>
         <span className="muted">dump your raw recordings, then drag each clip onto the scene it belongs to</span>
       </div>
       <div
@@ -1095,8 +1127,8 @@ function ShootDrop() {
             <div className="sd-col-h">Drop onto a scene</div>
             {videos.length === 0 ? (
               <div className="muted sd-noscenes">
-                No open scenes yet. Make a video in <b>Create videos</b> (write or generate a script),
-                or drag a clip onto the box below to start a fresh one.
+                No open scenes yet. Start one with <b>+ New video</b> above (write or generate a
+                script), or drag a clip onto the box below to start a fresh one.
               </div>
             ) : videos.map((v) => (
               <div className="sd-vid" key={v.ticket_id}>
@@ -1131,8 +1163,11 @@ function ShootDrop() {
   );
 }
 
-/* ------------------------------- Intake -------------------------------- */
-function Intake({ onSpun }: { onSpun: () => void }) {
+/* -------------------------------- Ideas -------------------------------- */
+/* The swipe file: videos that inspired you, and the one button that turns any of them into a
+   video on the board above. It's a section of Create, not its own destination — an
+   idea only exists to become a card. */
+function Ideas({ onSpun }: { onSpun: () => void }) {
   const [outliers, setOutliers] = useState<Outlier[] | null>(null);
   const [f, setF] = useState({ url: "", hook: "", why_popped: "", angle: "", caption: "" });
   const [busy, setBusy] = useState(false);
@@ -1150,9 +1185,8 @@ function Intake({ onSpun }: { onSpun: () => void }) {
   const del = async (o: Outlier) => { await api.deleteOutlier(o.id); toast("Removed", "ok"); refresh(); };
 
   return (
-    <div className="page">
-      <ShootDrop />
-      <div className="page-head" style={{ marginTop: 28 }}><h2>Ideas</h2><span className="muted">Save videos that inspire you — turn any one into a new video</span></div>
+    <div className="board-section">
+      <div className="page-head" style={{ marginBottom: 10 }}><h3 style={{ margin: 0 }}>💡 Ideas</h3><span className="muted">Save videos that inspire you — turn any one into a new video</span></div>
       <div className="intake-form">
         <label className="field"><span className="field-lab">What's the idea?</span><input value={f.angle} placeholder="e.g. hidden sugar in sauces" onChange={(e) => setF({ ...f, angle: e.target.value })} /></label>
         <div className="form-row">
@@ -1332,6 +1366,19 @@ function NewFolderDrop({ onMove }: { onMove: (kind: string, id: number, folder: 
          onDragOver={(e) => { e.preventDefault(); setOver(true); }} onDragLeave={() => setOver(false)} onDrop={onDrop}>
       ＋ Drop a video here to make a new folder
     </div>
+  );
+}
+
+/* -------------------------- Schedule & Results -------------------------- */
+/* One page for the back half of the loop: queue a video up top, then see how the ones you
+   already posted did. They were two sidebar stops for what is a single question — "what did
+   I post, and did it work?" */
+function SchedulePage() {
+  return (
+    <>
+      <Queue />
+      <Insights />
+    </>
   );
 }
 
@@ -1984,7 +2031,9 @@ function NewProject({ presets, onCreated }: { presets: Presets | null; onCreated
   const [mode, setMode] = useState<"url" | "file">("url");
   const [genMode, setGenMode] = useState<"moments" | "caption">("moments");
   const [name, setName] = useState(""); const [url, setUrl] = useState(""); const [file, setFile] = useState<File | null>(null);
-  const [brain, setBrain] = useState("ollama"); const [aspect, setAspect] = useState("9:16"); const [preset, setPreset] = useState("capcut");
+  const [brain, setBrain] = useState("ollama"); const [aspect, setAspect] = useState("9:16");
+  // Caption style is chosen per clip in the editor; every new project starts on the default.
+  const preset = "capcut";
   const [transcribe, setTranscribe] = useState("local");
   const [brand, setBrand] = useState(ACTIVE_BRAND);
   const advanced = useAdvanced();
@@ -2015,7 +2064,7 @@ function NewProject({ presets, onCreated }: { presets: Presets | null; onCreated
     } finally { setBusy(false); }
   };
 
-  const summary = optionsSummary({ genMode, brain, transcribe, aspect, preset, advanced, brand });
+  const summary = optionsSummary({ genMode, brain, transcribe, aspect, advanced, brand });
 
   return (
     <div className="card">
@@ -2045,9 +2094,10 @@ function NewProject({ presets, onCreated }: { presets: Presets | null; onCreated
           </div>
         </label>
       </div>
-      {/* Brain / transcription / aspect / caption style are four technical menus that were
-          the loudest thing on the landing screen, and the defaults are right nearly always.
-          Folded away, with the current picks summarised so nothing is hidden. */}
+      {/* Brain / transcription / aspect were the loudest thing on the landing screen, and the
+          defaults are right nearly always. Folded away, with the current picks summarised so
+          nothing is hidden. Caption style isn't here at all: it's a per-clip look you pick in
+          the editor, where you can see it, not a project-wide guess made before any clip exists. */}
       <details className="np-more">
         <summary>Options <span className="muted">· {summary}</span></summary>
         <div className="row" style={{ marginTop: 12 }}>
@@ -2055,7 +2105,6 @@ function NewProject({ presets, onCreated }: { presets: Presets | null; onCreated
           {genMode === "moments" && <label className="field"><span className="field-lab">Brain</span><select value={brain} onChange={(e) => setBrain(e.target.value)}>{(presets?.brains ?? ["ollama"]).map((b) => <option key={b} value={b}>{brainLabel(b)}</option>)}</select></label>}
           <label className="field"><span className="field-lab">Transcription</span><select value={transcribe} onChange={(e) => setTranscribe(e.target.value)}>{(presets?.transcribe ?? ["local"]).map((t) => <option key={t} value={t}>{t === "local" ? "Local (free)" : "ElevenLabs"}</option>)}</select></label>
           <label className="field"><span className="field-lab">Shape</span><select value={aspect} onChange={(e) => setAspect(e.target.value)}>{(presets?.aspects ?? ["9:16"]).map((a) => <option key={a}>{a}</option>)}</select></label>
-          <label className="field"><span className="field-lab">Caption style</span><select value={preset} onChange={(e) => setPreset(e.target.value)}>{(presets?.captions ?? ["capcut"]).map((c) => <option key={c}>{c}</option>)}</select></label>
         </div>
       </details>
       <div className="row" style={{ marginTop: 16, justifyContent: "flex-end" }}>
@@ -2072,11 +2121,11 @@ const BRAIN_LABELS: Record<string, string> = {
 export const brainLabel = (b: string) => BRAIN_LABELS[b] ?? "Basic (no AI)";
 
 /** The folded-away Options summary — so a non-default pick is still visible at a glance. */
-export const optionsSummary = (o: { genMode: string; brain: string; transcribe: string; aspect: string; preset: string; advanced?: boolean; brand?: string }) =>
+export const optionsSummary = (o: { genMode: string; brain: string; transcribe: string; aspect: string; advanced?: boolean; brand?: string }) =>
   [o.genMode === "moments" ? brainLabel(o.brain) : null,
    o.genMode === "caption" && o.advanced && o.brand && o.brand !== ACTIVE_BRAND ? o.brand : null,
    o.transcribe === "local" ? "local transcription" : "ElevenLabs",
-   o.aspect, o.preset].filter(Boolean).join(" · ");
+   o.aspect].filter(Boolean).join(" · ");
 
 /* ---------------------------- Moments grid ----------------------------- */
 function MomentsGrid({ pid, onName, onEdit, onEditReel, onBack }: {
@@ -2109,7 +2158,7 @@ function MomentsGrid({ pid, onName, onEdit, onEditReel, onBack }: {
   return (
     <div className="page">
       <div className="page-head">
-        <div><button className="back" onClick={onBack}>← Projects</button>
+        <div><button className="back" onClick={onBack}>← Clipping</button>
           <h2 style={{ marginTop: 4 }}>{project?.name}</h2></div>
         <span className="muted">{clips.length} moments · sorted by viral score</span>
       </div>

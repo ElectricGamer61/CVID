@@ -240,16 +240,21 @@ uploads AND by `build-edit` reels).
 
 ## 6. Frontend (frontend/src/, React + Vite + TS, plain CSS)
 
-Light "Soft-UI" theme (Plus Jakarta Sans). **Sidebar:** **Create videos** · **Ideas** · Projects ·
-**Schedule** · Results · Downloads (internal routes: board/intake/home/queue/insights/library).
-**The app opens on Create videos** — making a video is the daily loop; the long-form clipper and
-its library live one click away under **Projects** (the old "Home", renamed so the label matches
-its own heading and breadcrumb; the logo button goes to the board too).
+Light "Soft-UI" theme (Plus Jakarta Sans). **Sidebar (5 stops):** **Clipping** · **Create** ·
+**Editor** · **Schedule & Results** · **Downloads** (internal routes: home/board/editor/queue/library).
+**The app opens on Clipping** — the long-form clipper and everything you've already cut (the old
+"Home"/"Projects"); the logo button goes there too. Three sections were folded away rather than
+kept as their own stops: **Ideas** and the **📼 footage drop** are sections of **Create**, below the
+board they feed, and **Results** is the lower half of the **Schedule & Results** page. **Editor** is a
+shortcut: it reopens the clip you last had open (`localStorage["cv.lastEdit"]`), or toasts and drops
+you on Clipping when there isn't one.
 **There is no Autopilot tab** — autopilot is a per-video *mode*, not a place (see below),
 and by default it isn't visible at all (see **Advanced mode**).
 Plain-language UI: a ticket = "video", a beat = "scene", an outlier = an "idea".
-`sidebarViewFor(route)` maps a route to the lit sidebar item — a video **and the editor opened from
-it** both stay under Create videos, so the sidebar never disagrees with where you came from.
+`sidebarViewFor(route)` maps a route to the lit sidebar item — a video stays under **Create**, a
+project's moments grid under **Clipping**, and the editor lights **Editor** however you got there.
+The editor keeps its own breadcrumb trail (section / project / moments), so it takes no flat
+section label even though `SECTION_LABELS` names it for the sidebar.
 
 - **Advanced mode** (`frontend/src/advanced.ts`) — one flag that separates the daily loop from the
   launch-gated machinery. **Off by default.** Turn it on with `?advanced=1` or the ⚙ **Advanced**
@@ -261,7 +266,7 @@ it** both stay under Create videos, so the sidebar never disagrees with where yo
   polling `/api/autopilot/state` when the flag is off, and new videos are created with
   `autopilot: false` so the loop can't quietly drive a video whose controls are hidden.
 
-- **App.tsx** — routes (home | board | intake | insights | library | project | **editor** with an
+- **App.tsx** — routes (home | board | queue | library | video | project | **editor** with an
   optional `from:"board"`), shell, and all screens + the **ClipEditor** workspace. A top **backend-offline
   banner** polls `GET /api/health` every 5 s and warns "edits are NOT saving" the instant the server dies.
 - **Autopilot = a mode, folded into the board, behind Advanced mode** (`useAutopilot(enabled)` hook +
@@ -273,10 +278,12 @@ it** both stay under Create videos, so the sidebar never disagrees with where yo
   autopilot state is unchanged — this was a pure frontend re-home of the old separate tab.
 - **Projects / NewProject** ("Clip a long video") — paste URL or upload. A **mode toggle**: "Find
   viral moments" (default) vs **"Just caption my clip"** (caption mode → one full-length clip →
-  auto-opens the editor). Brain / transcription / aspect / caption style are folded into an
+  auto-opens the editor). Brain / transcription / aspect are folded into an
   **`<details>` "Options"** disclosure whose summary lists the current picks (`optionsSummary`), so
-  four technical menus aren't the loudest thing on the screen while the defaults are nearly always right.
-- **Ideas (Intake) — 📼 Shoot drop card** (`ShootDrop`): drag a whole shoot in (or the watched
+  the technical menus aren't the loudest thing on the screen while the defaults are nearly always right.
+  **Caption style is not offered here** — it's a per-clip look you pick (and see) in the editor's
+  preset chips; new projects always start on `capcut`.
+- **Create → 📼 Your footage** (`ShootDrop`, Shoot Drop batch intake): drag a whole shoot in (or the watched
   folder); live per-clip list (⏳/👂 listening/→ matched chip with ticket · scene · confidence),
   an **editor-style drag-and-drop sorting board** (`.sd-board`): left = clip **thumbnail cards**
   (`.sd-clip`, `draggable`; thumb via `/api/shootdrop/clips/{id}/thumb`, click to watch via
@@ -287,7 +294,7 @@ it** both stay under Create videos, so the sidebar never disagrees with where yo
 - **Video workspace — 📣 Post copy card** (`PostCopyCard`, in the vw-rail): "🪄 Write my post copy"
   → editable per-platform fields (TT/IG caption+hashtags, YT title/description/tags) saved via
   `patchTicket({post_meta})` on blur, "↻ Rewrite it" regenerates.
-- **Create videos** (Board) — redesigned: the 8 DB stages collapse to **4 phase lanes** (`PHASES`:
+- **Create** (Board) — redesigned: the 8 DB stages collapse to **4 phase lanes** (`PHASES`:
   Idea / Make it / Ready / Posted) with accent colors; cards show a reel thumbnail, the hook, mode
   badge, ◀▶ phase move. **+ New video** modal is **paste-first**: angle + a always-open "Paste your
   script" box (→ `intake.parse_script`, deterministic, no LLM) as the primary action, with "write it
@@ -295,10 +302,13 @@ it** both stay under Create videos, so the sidebar never disagrees with where yo
   fallbacks underneath. A scene-less video workspace opens the same paste box expanded. Clicking a card opens **TicketDetail**; a native reel's
   **"✏️ Open in editor"** calls `build-edit` and routes into the clip editor.
   An **empty board** replaces the four blank lanes with one "Make your first video" panel + CTA.
+  Below the lanes, on the same page and separated by hairlines (`.board-section`): **📼 Your footage**
+  (`ShootDrop`) and **💡 Ideas** (`Ideas`, the old Intake screen minus its page chrome — saving an
+  idea and "Make a video from this →" refresh the board above in place).
 - **Video workspace guidance** — a **Next line** under the stage stepper says what to do now
   (`nextStepFor` → `NEXT_STEP_HINT`): the same rule the board groups "Make it" by, so the two can't
   disagree. `makeStepOf` short-circuits to `footage` for every non-`native-short` capture mode (they
-  come from footage you already have, ingested and exported on **Projects**, so the scene checklist
+  come from footage you already have, ingested and exported on **Clipping**, so the scene checklist
   would name controls neither screen renders) and otherwise walks script → clips → voice → build;
   the workspace re-runs it against the scenes actually loaded (`makeStepOfBeats`) and adds a `done`
   step once `clip_url` exists. Every key `makeStepOf` returns needs a `MAKE_STEPS` lane heading or
