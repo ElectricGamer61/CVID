@@ -1,5 +1,5 @@
-import { ChangeEvent, DragEvent as RDragEvent, useEffect, useMemo, useRef, useState } from "react";
-import { api, AutopilotState, Beat, Clip, ClipEffects, ExportItem, Folder, IngestClipInfo, InsightsData, OpenScene, Outlier, PostMeta, Presets, Project, QueueData, QueueTicket, ShootdropData, Ticket, VideoPerf } from "./api";
+import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
+import { api, AutopilotState, Beat, Clip, ClipEffects, ExportItem, Folder, InsightsData, PostMeta, Presets, Project, QueueData, QueueTicket, Ticket, VideoPerf } from "./api";
 import { CaptionOverlay } from "./CaptionOverlay";
 import { CaptionStyle, FALLBACK_PRESETS, groupLines, Word, wordsInRange } from "./captionStyles";
 import { DEFAULT_STRENGTH, emptyTitle, FALLBACK_LOOKS, LookSetting, lookLayers, STRENGTHS, TitleCard, TITLE_PLACES, TITLE_STYLES } from "./looks";
@@ -11,6 +11,10 @@ import { useRecorder } from "./useRecorder";
 import { VideoModal } from "./VideoModal";
 import { exportDirSupported, getExportDir, pickExportDir } from "./exportDir";
 import { ACTIVE_BRAND, BRANDS, brandChoices, useAdvanced } from "./advanced";
+import {
+  buildScriptPrompt, canBuildPrompt, clampScenes, EMPTY_ANSWERS, MAX_SCENES, MIN_SCENES,
+  ScriptAnswers, SCRIPT_QUESTIONS,
+} from "./scriptPrompt";
 
 type Route =
   | { name: "home" }
@@ -19,14 +23,15 @@ type Route =
   | { name: "library" }
   | { name: "video"; tid: number }
   | { name: "project"; pid: number }
+  | { name: "editorStart" }
   | { name: "editor"; pid: number; cid: number; from?: "board" | "project" | "home" | "video"; tid?: number };
 
 /** The sidebar sections, and the name each one shows in the breadcrumb.
  *
- *  One stop per thing you actually do. "Ideas" folded into Create (the swipe
- *  file sits next to the board it feeds) and "Results" folded into Schedule (you post a video
- *  and then watch how it did, so they're one page). "Clipping" is the long-form clipper —
- *  the home page. */
+ *  One stop per thing you actually do. Ideas folded into Create (you answer the same
+ *  questions right where you start the video, instead of keeping a separate saved-ideas
+ *  list) and "Results" folded into Schedule (you post a video and then watch how it did,
+ *  so they're one page). "Clipping" is the long-form clipper — the home page. */
 export const SECTION_LABELS: Record<string, string> = {
   home: "Clipping", board: "Create", editor: "Editor",
   queue: "Schedule & Results", library: "Downloads",
@@ -53,7 +58,7 @@ const writeLastEdit = (e: LastEdit) => {
  */
 export const sidebarViewFor = (route: Route): string => {
   if (route.name === "video") return "board";
-  if (route.name === "editor") return "editor";
+  if (route.name === "editor" || route.name === "editorStart") return "editor";
   return route.name === "project" ? "home" : route.name;
 };
 
@@ -80,13 +85,11 @@ export default function App() {
   const goQueue = () => setRoute({ name: "queue" });
   const goLibrary = () => setRoute({ name: "library" });
   // Sidebar → Editor: straight back into the clip you had open last. Nothing edited yet?
-  // Say so and drop you where you pick one, instead of opening an empty editor.
-  const toast = useToast();
+  // Open the editor's start screen — a real editor surface you can drop footage onto —
+  // instead of bouncing you to another page with a toast.
   const goEditor = () => {
     const last = readLastEdit();
-    if (last) { setRoute({ name: "editor", ...last }); return; }
-    toast("Nothing edited yet — open a video below and pick a moment", "info");
-    setRoute({ name: "home" });
+    setRoute(last ? { name: "editor", ...last } : { name: "editorStart" });
   };
   // Remember where the editor was, so that button has somewhere to go next time.
   useEffect(() => {
@@ -94,7 +97,9 @@ export default function App() {
   }, [route]);
 
   // The editor builds its own trail (section / project / moments), so it takes no flat label.
-  const crumbLabel = route.name === "editor" ? null : SECTION_LABELS[route.name] ?? null;
+  const crumbLabel = route.name === "editor" ? null
+    : route.name === "editorStart" ? SECTION_LABELS.editor
+      : SECTION_LABELS[route.name] ?? null;
   const fromVideo = route.name === "editor" && route.from === "video";
   const sbView = sidebarViewFor(route) as any;
 
@@ -120,7 +125,12 @@ export default function App() {
           <div className="spacer" />
         </header>
 
-        {route.name === "board" && <Board presets={presets} onOpenTicket={(tid) => setRoute({ name: "video", tid })} />}
+        {route.name === "board" && <CreatePage presets={presets} onOpenTicket={(tid) => setRoute({ name: "video", tid })} />}
+        {route.name === "editorStart" && (
+          <EditorStart presets={presets}
+            onOpenClip={(pid, cid) => setRoute({ name: "editor", pid, cid, from: "home" })}
+            onGoCreate={goBoard} />
+        )}
         {route.name === "video" && (
           <VideoWorkspace tid={route.tid} presets={presets} onBack={goBoard}
             onOpenEditor={(pid, cid) => setRoute({ name: "editor", pid, cid, from: "video", tid: route.tid })} />
@@ -261,9 +271,14 @@ export const NEXT_STEP_HINT: Record<string, string> = {
 export const nextStepFor = (t: Ticket, beats: { clip_path?: string | null; voiceover_path?: string | null }[]): string =>
   t.clip_url ? "done" : makeStepOfBeats(t, beats);
 
-function Board({ presets, onOpenTicket }: { presets: Presets | null; onOpenTicket: (tid: number) => void }) {
+/** Create: one hero that starts a video, then the videos you're already making.
+ *
+ *  It used to be a four-lane board with a "how it works" strip, a saved-ideas database and a
+ *  raw-footage bin bolted underneath — four ways to start, none of them obvious. Now there's
+ *  one start (paste your script, or answer the questions and we write you the AI prompt) and
+ *  a plain grid of what's in flight. Footage lives in the Editor, where you edit it. */
+function CreatePage({ presets, onOpenTicket }: { presets: Presets | null; onOpenTicket: (tid: number) => void }) {
   const [tickets, setTickets] = useState<Ticket[] | null>(null);
-  const [showNew, setShowNew] = useState(false);
   const [needsYouOnly, setNeedsYouOnly] = useState(false);
   const [apBusy, setApBusy] = useState(false);
   const toast = useToast();
@@ -284,12 +299,6 @@ function Board({ presets, onOpenTicket }: { presets: Presets | null; onOpenTicke
     catch (e: any) { toast(`Failed: ${e?.message || e}`, "err"); } finally { setApBusy(false); }
   };
 
-  const move = async (t: Ticket, dir: 1 | -1) => {
-    const j = phaseOf(t.stage) + dir;
-    if (j < 0 || j >= PHASES.length) return;
-    try { await api.patchTicket(t.id, { stage: PHASES[j].stages[0] }); refresh(); }
-    catch (e: any) { toast(`Couldn't move it: ${e?.message || e}`, "err"); }
-  };
   const del = async (t: Ticket) => {
     if (!await confirm({ title: "Delete this video?", body: t.angle ? `“${t.angle}” and its scenes will be removed.` : "Its scenes will be removed.", confirmLabel: "Delete", danger: true })) return;
     try { await api.deleteTicket(t.id); toast("Video deleted", "ok"); refresh(); }
@@ -304,21 +313,18 @@ function Board({ presets, onOpenTicket }: { presets: Presets | null; onOpenTicke
   const sortCol = (list: Ticket[]) =>
     [...list].sort((a, b) => recencyRank(a) - recencyRank(b) || b.id - a.id);
 
-  const [showHow, setShowHow] = useState(() => localStorage.getItem("cv.hideHow") !== "1");
-  const toggleHow = () => { setShowHow((v) => { localStorage.setItem("cv.hideHow", v ? "1" : "0"); return !v; }); };
+  const mine = sortCol(visible(tickets ?? []));
 
   return (
     <div className="board-page">
       <div className="page-head">
         <h2>Create</h2>
-        <div className="page-head-actions">
-          <button className="ghost sm" onClick={toggleHow}>{showHow ? "Hide the steps" : "How it works"}</button>
-          <button className="primary" onClick={() => setShowNew(true)}>+ New video</button>
-        </div>
       </div>
 
+      <CreateHero presets={presets} onCreated={(tid) => { markRecent(tid); onOpenTicket(tid); }} />
+
       {/* Autopilot control strip — the whole autonomous flow lives here, and only in advanced
-          mode. The everyday board is just the 4 lanes + "New video". */}
+          mode. The everyday page never mentions it. */}
       {advanced && (
       <div className="ap-strip">
         <span className={"ap-dot" + (apState?.running ? " on" : "")} />
@@ -334,74 +340,38 @@ function Board({ presets, onOpenTicket }: { presets: Presets | null; onOpenTicke
       </div>
       )}
 
-      {showHow && (
-        <div className="how-banner">
-          <span className="how-step"><b>1</b> Save an idea</span><span className="how-arrow">→</span>
-          <span className="how-step"><b>2</b> Write &amp; film it</span><span className="how-arrow">→</span>
-          <span className="how-step"><b>3</b> Make the video</span><span className="how-arrow">→</span>
-          <span className="how-step"><b>4</b> Post &amp; see results</span>
-          <span className="how-tip">Each video is a card below. Use ◀ ▶ to move it forward as you finish each step.</span>
-        </div>
-      )}
-      {/* Nothing on the board yet → four empty lanes say nothing useful. Ask for the one
-          thing that starts everything instead. */}
-      {tickets != null && tickets.length === 0 ? (
-        <div className="empty board-empty">
-          <div className="big" style={{ fontSize: 26 }}>🎬</div>
-          <div className="empty-title">Make your first video</div>
-          <div>Paste the script you wrote, drop in your clips, and CVideo builds the reel.</div>
-          <button className="primary big-cta" onClick={() => setShowNew(true)}>+ New video</button>
-        </div>
-      ) : tickets == null ? <div className="muted">Loading…</div> : (
-        <div className="board">
-          {PHASES.map((ph) => {
-            const col = sortCol(visible(tickets.filter((t) => ph.stages.includes(t.stage))));
-            const card = (t: Ticket) => (
-              <TicketCard key={t.id} t={t} gate={gateById.get(t.id)} advanced={advanced} recent={recent.indexOf(t.id) > -1 && recent.indexOf(t.id) < 3}
-                onOpen={() => { markRecent(t.id); onOpenTicket(t.id); }} onMove={move} onDelete={del} />
-            );
-            return (
-              <div className={"board-col cv-lane cv-" + ph.key} key={ph.key}>
-                <div className="board-col-head"><span className="cv-lane-dot" /><span>{ph.label}</span><span className="board-count">{col.length}</span></div>
-                <div className="board-col-body">
-                  {/* Make It is where cards pile up — group them by what each one needs NEXT. */}
-                  {ph.key === "make" && col.length > 0
-                    ? MAKE_STEPS.map((st) => {
-                        const grp = col.filter((t) => makeStepOf(t) === st.key);
-                        if (!grp.length) return null;
-                        return (
-                          <div className="make-sub" key={st.key}>
-                            <div className="make-sub-head">{st.label}<span className="board-count">{grp.length}</span></div>
-                            {grp.map(card)}
-                          </div>
-                        );
-                      })
-                    : col.map(card)}
-                  {col.length === 0 && <div className="cv-lane-empty">{needsYouOnly ? "Nothing waiting here" : PHASE_HINT[ph.key]}</div>}
-                </div>
+      {/* Everything you're already making, newest (and most recently opened) first. No lanes,
+          no stages to drag between — each card says what it still needs. */}
+      {tickets == null ? <div className="muted" style={{ marginTop: 24 }}>Loading…</div> : tickets.length === 0 ? null : (
+        <>
+          <div className="page-head" style={{ marginTop: 30, marginBottom: 12 }}>
+            <h3 style={{ margin: 0 }}>Your videos</h3><span className="muted">{tickets.length} in progress</span>
+          </div>
+          {mine.length === 0
+            ? <div className="cv-lane-empty">Nothing waiting on you.</div>
+            : (
+              <div className="vid-grid">
+                {mine.map((t) => (
+                  <VideoCard key={t.id} t={t} gate={gateById.get(t.id)} advanced={advanced}
+                    recent={recent.indexOf(t.id) > -1 && recent.indexOf(t.id) < 3}
+                    onOpen={() => { markRecent(t.id); onOpenTicket(t.id); }} onDelete={del} />
+                ))}
               </div>
-            );
-          })}
-        </div>
+            )}
+        </>
       )}
-      {/* The two things that FEED the board, on the same page as the board: raw footage you
-          dump in, and the ideas you're saving for later. Both used to be a separate sidebar
-          stop that you had to remember to visit. */}
-      <ShootDrop />
-      <Ideas onSpun={refresh} />
-
-      {showNew && <NewTicketModal presets={presets} onClose={() => setShowNew(false)} onCreated={(tid) => { setShowNew(false); onOpenTicket(tid); }} />}
     </div>
   );
 }
 
-function TicketCard({ t, gate, advanced, recent, onOpen, onMove, onDelete }: {
-  t: Ticket; gate?: Ticket; advanced?: boolean; recent?: boolean; onOpen: () => void; onMove: (t: Ticket, d: 1 | -1) => void; onDelete: (t: Ticket) => void;
+/** One video you're making. Says what it needs next and opens where you do that — no stage
+ *  arrows, no lane it has to be dragged out of. */
+function VideoCard({ t, gate, advanced, recent, onOpen, onDelete }: {
+  t: Ticket; gate?: Ticket; advanced?: boolean; recent?: boolean; onOpen: () => void; onDelete: (t: Ticket) => void;
 }) {
-  const i = phaseOf(t.stage);
   const made = !!t.clip_url;
+  const step = MAKE_STEPS.find((s) => s.key === makeStepOf(t));
   const beats = t.n_beats ?? 0, clips = t.n_clips ?? 0, vo = t.n_vo ?? 0;
-  const inMake = PHASES[i]?.key === "make";
   const onAp = advanced && t.autopilot;   // the 🤖 chip is autopilot vocabulary — advanced only
   return (
     <div className={"tkt-card" + (gate ? " tkt-gated" : "") + (recent ? " tkt-recent" : "")} onClick={onOpen} title="Open">
@@ -425,151 +395,198 @@ function TicketCard({ t, gate, advanced, recent, onOpen, onMove, onDelete }: {
         {t.hook_text
           ? <div className="tkt-hook-main">“{t.hook_text}”</div>
           : <div className="tkt-angle">{t.angle || <span className="muted">Untitled video</span>}</div>}
-        {inMake && beats > 0 ? (
+        {!made && beats > 0 ? (
           <div className="tkt-prog">
             <span className="tkt-chip done" title="Scenes written">✍ {beats}</span>
             <span className={"tkt-chip" + (clips >= beats ? " done" : "")} title="Clips added">🎬 {clips}/{beats}</span>
             <span className={"tkt-chip" + (t.auto_voiceover || vo >= beats ? " done" : "")}
-              title={t.auto_voiceover ? "AI voiceover — voiced automatically when it's built" : "Voiceovers recorded"}>
+              title={t.auto_voiceover ? "AI voiceover — read over the whole video when it's built" : "Voiceovers recorded"}>
               🎙 {t.auto_voiceover ? "AI" : `${vo}/${beats}`}
             </span>
           </div>
         ) : (
           <div className="tkt-sub">{t.hook_text ? (t.angle || modeLabel(t.capture_mode)) : modeLabel(t.capture_mode)}</div>
         )}
+        <div className="tkt-next">{made ? "✓ Made — open to export or post" : step?.label}</div>
       </div>
       <div className="tkt-side" onClick={(e) => e.stopPropagation()}>
-        <button className="icon-btn" disabled={i <= 0} title="Move back a step" onClick={() => onMove(t, -1)}>◀</button>
-        <button className="icon-btn" disabled={i >= PHASES.length - 1} title="Move forward a step" onClick={() => onMove(t, 1)}>▶</button>
         <button className="icon-btn danger tkt-del" title="Delete this video" onClick={() => onDelete(t)}>🗑</button>
       </div>
     </div>
   );
 }
 
-// Slim starter, then straight into the full-page workspace (no bounce back to the board).
-// The primary path is PASTE THE SCRIPT: ideas and voiceover scripts are written outside CVID
-// (the Claude project behind docs/autopilot/*) and pasted in — `intake.parse_script` splits
-// them into scenes deterministically, no LLM. Writing it by hand and the in-app AI draft are
-// both still here, just as fallbacks under the paste box.
-function NewTicketModal({ presets, onClose, onCreated }: { presets: Presets | null; onClose: () => void; onCreated: (tid: number) => void }) {
+/* ------------------------------- Create hero ---------------------------- */
+/* The one place a video starts.
+ *
+ * Two answers to "do you have a script?", on one screen:
+ *   yes → paste it, it splits into scenes (`intake.parse_script`, deterministic, no LLM)
+ *         and you land in the workspace to add clips.
+ *   no  → answer a few plain questions, copy the prompt we build, paste it into whatever
+ *         AI you use, and paste the script it writes back into the same box. CVideo never
+ *         has to be the one holding an API key for this.
+ */
+function CreateHero({ presets, onCreated }: { presets: Presets | null; onCreated: (tid: number) => void }) {
   const advanced = useAdvanced();
   const [brand, setBrand] = useState(ACTIVE_BRAND);
   const [angle, setAngle] = useState("");
-  const [format, setFormat] = useState("reel");
-  const [capture, setCapture] = useState("native-short");
   const [script, setScript] = useState("");
   const [autopilot, setAutopilot] = useState(advanced);   // never runs itself when its controls are hidden
   const [autoVoice, setAutoVoice] = useState(true);
-  const [busy, setBusy] = useState<"" | "create" | "ai" | "script">("");
+  const [busy, setBusy] = useState(false);
+  const [helper, setHelper] = useState(false);            // the "no script yet" questions
+  const [answers, setAnswers] = useState<ScriptAnswers>(EMPTY_ANSWERS);
+  const [prompt, setPrompt] = useState<string | null>(null);
+  const scriptRef = useRef<HTMLTextAreaElement>(null);
   const toast = useToast();
-  const formats = presets?.formats ?? ["reel", "carousel"];
-  const modes = presets?.capture_modes ?? ["longform-clip", "native-short", "repurpose"];
+  const capture = "native-short";   // scenes you film yourself; footage you already have goes to the Editor
 
-  const startBlank = async () => {
-    setBusy("create");
-    try {
-      const res = await api.createTicket({ brand, angle, format, capture_mode: capture });
-      toast("Video created — write your script", "ok");
-      onCreated(res.ticket.id);
-    } catch (e: any) { toast(`Failed: ${e?.message || e}`, "err"); setBusy(""); }
-  };
-
-  // Script path: paste your script → scenes, optionally on autopilot with AI voiceover.
-  // You add the clips in the workspace; autopilot voices, builds, and writes post copy.
-  const startFromScript = async () => {
-    setBusy("script");
+  const start = async () => {
+    setBusy(true);
     try {
       const res = await api.createTicketFromScript({
-        brand, angle, format, capture_mode: capture, script,
+        brand, angle, format: "reel", capture_mode: capture, script,
         autopilot, auto_voiceover: autoVoice,
       });
-      toast(`Made ${res.beats.length} scenes${autopilot ? " — on autopilot, just add your clips" : ""}`, "ok");
+      toast(`Made ${res.beats.length} scene${res.beats.length === 1 ? "" : "s"} — add your clips`, "ok");
       onCreated(res.ticket.id);
-    } catch (e: any) { toast(`Failed: ${e?.message || e}`, "err"); setBusy(""); }
+    } catch (e: any) { toast(`Failed: ${e?.message || e}`, "err"); setBusy(false); }
   };
 
-  // ✨ One-step AI path: create the ticket, fill its scenes, then open the workspace.
-  const generateWithAI = async () => {
-    setBusy("ai");
-    let tid: number | null = null;
-    try {
-      const res = await api.createTicket({ brand, angle, format, capture_mode: capture });
-      tid = res.ticket.id;
-      const sf = await api.scriptFactory(tid);
-      toast(`AI wrote ${sf.beats.length} scenes`, "ok");
-    } catch (e: any) {
-      toast(tid == null ? `Failed: ${e?.message || e}` : `AI script failed — write it in the workspace: ${e?.message || e}`, "err");
-      if (tid == null) { setBusy(""); return; }
-    }
-    onCreated(tid);
+  // Take the questions and hand back one prompt to paste into Claude/ChatGPT.
+  const makePrompt = () => {
+    if (!canBuildPrompt(answers)) { toast("Say what the video's about first", "err"); return; }
+    setPrompt(buildScriptPrompt(answers));
+    if (!angle.trim()) setAngle(answers.topic.trim());   // the topic is the video's name too
+  };
+  // Coming back from the AI: close the card and put the cursor in the paste box.
+  const backToPaste = () => {
+    setPrompt(null); setHelper(false);
+    requestAnimationFrame(() => scriptRef.current?.focus());
   };
 
   return (
-    <div className="modal-back" onClick={onClose}>
-      <div className="modal modal-slim" onClick={(e) => e.stopPropagation()}>
-        <h3>New video</h3>
-        <label className="field"><span className="field-lab">What's it about?</span>
-          <input value={angle} autoFocus placeholder="e.g. hidden sugar in sauces" onChange={(e) => setAngle(e.target.value)} />
+    <div className="card create-hero">
+      <div className="ch-head">
+        <h3>Make a video</h3>
+        <span className="muted">Paste your script and it becomes scenes. Then add clips, style it in the editor, and export.</span>
+      </div>
+
+      <label className="field"><span className="field-lab">Your script</span>
+        <textarea ref={scriptRef} rows={8} value={script} className="ch-script"
+          placeholder={"Paste it here — plain lines work, or the labeled format:\n\nHOOK: the first line\n\nBEAT\nSpoken: what you say out loud\nShot: what to film"}
+          onChange={(e) => setScript(e.target.value)} />
+      </label>
+
+      <div className="ch-row">
+        <label className="field grow"><span className="field-lab">Call it…</span>
+          <input value={angle} placeholder="e.g. hidden sugar in sauces" onChange={(e) => setAngle(e.target.value)} />
         </label>
-        <div className="form-row">
-          {advanced && (
-            <label className="field"><span className="field-lab">Brand</span>
-              <select value={brand} onChange={(e) => setBrand(e.target.value)}>{BRANDS.map((b) => <option key={b} value={b}>{b}</option>)}</select>
-            </label>
-          )}
-          <label className="field grow"><span className="field-lab">How will you make it?</span>
-            <select value={capture} onChange={(e) => setCapture(e.target.value)}>{modes.map((m) => <option key={m} value={m}>{modeLabel(m)}</option>)}</select>
+        {advanced && (
+          <label className="field"><span className="field-lab">Brand</span>
+            <select value={brand} onChange={(e) => setBrand(e.target.value)}>{BRANDS.map((b) => <option key={b} value={b}>{b}</option>)}</select>
           </label>
-          {/* "Carousel" is a stack of photos, not a video — an odd thing to be asked in a
-              dialog called New video. Reel is the only answer on the default path. */}
-          {advanced && formats.length > 1 && (
-            <label className="field"><span className="field-lab">Video type</span>
-              <select value={format} onChange={(e) => setFormat(e.target.value)}>{formats.map((f) => <option key={f} value={f}>{f === "reel" ? "Reel (tall video)" : f === "carousel" ? "Carousel (photos)" : f}</option>)}</select>
+        )}
+      </div>
+
+      <label className="nt-toggle" title="Reads the whole script in your AI voice as ONE continuous voiceover over all your clips — for silent B-roll">
+        <input type="checkbox" checked={autoVoice} onChange={(e) => setAutoVoice(e.target.checked)} />
+        <span>🎙 AI voiceover (one read over the whole video)</span>
+      </label>
+      {advanced && (
+        <label className="nt-toggle" title="Autopilot voices the scenes, builds the video, writes captions & tags, and queues the post — pausing for your OK">
+          <input type="checkbox" checked={autopilot} onChange={(e) => setAutopilot(e.target.checked)} />
+          <span>🤖 Run on autopilot (build &amp; prep the post once clips are in)</span>
+        </label>
+      )}
+
+      <div className="ch-actions">
+        <button className="link-btn" onClick={() => setHelper((v) => !v)}>
+          {helper ? "Hide the questions" : "I don't have a script yet"}
+        </button>
+        <button className="primary big-cta" onClick={start} disabled={busy || !script.trim()}
+          title={!script.trim() ? "Paste your script first" : "Split it into scenes"}>
+          {busy ? "Making scenes…" : "Make my scenes →"}
+        </button>
+      </div>
+
+      {helper && (
+        <div className="ch-helper">
+          <div className="ch-helper-h">
+            <b>No script? Answer these.</b>
+            <span className="muted">We'll write the prompt — you paste it into Claude, ChatGPT or whatever you use, then paste the script it gives you back up top.</span>
+          </div>
+          {SCRIPT_QUESTIONS.map((q) => (
+            <label className="field" key={q.key}>
+              <span className="field-lab">{q.label}{q.required ? "" : <span className="muted"> (optional)</span>}</span>
+              {q.long
+                ? <textarea rows={2} value={answers[q.key] as string} placeholder={q.placeholder}
+                    onChange={(e) => setAnswers({ ...answers, [q.key]: e.target.value })} />
+                : <input value={answers[q.key] as string} placeholder={q.placeholder}
+                    onChange={(e) => setAnswers({ ...answers, [q.key]: e.target.value })} />}
             </label>
-          )}
+          ))}
+          <div className="ch-helper-foot">
+            <label className="field ch-scenes"><span className="field-lab">How many scenes?</span>
+              <input type="number" min={MIN_SCENES} max={MAX_SCENES} value={answers.scenes}
+                onChange={(e) => setAnswers({ ...answers, scenes: clampScenes(Number(e.target.value)) })} />
+            </label>
+            <button className="primary" onClick={makePrompt} disabled={!canBuildPrompt(answers)}
+              title={canBuildPrompt(answers) ? "Build the prompt to copy" : "Say what the video's about first"}>
+              ✨ Write my AI prompt
+            </button>
+          </div>
         </div>
-        <div className="nt-script">
-          <label className="field"><span className="field-lab">Paste your script</span>
-            <textarea rows={7} value={script}
-              placeholder={"Paste your script — plain lines work, or the labeled format:\nHOOK: the first line\n\nBEAT\nSpoken: what the voiceover says\nShot: what to film"}
-              onChange={(e) => setScript(e.target.value)} />
-          </label>
-          <label className="nt-toggle" title="Reads the whole script in your AI voice (MasterDee) as ONE continuous voiceover over all your clips — for silent B-roll">
-            <input type="checkbox" checked={autoVoice} onChange={(e) => setAutoVoice(e.target.checked)} />
-            <span>🎙 AI voiceover (one read over the whole video)</span>
-          </label>
-          {advanced && (
-            <label className="nt-toggle" title="Autopilot voices the scenes, builds the reel, writes captions & tags, and queues the post — pausing for your OK">
-              <input type="checkbox" checked={autopilot} onChange={(e) => setAutopilot(e.target.checked)} />
-              <span>🤖 Run on autopilot (build &amp; prep the post once clips are in)</span>
-            </label>
-          )}
+      )}
+
+      {prompt && <ScriptPromptCard prompt={prompt} onClose={backToPaste} />}
+    </div>
+  );
+}
+
+/** The copy-me card: one prompt, one button, and what to do with it. */
+function ScriptPromptCard({ prompt, onClose }: { prompt: string; onClose: () => void }) {
+  const [copied, setCopied] = useState(false);
+  const toast = useToast();
+  const copy = async () => {
+    if (await copyText(prompt)) { setCopied(true); toast("Prompt copied — paste it into your AI", "ok"); }
+    else toast("Couldn't copy — select the text and copy it by hand", "err");
+  };
+  return (
+    <div className="modal-back" onClick={onClose}>
+      <div className="modal modal-slim prompt-card" onClick={(e) => e.stopPropagation()}>
+        <h3>Copy this into your AI</h3>
+        <div className="muted prompt-steps">
+          <span><b>1</b> Copy it</span><span className="how-arrow">→</span>
+          <span><b>2</b> Paste it into Claude / ChatGPT</span><span className="how-arrow">→</span>
+          <span><b>3</b> Paste the script it writes back into CVideo</span>
         </div>
-        <div className="muted" style={{ fontSize: 12.5 }}>Next you'll land in the workspace — scenes, clips, and “make my video” all live there.</div>
+        <textarea className="prompt-text" rows={14} readOnly value={prompt}
+          onFocus={(e) => e.currentTarget.select()} />
         <div className="modal-actions">
-          <button onClick={onClose} disabled={!!busy}>Cancel</button>
-          <button className="primary" onClick={startFromScript} disabled={!!busy || !script.trim()}
-            title={!script.trim() ? "Paste your script first" : "Split into scenes — then add your clips"}>
-            {busy === "script" ? "Making scenes…" : "Use this script →"}
-          </button>
-        </div>
-        {/* Fallbacks for a day with no script written yet — deliberately below the fold and
-            plain-looking, so the pasted-script path stays the obvious one. */}
-        <div className="nt-fallbacks">
-          <span className="muted">No script yet?</span>
-          <button className="link-btn" onClick={startBlank} disabled={!!busy}>
-            {busy === "create" ? "Creating…" : "Write it in the workspace"}
-          </button>
-          <span className="muted">·</span>
-          <button className="link-btn" onClick={generateWithAI} disabled={!!busy || !angle.trim()}
-            title={!angle.trim() ? "Enter a topic first" : "Create + let the in-app AI write a rough draft"}>
-            {busy === "ai" ? "Writing a draft…" : "✨ Let AI draft one"}
-          </button>
+          <button onClick={onClose}>Done — I'll paste my script</button>
+          <button className="primary" onClick={copy}>{copied ? "✓ Copied" : "Copy prompt"}</button>
         </div>
       </div>
     </div>
   );
+}
+
+/** Clipboard write that also works on the plain-HTTP LAN origins this app gets opened on
+ *  (navigator.clipboard is https/localhost only). Returns whether it landed. */
+async function copyText(text: string): Promise<boolean> {
+  try {
+    if (navigator.clipboard?.writeText) { await navigator.clipboard.writeText(text); return true; }
+  } catch { /* fall through to the textarea trick */ }
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.position = "fixed"; ta.style.opacity = "0";
+    document.body.appendChild(ta); ta.select();
+    const ok = document.execCommand("copy");
+    document.body.removeChild(ta);
+    return ok;
+  } catch { return false; }
 }
 
 /* ------------------------- Video workspace ------------------------------ */
@@ -713,6 +730,10 @@ function VideoWorkspace({ tid, presets, onBack, onOpenEditor }: { tid: number; p
               </div>
             )}
 
+            {/* The pipeline stage is bookkeeping, not something you should have to drive:
+                Create shows what each video needs next, and Schedule picks up anything
+                that's been made. Advanced mode still gets the stepper to move it by hand. */}
+            {advanced && (
             <div className="vw-stepper">
               {PHASES.map((p, j) => (
                 <button key={p.key} className={"vw-step" + (j === phase ? " cur" : j < phase ? " done" : "")}
@@ -721,6 +742,7 @@ function VideoWorkspace({ tid, presets, onBack, onOpenEditor }: { tid: number; p
                 </button>
               ))}
             </div>
+            )}
 
             {/* One line, always answering "so what do I do now?" — the same rule the board
                 groups Make It by, worded as an instruction. */}
@@ -858,6 +880,7 @@ function BeatRow({ b, first, last, onChanged, onReorder, toast }: {
   const clipInput = useRef<HTMLInputElement>(null);
   const voInput = useRef<HTMLInputElement>(null);
   const [up, setUp] = useState<"" | "clip" | "vo">("");
+  const [over, setOver] = useState(false);   // footage dragged from the desktop onto this scene
   // Open only for scenes with real per-scene tweaks — see beatHasCustomDetails.
   const [more, setMore] = useState(() => beatHasCustomDetails(b));
   const save = async (field: keyof Beat, val: string) => {
@@ -889,8 +912,14 @@ function BeatRow({ b, first, last, onChanged, onReorder, toast }: {
           </div>
         )}
         <div className="beat-media">
-          <button className={"slot" + (b.clip_path ? " filled" : "")} onClick={() => clipInput.current?.click()} disabled={up === "clip"}>
-            {up === "clip" ? "…" : b.clip_path ? "✓ Video added" : "＋ Add video"}
+          {/* Drop a file straight from the desktop onto the slot — same as clicking it. */}
+          <button className={"slot" + (b.clip_path ? " filled" : "") + (over ? " drop-over" : "")}
+            onClick={() => clipInput.current?.click()} disabled={up === "clip"}
+            title="Click, or drag a video file onto this scene"
+            onDragOver={(e) => { e.preventDefault(); setOver(true); }}
+            onDragLeave={() => setOver(false)}
+            onDrop={(e) => { e.preventDefault(); setOver(false); upClip(e.dataTransfer.files?.[0]); }}>
+            {up === "clip" ? "…" : b.clip_path ? "✓ Video added" : over ? "Drop it here" : "＋ Add video"}
           </button>
           <button className={"slot" + (b.voiceover_path ? " filled" : "")} onClick={() => voInput.current?.click()} disabled={up === "vo"}>
             {up === "vo" ? "…" : b.voiceover_path ? "✓ Voice added" : "＋ Add voice"}
@@ -995,229 +1024,135 @@ function ReimportBox({ tid, onDone, empty }: { tid: number; onDone: () => void; 
   );
 }
 
-/* ----------------------------- Shoot drop ------------------------------ */
-/* Editor-style sorting board: dump raw footage, then SEE each clip as a thumbnail
-   and DRAG it onto the scene it belongs to. Clips you talk in still auto-match by
-   what was said; silent B-roll (you voice it over later) waits in the bin for you
-   to place it by hand — never swept into a wrongly-invented video. */
-function ShootDrop() {
-  const [data, setData] = useState<ShootdropData | null>(null);
+/* ---------------------------- Editor start ----------------------------- */
+/* The Editor with nothing open yet — a real editor screen, not a dead end.
+ *
+ * The preview pane IS the drop target: drag footage onto it and that footage becomes an
+ * editable video (transcribed, captioned) that opens in the editor when it's ready. Beside
+ * it: the videos you can pick straight back up, and the way to Create if what you have is
+ * a script rather than footage. Nothing is auto-placed anywhere — you drop it, you edit it.
+ */
+function EditorStart({ presets, onOpenClip, onGoCreate }: {
+  presets: Presets | null; onOpenClip: (pid: number, cid: number) => void; onGoCreate: () => void;
+}) {
+  const [projects, setProjects] = useState<Project[] | null>(null);
   const [dragOver, setDragOver] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [preview, setPreview] = useState<IngestClipInfo | null>(null);
-  const [dropTarget, setDropTarget] = useState<string | null>(null); // hovered slot: beat id or "new"
+  const [pending, setPending] = useState<{ pid: number; name: string } | null>(null);
+  const [uploading, setUploading] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
   const toast = useToast();
 
-  const refresh = () => api.shootdropStatus().then(setData).catch(() => {});
-  useEffect(() => { refresh(); }, []);
-  const working = !!data?.clips.some((c) => c.status === "pending" || c.status === "transcribing");
+  const refresh = () => api.listProjects().then(setProjects).catch(() => {});
+  useEffect(() => { refresh(); const t = setInterval(refresh, 2500); return () => clearInterval(t); }, []);
+
+  // The footage we just dropped: watch it until it's editable, then open it.
+  const prepping = pending ? (projects ?? []).find((p) => p.id === pending.pid) ?? null : null;
   useEffect(() => {
-    const t = setInterval(refresh, working ? 2500 : 10000);
-    return () => clearInterval(t);
-  }, [working]);
+    if (!pending || !prepping) return;
+    // It died on the way in (bad file, no ffmpeg, …) — say so instead of spinning forever.
+    if (prepping.status === "error") {
+      setPending(null);
+      toast(`Couldn't prepare that footage${prepping.error ? `: ${prepping.error}` : ""}`, "err");
+      return;
+    }
+    if (prepping.status !== "ready") return;
+    let alive = true;
+    api.getProject(pending.pid).then((d) => {
+      if (!alive) return;
+      const clip = d.clips[0];
+      setPending(null);
+      if (clip) onOpenClip(pending.pid, clip.id);
+      else toast("That footage came back with nothing to edit", "err");
+    }).catch(() => {});
+    return () => { alive = false; };
+  }, [pending, prepping?.status]);
 
-  const send = async (files: File[]) => {
-    const vids = files.filter((f) => f.type.startsWith("video/") || /\.(mp4|mov|m4v|webm|mkv|avi)$/i.test(f.name));
-    if (!vids.length) { toast("Drop video files here", "err"); return; }
-    setBusy(true);
+  const take = async (files: File[]) => {
+    const vid = files.find((f) => f.type.startsWith("video/") || /\.(mp4|mov|m4v|webm|mkv|avi)$/i.test(f.name));
+    if (!vid) { toast("Drop a video file here", "err"); return; }
+    setUploading(true);
     try {
-      const r = await api.shootdropUpload(vids);
-      toast(`Got ${r.count} clip${r.count > 1 ? "s" : ""} — reading them now`, "ok");
+      const fd = new FormData();
+      fd.append("name", vid.name.replace(/\.[^.]+$/, "") || "My footage");
+      fd.append("brain", presets?.brains_default ?? "ollama");
+      fd.append("transcribe_backend", presets?.transcribe_default ?? "local");
+      fd.append("aspect", "9:16");
+      fd.append("caption_preset", "capcut");
+      fd.append("mode", "caption");     // one editable video, not a hunt for moments
+      fd.append("brand", "");
+      fd.append("file", vid);
+      const r = await api.createFromUpload(fd);
+      setPending({ pid: r.id, name: vid.name });
+      toast("Got it — reading the audio so your captions land on the words", "ok");
       refresh();
-    } catch (e: any) { toast(`Upload failed: ${e?.message || e}`, "err"); } finally { setBusy(false); }
+    } catch (e: any) { toast(`Upload failed: ${e?.message || e}`, "err"); } finally { setUploading(false); }
   };
 
-  const assignTo = async (clipId: number, beatId: number) => {
-    try { await api.shootdropAssign(clipId, { beat_id: beatId }); toast("Linked to that scene", "ok"); refresh(); }
-    catch (e: any) { toast(`Failed: ${e?.message || e}`, "err"); }
-  };
-  const assignNew = async (clipId: number) => {
-    try { await api.shootdropAssign(clipId, { new_ticket: true }); toast("Started a new video from this clip", "ok"); refresh(); }
-    catch (e: any) { toast(`Failed: ${e?.message || e}`, "err"); }
-  };
-  const discard = async (c: IngestClipInfo) => {
-    try { await api.shootdropDiscard(c.id); toast("Clip discarded", "ok"); refresh(); }
-    catch (e: any) { toast(`Failed: ${e?.message || e}`, "err"); }
+  const open = async (p: Project) => {
+    try {
+      const d = await api.getProject(p.id);
+      if (d.clips[0]) onOpenClip(p.id, d.clips[0].id);
+      else toast("Nothing to edit in that one yet", "info");
+    } catch (e: any) { toast(`Couldn't open it: ${e?.message || e}`, "err"); }
   };
 
-  const clips = data?.clips ?? [];
-  const placedClip = (c: IngestClipInfo) => c.status === "matched" || c.status === "assigned";
-  const canDrag = (c: IngestClipInfo) => c.status !== "pending" && c.status !== "transcribing";
-
-  const clipBadge = (c: IngestClipInfo) => {
-    if (c.status === "pending") return <span className="sd-chip">⏳ waiting</span>;
-    if (c.status === "transcribing") return <span className="sd-chip busy">👂 reading…</span>;
-    if (c.status === "error") return <span className="sd-chip err" title={c.error || ""}>⚠ couldn't read — drag it anyway</span>;
-    if (placedClip(c)) {
-      const scene = c.scene_index != null ? ` · scene ${c.scene_index + 1}` : "";
-      return <span className="sd-chip ok">✓ {c.ticket_label || "video"}{scene}</span>;
-    }
-    return <span className="sd-chip warn">drag me onto a scene →</span>;
-  };
-
-  // Group the open scenes by their video (ticket) for the drop column.
-  const videos: { ticket_id: number; label: string; scenes: OpenScene[] }[] = [];
-  const byTicket = new Map<number, number>();
-  for (const s of data?.open_scenes ?? []) {
-    if (!byTicket.has(s.ticket_id)) {
-      byTicket.set(s.ticket_id, videos.length);
-      videos.push({ ticket_id: s.ticket_id, label: s.ticket_label, scenes: [] });
-    }
-    videos[byTicket.get(s.ticket_id)!].scenes.push(s);
-  }
-
-  const dropOn = (e: RDragEvent, fn: (id: number) => void) => {
-    e.preventDefault(); setDropTarget(null);
-    const id = Number(e.dataTransfer.getData("text/clipid"));
-    if (id) fn(id);
-  };
+  const ready = (projects ?? []).filter((p) => p.status === "ready").slice(0, 8);
 
   return (
-    <div className="shootdrop board-section">
-      <div className="page-head" style={{ marginBottom: 10 }}>
-        <h3 style={{ margin: 0 }}>📼 Your footage</h3>
-        <span className="muted">dump your raw recordings, then drag each clip onto the scene it belongs to</span>
+    <div className="page editor-start">
+      <div className="page-head">
+        <h2>Editor</h2>
+        <span className="muted">Drop footage in, then trim it, caption it and give it a look.</span>
       </div>
-      <div
-        className={"sd-zone" + (dragOver ? " over" : "")}
-        onClick={() => fileInput.current?.click()}
-        onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
-        onDragLeave={() => setDragOver(false)}
-        onDrop={(e) => { e.preventDefault(); setDragOver(false); send(Array.from(e.dataTransfer.files)); }}
-      >
-        <div>{busy ? "Uploading…" : "Drag your whole shoot here (or click). Clips you talk in get placed automatically; the rest wait below for you to drag."}</div>
-        {data?.watch_dir && (
-          <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>
-            …or just copy files into <b>{data.watch_dir}</b> — that folder is watched.
-          </div>
-        )}
-        <input ref={fileInput} type="file" accept="video/*" multiple hidden
-          onChange={(e) => { if (e.target.files?.length) send(Array.from(e.target.files)); e.target.value = ""; }} />
-      </div>
+      <div className="es-body">
+        <div
+          className={"es-stage" + (dragOver ? " over" : "") + (pending ? " busy" : "")}
+          onClick={() => !pending && fileInput.current?.click()}
+          onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+          onDragLeave={() => setDragOver(false)}
+          onDrop={(e) => { e.preventDefault(); setDragOver(false); take(Array.from(e.dataTransfer.files)); }}
+        >
+          {pending ? (
+            <div className="es-prep">
+              <div className="es-icon">⏳</div>
+              <div className="es-title">Getting “{pending.name}” ready…</div>
+              <div className="muted">{prepping?.stage || prepping?.status || "uploading"}…</div>
+              <div className="progress" style={{ maxWidth: 260, marginTop: 12 }}><div style={{ width: `${prepping?.progress ?? 5}%` }} /></div>
+              <div className="muted es-note">It opens in the editor on its own when it's done.</div>
+            </div>
+          ) : (
+            <div className="es-prep">
+              <div className="es-icon">🎬</div>
+              <div className="es-title">{uploading ? "Uploading…" : "Drag your footage here"}</div>
+              <div className="muted">…or click to pick a file. Your video shows up right here, ready to cut.</div>
+            </div>
+          )}
+          <input ref={fileInput} type="file" accept="video/*" hidden
+            onChange={(e) => { if (e.target.files?.length) take(Array.from(e.target.files)); e.target.value = ""; }} />
+        </div>
 
-      {clips.length > 0 && (
-        <div className="sd-board">
-          {/* Left: the clips, as draggable thumbnails (a media bin). */}
-          <div className="sd-col">
-            <div className="sd-col-h">Your clips <span className="muted">({clips.length})</span></div>
-            <div className="sd-bin">
-              {clips.map((c) => (
-                <div key={c.id}
-                  className={"sd-clip" + (placedClip(c) ? " placed" : "") + (canDrag(c) ? "" : " waiting")}
-                  draggable={canDrag(c)}
-                  onDragStart={(e) => e.dataTransfer.setData("text/clipid", String(c.id))}>
-                  <div className="sd-thumb" onClick={() => setPreview(c)} title="Click to watch">
-                    <img src={api.shootdropClipThumbUrl(c.id)} alt=""
-                      onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = "none"; }} />
-                    <span className="sd-play">▶</span>
-                  </div>
-                  <div className="sd-clip-meta">
-                    <div className="sd-clip-name" title={c.filename}>{c.filename}</div>
-                    {clipBadge(c)}
-                  </div>
-                  <button className="icon-btn danger sd-clip-x" title="Discard this clip" onClick={() => discard(c)}>🗑</button>
+        <div className="es-rail">
+          <div className="es-rail-h">Pick up where you left off</div>
+          {projects == null ? <div className="muted">Loading…</div>
+            : ready.length === 0 ? <div className="muted es-none">Nothing edited yet — drop a video on the left to start.</div>
+              : (
+                <div className="es-list">
+                  {ready.map((p) => (
+                    <button className="es-item" key={p.id} onClick={() => open(p)} title="Open in the editor">
+                      <img src={api.projectThumbUrl(p.id)} alt="" loading="lazy"
+                        onError={(e) => ((e.currentTarget as HTMLImageElement).style.visibility = "hidden")} />
+                      <span className="es-item-name">{p.name}</span>
+                    </button>
+                  ))}
                 </div>
-              ))}
-            </div>
-          </div>
-
-          {/* Right: the videos' empty scenes, as drop targets. */}
-          <div className="sd-col">
-            <div className="sd-col-h">Drop onto a scene</div>
-            {videos.length === 0 ? (
-              <div className="muted sd-noscenes">
-                No open scenes yet. Start one with <b>+ New video</b> above (write or generate a
-                script), or drag a clip onto the box below to start a fresh one.
-              </div>
-            ) : videos.map((v) => (
-              <div className="sd-vid" key={v.ticket_id}>
-                <div className="sd-vid-h" title={v.label}>{v.label}</div>
-                {v.scenes.map((s) => (
-                  <div key={s.beat_id}
-                    className={"sd-slot" + (dropTarget === `b${s.beat_id}` ? " over" : "")}
-                    onDragOver={(e) => { e.preventDefault(); setDropTarget(`b${s.beat_id}`); }}
-                    onDragLeave={() => setDropTarget((t) => (t === `b${s.beat_id}` ? null : t))}
-                    onDrop={(e) => dropOn(e, (id) => assignTo(id, s.beat_id))}>
-                    <span className="sd-slot-n">Scene {s.order_index + 1}</span>
-                    <span className="sd-slot-line">{s.line || <span className="muted">(no script line)</span>}</span>
-                  </div>
-                ))}
-              </div>
-            ))}
-            <div className={"sd-slot sd-newvid" + (dropTarget === "new" ? " over" : "")}
-              onDragOver={(e) => { e.preventDefault(); setDropTarget("new"); }}
-              onDragLeave={() => setDropTarget((t) => (t === "new" ? null : t))}
-              onDrop={(e) => dropOn(e, assignNew)}>
-              ✨ Drop a clip here to start a brand-new video from it
-            </div>
+              )}
+          <div className="es-script">
+            <div className="es-rail-h">Got a script instead?</div>
+            <div className="muted">Paste it on Create and it turns into scenes you can film and edit.</div>
+            <button className="primary" onClick={onGoCreate}>Go to Create →</button>
           </div>
         </div>
-      )}
-      {preview && (
-        <VideoModal src={api.shootdropClipUrl(preview.id)}
-          title={preview.transcript ? `“${preview.transcript.slice(0, 120)}”` : preview.filename}
-          onClose={() => setPreview(null)} />
-      )}
-    </div>
-  );
-}
-
-/* -------------------------------- Ideas -------------------------------- */
-/* The swipe file: videos that inspired you, and the one button that turns any of them into a
-   video on the board above. It's a section of Create, not its own destination — an
-   idea only exists to become a card. */
-function Ideas({ onSpun }: { onSpun: () => void }) {
-  const [outliers, setOutliers] = useState<Outlier[] | null>(null);
-  const [f, setF] = useState({ url: "", hook: "", why_popped: "", angle: "", caption: "" });
-  const [busy, setBusy] = useState(false);
-  const toast = useToast();
-  const refresh = () => api.listOutliers().then(setOutliers).catch(() => {});
-  useEffect(() => { refresh(); }, []);
-
-  const add = async () => {
-    if (!f.angle.trim() && !f.hook.trim() && !f.url.trim()) { toast("Add at least an angle, hook, or URL", "err"); return; }
-    setBusy(true);
-    try { await api.createOutlier(f); setF({ url: "", hook: "", why_popped: "", angle: "", caption: "" }); toast("Added to swipe file", "ok"); refresh(); }
-    catch (e: any) { toast(`Failed: ${e?.message || e}`, "err"); } finally { setBusy(false); }
-  };
-  const spin = async (o: Outlier) => { const r = await api.ticketFromOutlier(o.id); toast(`Ticket spun (${r.ticket.angle || "no angle"})`, "ok"); onSpun(); };
-  const del = async (o: Outlier) => { await api.deleteOutlier(o.id); toast("Removed", "ok"); refresh(); };
-
-  return (
-    <div className="board-section">
-      <div className="page-head" style={{ marginBottom: 10 }}><h3 style={{ margin: 0 }}>💡 Ideas</h3><span className="muted">Save videos that inspire you — turn any one into a new video</span></div>
-      <div className="intake-form">
-        <label className="field"><span className="field-lab">What's the idea?</span><input value={f.angle} placeholder="e.g. hidden sugar in sauces" onChange={(e) => setF({ ...f, angle: e.target.value })} /></label>
-        <div className="form-row">
-          <label className="field grow"><span className="field-lab">Their first line <span className="muted">(optional)</span></span><input value={f.hook} placeholder="the line that grabbed you" onChange={(e) => setF({ ...f, hook: e.target.value })} /></label>
-          <label className="field grow"><span className="field-lab">Link <span className="muted">(optional)</span></span><input value={f.url} placeholder="https://…" onChange={(e) => setF({ ...f, url: e.target.value })} /></label>
-        </div>
-        <label className="field"><span className="field-lab">Why it worked <span className="muted">(optional)</span></span><textarea rows={2} value={f.why_popped} onChange={(e) => setF({ ...f, why_popped: e.target.value })} /></label>
-        <div className="modal-actions"><button className="primary" onClick={add} disabled={busy}>{busy ? "Saving…" : "Save this idea"}</button></div>
       </div>
-
-      <div className="page-head" style={{ marginTop: 28 }}><h3 style={{ margin: 0 }}>Saved ideas</h3><span className="muted">{outliers?.length ?? 0} saved</span></div>
-      {outliers == null ? <div className="muted">Loading…</div> : outliers.length === 0 ? (
-        <div className="empty"><div className="big" style={{ fontSize: 26 }}>💡</div><div style={{ fontWeight: 700, color: "var(--text)" }}>No saved ideas yet</div><div>Add one above to get started.</div></div>
-      ) : (
-        <div className="swipe-list">
-          {outliers.map((o) => (
-            <div className="swipe-card" key={o.id}>
-              <div className="swipe-main">
-                <div className="swipe-angle">{o.angle || <span className="muted">(no title)</span>}</div>
-                {o.hook && <div className="swipe-hook">“{o.hook}”</div>}
-                {o.why_popped && <div className="muted swipe-why">{o.why_popped}</div>}
-                {o.url && <a className="swipe-url" href={o.url} target="_blank" rel="noreferrer">{o.url}</a>}
-              </div>
-              <div className="swipe-actions">
-                <button className="primary" onClick={() => spin(o)}>Make a video from this →</button>
-                <button className="icon-btn danger" title="Delete" onClick={() => del(o)}>🗑</button>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
     </div>
   );
 }

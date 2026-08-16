@@ -54,13 +54,13 @@ export function Sidebar({ view, onHome, onBoard, onEditor, onQueue, onLibrary }:
         <div className="logo">C</div>
       </button>
       {/* The stops, in the order you move through them: Clipping (the home page — long videos
-          you've cut, and their reels), Create (the board, with its ideas and footage on
-          the same page), Editor (straight back into the clip you had open last), then
-          Schedule & Results, and Downloads at the bottom. */}
+          you've cut, and their reels), Create (paste a script, or get one written), Editor
+          (back into the clip you had open last, or drop footage in), then Schedule & Results,
+          and Downloads at the bottom. */}
       <nav className="nav">
         {item("home", "Clipping", view === "home", onHome, "Long videos you've clipped, and their reels")}
-        {item("board", "Create", view === "board", onBoard, "Make a video — board, ideas & footage")}
-        {item("editor", "Editor", view === "editor", onEditor, "Open the clip you were last editing")}
+        {item("board", "Create", view === "board", onBoard, "Start a video — paste a script, or get one written")}
+        {item("editor", "Editor", view === "editor", onEditor, "Edit your video — or drop footage in to start")}
         {item("queue", "Schedule & Results", view === "queue", onQueue, "Post your videos, and see how they did")}
         {item("library", "Downloads", view === "library", onLibrary)}
       </nav>
