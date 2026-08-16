@@ -45,6 +45,15 @@ The app runs fine on Linux for verification, but nothing in-repo sets that up:
   big-title feature is the pattern: the opt-in path returns `""`/`None`, the ffmpeg command and
   the `.ass` come out byte-identical, and a test asserts exactly that. Users' existing exports
   must never move because a new feature exists.
+- **Never pipe a native command's stderr with PowerShell's own `2>&1` in `scripts/*.ps1`.**
+  uvicorn logs everything to stderr; under Windows PowerShell 5.1 the `2>&1` merge turns each
+  stderr line into a `NativeCommandError` **error record**, so with `$ErrorActionPreference =
+  "Stop"` the launcher died on uvicorn's first INFO line — before the port bound and before
+  `Tee-Object` created `data\backend.log`, which is why it looked like a silent no-op. Let `cmd`
+  do the merge instead (`cmd /c "... 2>&1" | Tee-Object ...`) so PowerShell only ever sees plain
+  stdout; `serve.ps1`, `open-cvideo.ps1` and `start.ps1` all use that form. Test any launcher
+  change by actually double-clicking the `.cmd` (`cmd.exe /c serve.cmd`) and then checking both
+  `/api/health` and that `backend.log` holds plain `INFO:` lines.
 - **Exercise the flow, don't trust the API.** Several problems here were only visible in the browser
   — a 500 whose toast had already faded, a raw C++ assertion rendered into the editor, a button
   whose only possible outcome was a 400. Drive the real UI when changing the creation path.

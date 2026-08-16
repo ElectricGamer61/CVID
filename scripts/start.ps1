@@ -17,10 +17,14 @@ Write-Host "Starting Cvideo backend (http://127.0.0.1:8000)..." -ForegroundColor
 # it self-heals in ~2s. All output is tee'd to data\backend.log so a crash leaves evidence.
 # Window is Minimized to dodge the QuickEdit trap (a click in a normal console pauses stdout
 # and freezes the server until a key is pressed).
+# cmd does the stderr merge (see serve.ps1): uvicorn logs to stderr, and PowerShell's own "2>&1"
+# would tee a NativeCommandError block into backend.log for every ordinary INFO line.
 $backendCmd = "$refresh; Set-Location '$root\backend'; " +
   "while (`$true) { " +
-  ".\.venv\Scripts\python.exe -m uvicorn app.main:app --port 8000 2>&1 | Tee-Object -FilePath '$log' -Append; " +
-  "Add-Content '$log' (\"=== backend exited {0} - restarting ===\" -f (Get-Date)); " +
+  "cmd /c '.\.venv\Scripts\python.exe -m uvicorn app.main:app --port 8000 2>&1' | Tee-Object -FilePath '$log' -Append; " +
+  # Single quotes for the child's own string: `\"` is not an escape in PowerShell, it just ends
+  # the string here and made this whole file fail to parse (so start.cmd did nothing at all).
+  "Add-Content '$log' ('=== backend exited {0} - restarting ===' -f (Get-Date)); " +
   "Start-Sleep -Seconds 2 }"
 Start-Process powershell -ArgumentList @("-NoExit", "-Command", $backendCmd) -WindowStyle Minimized
 
