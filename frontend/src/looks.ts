@@ -1,9 +1,10 @@
 /* Cinematic Look + big title — the browser half.
  *
  * Mirrors backend/app/pipeline/look.py: SAME ids, labels and title geometry, so the preview
- * shows what the export burns. The colour maths can't match ffmpeg exactly (CSS has no
- * curves/colorbalance), so each look is approximated with a CSS filter + a translucent tint
- * + a vignette — close enough to judge the look, while the export does the real grade.
+ * shows what the export burns. CSS has no curves/colorbalance, so each look is approximated
+ * with a CSS filter + a translucent tint + a vignette — but the constants are FITTED against
+ * real ffmpeg renders (see lookLayers), so the preview lands within ~2/255 per channel of the
+ * exported grade rather than merely gesturing at it.
  *
  * A clip with no look (`id: "none"`) produces NO filter and NO overlay: the preview is
  * pixel-identical to how it was before this feature, exactly like the export.
@@ -39,29 +40,33 @@ export interface LookLayers {
 const clamp01 = (v: number) => (Number.isFinite(v) ? Math.max(0, Math.min(1, v)) : DEFAULT_STRENGTH);
 const r2 = (v: number) => Math.round(v * 1000) / 1000;
 
-/** How to paint one look over the preview. `none`/unknown/0 strength → nothing at all. */
+/** How to paint one look over the preview. `none`/unknown/0 strength -> nothing at all.
+ *
+ * The constants below are FITTED, not guessed: each look was rendered both ways on the same
+ * frame (ffmpeg vs this CSS) and the brightness/tint iterated until the mean RGB matched. At
+ * full strength every look now lands within ~2/255 per channel of the real export - before
+ * fitting, Night was off by 29. Re-fit if you change a chain in look.py.
+ */
 export function lookLayers(look: LookSetting | undefined | null): LookLayers {
   const id = look?.id;
   if (!id || id === "none") return { vignette: 0 };
   const s = clamp01(look!.strength ?? DEFAULT_STRENGTH);
   if (s <= 0.001) return { vignette: 0 };
-  const f = (contrast: number, saturate: number, brightness = 1) =>
-    `contrast(${r2(contrast)}) saturate(${r2(saturate)}) brightness(${r2(brightness)})`;
+  const f = (contrast: number, saturate: number, brightness: number) =>
+    `contrast(${r2(1 + contrast * s)}) saturate(${r2(1 + saturate * s)}) brightness(${r2(1 + brightness * s)})`;
+  const tint = (color: string, opacity: number, blend = "soft-light") =>
+    ({ color, opacity: r2(opacity * s), blend });
   switch (id) {
     case "warm_film":
-      return { filter: f(1 + 0.14 * s, 1 + 0.12 * s, 1 + 0.02 * s),
-        tint: { color: "#ff9a3c", opacity: r2(0.22 * s), blend: "soft-light" }, vignette: r2(0.35 * s) };
+      return { filter: f(0.14, 0.12, -0.1), tint: tint("#ff9a3c", 0.25), vignette: r2(0.5 * s) };
     case "cold_cinema":
-      return { filter: f(1 + 0.18 * s, 1 - 0.1 * s, 1 - 0.02 * s),
-        tint: { color: "#2f7fd1", opacity: r2(0.24 * s), blend: "soft-light" }, vignette: r2(0.38 * s) };
+      return { filter: f(0.18, -0.1, -0.13), tint: tint("#2f7fd1", 0.2), vignette: r2(0.55 * s) };
     case "punchy":
-      return { filter: f(1 + 0.28 * s, 1 + 0.28 * s), vignette: 0 };
+      return { filter: f(0.28, 0.28, 0.01), vignette: 0 };
     case "soft_glow":
-      return { filter: f(1 - 0.06 * s, 1 + 0.1 * s, 1 + 0.04 * s),
-        tint: { color: "#ffffff", opacity: r2(0.12 * s), blend: "screen" }, vignette: 0 };
+      return { filter: f(-0.06, 0.1, -0.03), tint: tint("#ffffff", 0.11, "screen"), vignette: 0 };
     case "night":
-      return { filter: f(1 + 0.22 * s, 1 - 0.28 * s, 1 - 0.06 * s),
-        tint: { color: "#1a3a80", opacity: r2(0.3 * s), blend: "soft-light" }, vignette: r2(0.5 * s) };
+      return { filter: f(0.22, -0.28, -0.36), tint: tint("#1a3a80", 0.26), vignette: r2(0.7 * s) };
     default:
       return { vignette: 0 };
   }

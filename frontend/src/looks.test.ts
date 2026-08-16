@@ -49,6 +49,21 @@ describe("lookLayers", () => {
     }
   });
 
+  // These exact strings were FITTED against real ffmpeg renders of each look (same frame,
+  // both pipelines, iterated until the mean RGB matched within ~2/255 per channel). They are
+  // not decorative: if you change a chain in look.py, re-fit and update this snapshot —
+  // otherwise the editor quietly starts lying about what the export will look like.
+  it("keeps the fitted full-strength grade", () => {
+    const at1 = (id: string) => lookLayers({ id, strength: 1 });
+    expect(at1("warm_film").filter).toBe("contrast(1.14) saturate(1.12) brightness(0.9)");
+    expect(at1("cold_cinema").filter).toBe("contrast(1.18) saturate(0.9) brightness(0.87)");
+    expect(at1("punchy").filter).toBe("contrast(1.28) saturate(1.28) brightness(1.01)");
+    expect(at1("soft_glow").filter).toBe("contrast(0.94) saturate(1.1) brightness(0.97)");
+    expect(at1("night").filter).toBe("contrast(1.22) saturate(0.72) brightness(0.64)");
+    expect(at1("night").tint).toEqual({ color: "#1a3a80", opacity: 0.26, blend: "soft-light" });
+    expect(at1("night").vignette).toBe(0.7);
+  });
+
   it("scales with strength", () => {
     const soft = lookLayers({ id: "night", strength: 0.35 });
     const hard = lookLayers({ id: "night", strength: 1 });

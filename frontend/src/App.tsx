@@ -2682,7 +2682,8 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
           {tool === "reframe" && <ReframePanel center={doc.center} set={set} autoCenter={doAutoCenter} autoBusy={autoBusy} />}
           {tool === "text" && <TranscriptEditor words={doc.words} cuts={doc.cuts} start={doc.start} end={doc.end}
             time={time} onSeek={seek} onCutsChange={(c) => set({ cuts: c })} />}
-          {tool === "look" && <LookPanel look={doc.look} onChange={(l) => set({ look: l })} options={presets?.looks ?? FALLBACK_LOOKS} />}
+          {tool === "look" && <LookPanel look={doc.look} onChange={(l) => set({ look: l })}
+            options={presets?.looks ?? FALLBACK_LOOKS} sampleUrl={api.frameUrl(pid, clipStart + 0.5)} />}
           {tool === "title" && <BigTitlePanel title={doc.bigTitle} onChange={(t) => set({ bigTitle: t })}
             playhead={editedTime} clipLength={effLen} />}
           {tool === "fx" && <AIEffectsPanel cid={clip.id}
@@ -2951,11 +2952,24 @@ function TranscriptEditor({ words, cuts, start, end, time, onSeek, onCutsChange 
 /* 🎨 Cinematic Look — the one control that makes a phone clip look shot, not filmed.
    Six chips, one strength. Everything is plain English: no LUTs, curves or gamma anywhere.
    "None" is the default and produces an export byte-identical to pre-Look CVID. */
-function LookPanel({ look, onChange, options }: {
-  look: LookSetting; onChange: (l: LookSetting) => void; options: { id: string; label: string; hint: string }[];
+function LookPanel({ look, onChange, options, sampleUrl }: {
+  look: LookSetting; onChange: (l: LookSetting) => void;
+  options: { id: string; label: string; hint: string }[];
+  sampleUrl?: string;
 }) {
   const strength = look.strength ?? DEFAULT_STRENGTH;
   const active = options.find((o) => o.id === look.id) ?? options[0];
+  // Each swatch is a real frame from THIS clip under that look, at the chosen strength —
+  // you pick by looking at your own footage, not at an abstract colour chip. If the frame
+  // can't be fetched the CSS gradient behind it still reads as the look's palette.
+  const [sample, setSample] = useState<string | null>(null);
+  useEffect(() => {
+    if (!sampleUrl) return;
+    const img = new Image();
+    img.onload = () => setSample(sampleUrl);
+    img.src = sampleUrl;
+    return () => { img.onload = null; };
+  }, [sampleUrl]);
   return (
     <div className="panel-body">
       <div className="muted" style={{ fontSize: 12.5, marginBottom: 10 }}>
@@ -2965,7 +2979,7 @@ function LookPanel({ look, onChange, options }: {
         {options.map((o) => (
           <button key={o.id} className={"look-card" + (look.id === o.id ? " on" : "")}
             onClick={() => onChange({ id: o.id, strength })}>
-            <span className={"look-swatch look-" + o.id} />
+            <LookSwatch id={o.id} strength={strength} sample={sample} />
             <b>{o.label}</b><span className="muted">{o.hint}</span>
           </button>
         ))}
@@ -2985,6 +2999,21 @@ function LookPanel({ look, onChange, options }: {
         </>
       )}
     </div>
+  );
+}
+
+/* One preset's swatch: this clip's own frame, graded exactly the way the preview grades
+   the video (same CSS filter + tint + vignette), so the chips ARE the preview. */
+function LookSwatch({ id, strength, sample }: { id: string; strength: number; sample: string | null }) {
+  const l = lookLayers({ id, strength });
+  return (
+    <span className={"look-swatch look-" + id}
+      style={sample ? { backgroundImage: `url(${sample})`, filter: l.filter } : undefined}>
+      {sample && l.tint && <i className="look-layer"
+        style={{ background: l.tint.color, opacity: l.tint.opacity, mixBlendMode: l.tint.blend as any }} />}
+      {sample && l.vignette > 0 && <i className="look-layer"
+        style={{ background: `radial-gradient(ellipse at center, rgba(0,0,0,0) 40%, rgba(0,0,0,${l.vignette}) 100%)` }} />}
+    </span>
   );
 }
 

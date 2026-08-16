@@ -330,9 +330,14 @@ it** both stay under Create videos, so the sidebar never disagrees with where yo
   (Text/B-roll/Music/Transitions/AI Hook = coming soon).
   - **Look** (`LookPanel`, `looks.ts`) — six chips (None · Warm Film · Cold Cinema · Punchy ·
     Soft Glow · Night) plus one Subtle/Medium/Strong strength. Plain English only: no LUT, gamma
-    or curve words anywhere in the UI. The preview approximates the ffmpeg grade with a CSS
-    `filter` on the `<video>` plus a tint + vignette `.look-layer` painted UNDER the text — the
-    same order the export burns.
+    or curve words anywhere in the UI. Each chip is **a real frame from this clip under that
+    look** at the chosen strength, so you pick by looking at your own footage. The preview
+    approximates the ffmpeg grade with a CSS `filter` on the `<video>` plus a tint + vignette
+    `.look-layer` painted UNDER the text — the same order the export burns — and the constants
+    are **fitted, not guessed**: each look was rendered both ways on the same frame and the
+    brightness/tint iterated until the mean RGB matched (within ~2/255 per channel; Night was
+    off by 29 before). `looks.test.ts` snapshots them, so **re-fit if you change a chain in
+    `look.py`** or the editor quietly starts lying about the export.
   - **Big title** (`BigTitlePanel`, `TitleOverlay.tsx`) — one huge title placed *beside* the
     subject (left/right column), above/below, or over them, in Bold/Glow/Boxed, with a
     start-at-playhead + duration control. **"Beside the person" is LAYOUT, not matting** — a

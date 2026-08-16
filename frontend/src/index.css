@@ -873,7 +873,8 @@ button.primary.danger-solid:hover { background: #db3a48; border-color: #db3a48; 
 .look-card:hover { border-color: var(--primary); }
 .look-card.on { border-color: var(--primary); box-shadow: 0 0 0 1px var(--primary) inset; }
 .look-card .muted { font-size: 11px; font-weight: 500; line-height: 1.25; }
-.look-swatch { width: 100%; height: 26px; border-radius: 6px; margin-bottom: 4px; background: linear-gradient(120deg, #8e9aab, #cfd6e0); }
+.look-swatch { position: relative; overflow: hidden; width: 100%; height: 40px; border-radius: 6px; margin-bottom: 5px;
+  background: linear-gradient(120deg, #8e9aab, #cfd6e0); background-size: cover; background-position: center 30%; }
 .look-swatch.look-none { background: linear-gradient(120deg, #9aa4b2, #d7dde5); }
 .look-swatch.look-warm_film { background: linear-gradient(120deg, #8a4a17, #f0b26b); }
 .look-swatch.look-cold_cinema { background: linear-gradient(120deg, #123a55, #6fb6d8); }
