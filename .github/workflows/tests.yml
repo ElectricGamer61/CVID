@@ -1,6 +1,7 @@
-# Runs the two test suites that need nothing but source: the frontend's pure UI
-# logic and the backend's reframe math. Everything else in this repo wants a live
-# server, ffmpeg, or real media, so it stays a local check (see AGENTS.md).
+# Runs the test suites that need nothing but source: the frontend's pure UI logic and
+# the backend's standalone suites (reframe math, Cinematic Look / big titles). Everything
+# else in this repo wants a live server, ffmpeg, or real media, so it stays a local check
+# (see AGENTS.md).
 name: tests
 
 on:
@@ -27,7 +28,7 @@ jobs:
         working-directory: frontend
 
   backend:
-    name: backend reframe tests
+    name: backend unit tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -38,4 +39,6 @@ jobs:
       # the whole render/transcribe stack, which this suite never touches.
       - run: python -m pip install --upgrade pip numpy opencv-python-headless
       - run: python test_reframe.py
+        working-directory: backend
+      - run: python test_look.py
         working-directory: backend

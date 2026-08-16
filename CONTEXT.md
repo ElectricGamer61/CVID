@@ -410,6 +410,10 @@ it** both stay under Create videos, so the sidebar never disagrees with where yo
 - **Export 403s:** `ingest._ydl()` retries transient YouTube 403/timeout on `download_full`. URL projects
   also **prefetch the full video in the background** right after analysis (`jobs._prefetch_full`), so the
   first export is usually instant instead of waiting on a download.
+- **One filter order for the picture:** `render.video_chain()` — crop -> look -> captions ->
+  punch-in zoom -> voice pad. ffmpeg applies filters in order, so the grade going in BEFORE
+  `subtitles=` is what keeps captions and titles crisp and untinted. Both clip render paths
+  call it, and `test_look.py` asserts the order.
 - **PATH refresh** mandatory in every new shell (§1).
 - **Opt-in API auth** (`settings.API_TOKEN` / `CVIDEO_API_TOKEN`): empty (default) = no auth, solo/local
   use unchanged. Set it and `main._require_api_token` guards every `/api/*` call (health exempt);
@@ -462,6 +466,12 @@ it** both stay under Create videos, so the sidebar never disagrees with where yo
   (timing correctness needs eyes). Preview stays even-split; export is aligned.
 - **Long-form whole-clip voice** — `-shortest` tail-clip FIXED (2026-07-07, holds last frame when the
   voice overruns; see §7). Still lacks the record-time reading-speed control the per-scene panel has.
+- **A silent source no longer kills the Cut export.** `render_clip_segments` used to ask for
+  `[0:a]atrim` unconditionally; on footage with no audio track (B-roll, a muted take, "I'll
+  voice it over later" — all first-class here) ffmpeg died with a raw
+  `Stream specifier ':a' ... matches no streams` dump in the editor. `render.has_audio()`
+  probes first and builds a video-only concat (silent export) instead. Same shape as the
+  face-detection fix: an absent optional input must degrade, never fail the render.
 - **Middle-cut (Cut) + per-scene voice are mutually exclusive** — the per-scene export path ignores
   `cuts_json`.
 - **Reel render is fixed 1080×1920** (no 1440p/4k tier; long-form clips already support tiers).

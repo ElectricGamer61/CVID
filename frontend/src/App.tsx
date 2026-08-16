@@ -2591,6 +2591,14 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
   }, [effects, time]);
   // Cinematic Look preview: a CSS approximation of the ffmpeg grade the export burns.
   const layers = useMemo(() => lookLayers(doc.look), [doc.look]);
+  const activeTools = useMemo(() => {
+    const on = new Set<string>();
+    if (doc.look?.id && doc.look.id !== "none") on.add("look");
+    if (doc.bigTitle?.text.trim()) on.add("title");
+    if (doc.cuts.length) on.add("cut");
+    if ((effects.zoom?.length ?? 0) + (effects.sfx?.length ?? 0) > 0) on.add("fx");
+    return on;
+  }, [doc.look, doc.bigTitle, doc.cuts, effects]);
 
   const rendered = clip.status === "rendered";
   const busy = clip.status === "rendering";
@@ -2627,6 +2635,9 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
             <button key={t.id} className={"rail-btn" + (tool === t.id ? " on" : "")} onClick={() => setTool(t.id)} title={t.label}>
               <span className="rail-ic">{t.icon}</span><span className="rail-lb">{t.label}</span>
               {t.soon && <span className="soon-dot" title="Coming soon" />}
+              {/* A dot on the rail says "this clip has one" — otherwise a look you set
+                  earlier is invisible until you happen to open the panel again. */}
+              {activeTools.has(t.id) && <span className="on-dot" title={`${t.label} is on for this clip`} />}
             </button>
           ))}
         </div>

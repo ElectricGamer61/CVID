@@ -383,6 +383,7 @@ input[type=range] { width: 100%; accent-color: var(--primary); }
 .rail-btn.on { background: var(--primary-soft); color: var(--primary-press); }
 .rail-ic { font-size: 17px; line-height: 1; font-weight: 700; }
 .rail-lb { font-size: 10.5px; font-weight: 600; }
+.on-dot { position: absolute; top: 7px; right: 14px; width: 6px; height: 6px; border-radius: 50%; background: var(--primary); }
 .soon-dot { position: absolute; top: 7px; right: 14px; width: 6px; height: 6px; border-radius: 50%; background: var(--warn); }
 
 .ed2-stage { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 18px; background: var(--surface-3); min-height: 0; overflow: auto; }

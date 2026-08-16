@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).parent / "app"))
 
 from app.pipeline import captions as caps  # noqa: E402
 from app.pipeline import look  # noqa: E402
+from app.pipeline import render  # noqa: E402
 
 FAILED = []
 
@@ -69,6 +70,35 @@ def test_filter_is_render_chain_safe():
             check(f"{lid}@{s}: no empty chain link", ",," not in f
                   and not f.startswith(",") and not f.endswith(","), f)
             check(f"{lid}@{s}: no scientific notation", "e-" not in f and "e+" not in f, f)
+
+
+def test_render_chain_order():
+    print("\n[render] where the grade sits in the filter chain")
+    crop = "crop=100:200:0:0,scale=1080:1920"
+    subs = "subtitles='/tmp/x.ass'"
+    grade = look.look_filter("warm_film", 1.0)
+
+    plain = render.video_chain(crop, "", subs)
+    check("no look => crop then captions, nothing else", plain == f"{crop},{subs}", plain)
+    check("no look adds no trailing/leading comma", ",," not in plain)
+
+    graded = render.video_chain(crop, grade, subs)
+    check("grade sits AFTER the crop", graded.index(grade) > graded.index(crop), graded)
+    check("grade sits BEFORE the captions (captions stay untinted)",
+          graded.index(grade) < graded.index(subs), graded)
+    check("adding a look only inserts the grade",
+          graded == f"{crop},{grade},{subs}", graded)
+
+    full = render.video_chain(crop, grade, subs, "zoompan=z='1.2'", "tpad=stop_duration=1")
+    order = [full.index(x) for x in (crop, grade, subs, "zoompan", "tpad")]
+    check("full chain order: crop -> look -> captions -> zoom -> voice pad",
+          order == sorted(order), full)
+    check("empty parts never leave an empty link",
+          ",," not in full and not full.endswith(",") and not full.startswith(","))
+    # Silent footage is first-class (B-roll, "I'll voice it over later"), so the cut/concat
+    # path asks first instead of demanding an [0:a] that isn't there.
+    check("has_audio() on a missing file answers 'silent' rather than raising",
+          render.has_audio(Path("/definitely/not/here.mp4")) is False)
 
 
 def test_strength():
@@ -178,6 +208,7 @@ if __name__ == "__main__":
     test_presets()
     test_no_look_is_no_change()
     test_filter_is_render_chain_safe()
+    test_render_chain_order()
     test_strength()
     test_title_normalize()
     test_title_wrap()

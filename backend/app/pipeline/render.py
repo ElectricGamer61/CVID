@@ -17,8 +17,39 @@ def _escape_subtitles_path(p: Path) -> str:
     return s
 
 
-def _voice_pad_suffix(voiceover: "Path | None", video_dur: float) -> str:
-    """Video-filter suffix that HOLDS the last frame when the voiceover runs longer than
+def video_chain(crop: str, look: str, subs: str, zoom: str = "", pad: str = "") -> str:
+    """The clip's video-filter chain, in the ONE order every export path uses:
+
+        crop -> LOOK (colour grade) -> captions -> punch-in zoom -> voice pad
+
+    ffmpeg applies filters in order, so putting the grade before `subtitles=` is what keeps
+    the captions and the big title crisp and untinted on top of the graded picture. Empty
+    parts are dropped, so a clip with no look/zoom/voice yields exactly the chain this
+    produced before any of those features existed.
+    """
+    return ",".join(p for p in (crop, look, subs, zoom, pad) if p)
+
+
+def has_audio(path: Path) -> bool:
+    """Does this file carry an audio stream at all?
+
+    Silent clips are first-class here (B-roll, a muted phone take, footage you voice over
+    later), and the cut/concat path used to ask ffmpeg for `[0:a]` unconditionally — on a
+    silent source that failed the whole export with a raw
+    `Stream specifier ':a' ... matches no streams` dump in the editor. Any probe trouble
+    answers "no audio", which only costs a silent render instead of killing it."""
+    try:
+        proc = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "a",
+             "-show_entries", "stream=index", "-of", "csv=p=0", str(path)],
+            capture_output=True, text=True)
+        return proc.returncode == 0 and bool(proc.stdout.strip())
+    except Exception:  # noqa: BLE001 - no ffprobe / unreadable file -> treat as silent
+        return False
+
+
+def _voice_pad_filter(voiceover: "Path | None", video_dur: float) -> str:
+    """Video filter that HOLDS the last frame when the voiceover runs longer than
     the video, so `-shortest` can't chop the tail of the voice off (lost spoken words).
     Returns "" (no change -> byte-identical output) when the voice fits the video, which
     is the common case. Voice-first: the recorded voice is the master."""
@@ -30,7 +61,7 @@ def _voice_pad_suffix(voiceover: "Path | None", video_dur: float) -> str:
     except Exception:  # noqa: BLE001 - a probe failure just means "don't pad"
         return ""
     extra = vo_dur - float(video_dur or 0.0)
-    return f",tpad=stop_mode=clone:stop_duration={extra:.3f}" if extra > 0.05 else ""
+    return f"tpad=stop_mode=clone:stop_duration={extra:.3f}" if extra > 0.05 else ""
 
 
 def _fonts_dir() -> str | None:
@@ -187,29 +218,34 @@ def render_clip_segments(source: Path, out_path: Path,
     compressed timeline (see remap_words_for_cuts)."""
     src_w, src_h = probe_size(source)
     crop = crop_filter(src_w, src_h, aspect, center, out_w, out_h)
-    if look:
-        crop = f"{crop},{look}"   # grade the picture, then burn captions ON TOP of the grade
     subs = f"subtitles='{_escape_subtitles_path(ass_path)}'"
     fd = _fonts_dir()
     if fd:
         subs += f":fontsdir='{fd}'"
 
+    # A silent source has no [0:a] to trim — build a video-only concat instead of dying.
+    audio = has_audio(source)
     parts = []
     for i, (a, b) in enumerate(segments):
         parts.append(f"[0:v]trim={a:.3f}:{b:.3f},setpts=PTS-STARTPTS[v{i}];")
-        parts.append(f"[0:a]atrim={a:.3f}:{b:.3f},asetpts=PTS-STARTPTS[a{i}];")
-    concat_in = "".join(f"[v{i}][a{i}]" for i in range(len(segments)))
-    parts.append(f"{concat_in}concat=n={len(segments)}:v=1:a=1[vc][ac];")
-    zf = _zoom_filter(zoom, out_w, out_h)
-    tail = _voice_pad_suffix(voiceover, sum(b - a for a, b in segments))
-    parts.append(f"[vc]{crop},{subs}{',' + zf if zf else ''}{tail}[vout]")
+        if audio:
+            parts.append(f"[0:a]atrim={a:.3f}:{b:.3f},asetpts=PTS-STARTPTS[a{i}];")
+    concat_in = "".join(f"[v{i}]" + (f"[a{i}]" if audio else "") for i in range(len(segments)))
+    parts.append(f"{concat_in}concat=n={len(segments)}:v=1:a={1 if audio else 0}"
+                 f"{'[vc][ac];' if audio else '[vc];'}")
+    chain = video_chain(crop, look, subs, _zoom_filter(zoom, out_w, out_h),
+                        _voice_pad_filter(voiceover, sum(b - a for a, b in segments)))
+    parts.append(f"[vc]{chain}[vout]")
     filter_complex = "".join(parts)
 
     cmd = ["ffmpeg", "-y", "-i", str(source)]
     if voiceover:
         cmd += ["-i", str(voiceover)]
     cmd += ["-filter_complex", filter_complex, "-map", "[vout]"]
-    cmd += (["-map", "1:a:0", "-shortest"] if voiceover else ["-map", "[ac]"])
+    if voiceover:
+        cmd += ["-map", "1:a:0", "-shortest"]
+    elif audio:
+        cmd += ["-map", "[ac]"]     # else: silent source -> silent export, not a crash
     cmd += ["-c:v", "libx264", "-preset", "medium", "-crf", "20",
             "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart", str(out_path)]
     proc = subprocess.run(cmd, capture_output=True, text=True)
@@ -224,19 +260,14 @@ def render_clip(source: Path, out_path: Path, start: float, end: float,
                 voiceover: Path | None = None, zoom: list[dict] | None = None,
                 look: str = "") -> Path:
     src_w, src_h = probe_size(source)
-    vf = crop_filter(src_w, src_h, aspect, center, out_w, out_h)
-    if look:
-        vf = f"{vf},{look}"       # grade the picture, then burn captions ON TOP of the grade
+    crop = crop_filter(src_w, src_h, aspect, center, out_w, out_h)
     subs = f"subtitles='{_escape_subtitles_path(ass_path)}'"
     fd = _fonts_dir()
     if fd:
         subs += f":fontsdir='{fd}'"
-    vf = f"{vf},{subs}"
-    zf = _zoom_filter(zoom, out_w, out_h)
-    if zf:
-        vf = f"{vf},{zf}"
     # Hold the last frame if the voiceover overruns the clip, so its tail isn't cut.
-    vf = f"{vf}{_voice_pad_suffix(voiceover, end - start)}"
+    vf = video_chain(crop, look, subs, _zoom_filter(zoom, out_w, out_h),
+                     _voice_pad_filter(voiceover, end - start))
 
     cmd = ["ffmpeg", "-y", "-ss", f"{start:.3f}", "-to", f"{end:.3f}", "-i", str(source)]
     if voiceover:

@@ -409,7 +409,7 @@ def _ensure_caption_timings(beats: list[dict], progress=None) -> None:
 
 def mux_single_voiceover(video: Path, vo: Path, out: Path) -> Path:
     """Lay ONE voiceover over a finished reel, replacing its audio. If the voice runs longer
-    than the footage, hold the last frame so the tail isn't cut (mirrors render._voice_pad_suffix);
+    than the footage, hold the last frame so the tail isn't cut (mirrors render._voice_pad_filter);
     if it's shorter, the video keeps playing at its natural length and the audio just ends."""
     vdur = float(probe_duration(video) or 0.0)
     vodur = float(probe_duration(vo) or 0.0)
