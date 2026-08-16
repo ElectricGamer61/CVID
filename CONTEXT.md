@@ -52,7 +52,7 @@ $env:Path = [System.Environment]::GetEnvironmentVariable('Path','Machine') + ';'
   `scripts\allow-network.ps1`) adds the one-time Windows Firewall rule (inbound TCP 8000, **Private
   profile only**) so phone/laptop can connect. Same-wifi URL prints from the machine's LAN IP
   (e.g. `http://192.168.12.110:8000`); "from anywhere" = install Tailscale on each device. The app is
-  mobile-usable (no horizontal overflow; Shoot Drop's drop zone is tappable → upload from the phone's
+  mobile-usable (no horizontal overflow; the Editor's drop zone is tappable → upload from the phone's
   camera roll straight to the desktop engine), though heavy editing is best on a laptop/desktop.
 
 **Repo is under git** (branch `main`); `.gitignore` covers `data/`, `backend/.venv/`,
@@ -143,7 +143,8 @@ via `render_scene_reel` (voice-first) or `assemble_ticket`.
     concat) → `data/tickets/{id}/reel.mp4`. Proof-guard on number-claim beats.
 - **ai.py** — Script Factory + Hook Forge + **`post_copy(brand, hook, script)`** (fills
   `Ticket.post_meta` from the ticket's own script; reuse brain clients; heuristic fallbacks).
-- **shootdrop.py** — **Shoot Drop batch intake** (record → dump files → done): each raw clip is
+- **shootdrop.py** — **Shoot Drop batch intake** (no longer surfaced in the UI — see §6; the
+  endpoints and the watched folder still work): each raw clip is
   transcribed (`jobs.transcribe_subprocess`, ElevenLabs when key set else local) then **matched by
   what was said** (deterministic `match_score` = max(difflib ratio, 0.9·vocab-containment),
   threshold 0.55) against open native tickets' unfilled beats → auto-attached
@@ -243,14 +244,17 @@ uploads AND by `build-edit` reels).
 Light "Soft-UI" theme (Plus Jakarta Sans). **Sidebar (5 stops):** **Clipping** · **Create** ·
 **Editor** · **Schedule & Results** · **Downloads** (internal routes: home/board/editor/queue/library).
 **The app opens on Clipping** — the long-form clipper and everything you've already cut (the old
-"Home"/"Projects"); the logo button goes there too. Three sections were folded away rather than
-kept as their own stops: **Ideas** and the **📼 footage drop** are sections of **Create**, below the
-board they feed, and **Results** is the lower half of the **Schedule & Results** page. **Editor** is a
-shortcut: it reopens the clip you last had open (`localStorage["cv.lastEdit"]`), or toasts and drops
-you on Clipping when there isn't one.
+"Home"/"Projects"); the logo button goes there too. Sections were folded away rather than
+kept as their own stops: the old **Ideas** screen is now the "no script yet" questions inside
+**Create** (there is no saved-ideas list in the UI any more), raw **footage** is dropped in the
+**Editor** where you edit it, and **Results** is the lower half of the **Schedule & Results** page.
+**Editor** reopens the clip you last had open (`localStorage["cv.lastEdit"]`); with nothing to
+reopen it shows its own **start screen** (route `editorStart`) — a drop target for footage plus the
+projects you can pick back up — instead of bouncing you elsewhere.
 **There is no Autopilot tab** — autopilot is a per-video *mode*, not a place (see below),
 and by default it isn't visible at all (see **Advanced mode**).
-Plain-language UI: a ticket = "video", a beat = "scene", an outlier = an "idea".
+Plain-language UI: a ticket = "video", a beat = "scene". (`Outlier` rows and the
+`/api/shootdrop` endpoints still exist on the backend; nothing in the UI reads them any more.)
 `sidebarViewFor(route)` maps a route to the lit sidebar item — a video stays under **Create**, a
 project's moments grid under **Clipping**, and the editor lights **Editor** however you got there.
 The editor keeps its own breadcrumb trail (section / project / moments), so it takes no flat
@@ -266,12 +270,12 @@ section label even though `SECTION_LABELS` names it for the sidebar.
   polling `/api/autopilot/state` when the flag is off, and new videos are created with
   `autopilot: false` so the loop can't quietly drive a video whose controls are hidden.
 
-- **App.tsx** — routes (home | board | queue | library | video | project | **editor** with an
-  optional `from:"board"`), shell, and all screens + the **ClipEditor** workspace. A top **backend-offline
+- **App.tsx** — routes (home | board | queue | library | video | project | **editorStart** |
+  **editor** with an optional `from:"board"`), shell, and all screens + the **ClipEditor** workspace. A top **backend-offline
   banner** polls `GET /api/health` every 5 s and warns "edits are NOT saving" the instant the server dies.
-- **Autopilot = a mode, folded into the board, behind Advanced mode** (`useAutopilot(enabled)` hook +
+- **Autopilot = a mode, folded into Create, behind Advanced mode** (`useAutopilot(enabled)` hook +
   `GATE_LABEL`/`isGated`/`GATE_POINTS`).
-  In Advanced mode the board header has an **Autopilot strip** (Start / Pause / Run once) and a **"Needs you (N)" filter**
+  In Advanced mode Create has an **Autopilot strip** (Start / Pause / Run once) and a **"Needs you (N)" filter**
   that shows only gated videos. Cards carry a 🤖 badge + a "⏸ Needs your OK" gate badge. The
   Approve / Regenerate / Kill actions live in the video workspace (`VideoWorkspace`), which also shows the
   gate points ("Pauses for you at: script · reel · post") whenever a video is on autopilot. Backend
@@ -283,36 +287,37 @@ section label even though `SECTION_LABELS` names it for the sidebar.
   the technical menus aren't the loudest thing on the screen while the defaults are nearly always right.
   **Caption style is not offered here** — it's a per-clip look you pick (and see) in the editor's
   preset chips; new projects always start on `capcut`.
-- **Create → 📼 Your footage** (`ShootDrop`, Shoot Drop batch intake): drag a whole shoot in (or the watched
-  folder); live per-clip list (⏳/👂 listening/→ matched chip with ticket · scene · confidence),
-  an **editor-style drag-and-drop sorting board** (`.sd-board`): left = clip **thumbnail cards**
-  (`.sd-clip`, `draggable`; thumb via `/api/shootdrop/clips/{id}/thumb`, click to watch via
-  `VideoModal`); right = each open video's empty scenes as **drop slots** (`.sd-slot`, grouped by
-  ticket) + a "✨ new video from this clip" drop zone. Drag a clip onto a slot → `shootdropAssign`.
-  Auto-matched (talking) clips show as placed/green; **silent B-roll waits in the bin** to be dragged.
-  Polls 2.5 s while working, 10 s idle.
+- **Editor start screen** (`EditorStart`, route `editorStart`) — the Editor with nothing open yet.
+  The preview pane **is** the drop target: drop (or pick) a video file and it's uploaded as a
+  caption-mode project (`createFromUpload`, `mode:"caption"`, 9:16, `capcut`), polled while it
+  transcribes, and opened in the clip editor the moment it's `ready`; a project that comes back
+  `error` says so instead of spinning. Beside it: the ready projects you can reopen, and a link to
+  **Create** for when what you have is a script. Scene rows in the video workspace also take a
+  dropped file on their **＋ Add video** slot. **Nothing is auto-placed** — the old Shoot Drop bin
+  (and its "clips you talk in get placed automatically" claim) is gone from the UI; the
+  `/api/shootdrop` endpoints and the watched folder are untouched on the backend.
 - **Video workspace — 📣 Post copy card** (`PostCopyCard`, in the vw-rail): "🪄 Write my post copy"
   → editable per-platform fields (TT/IG caption+hashtags, YT title/description/tags) saved via
   `patchTicket({post_meta})` on blur, "↻ Rewrite it" regenerates.
-- **Create** (Board) — redesigned: the 8 DB stages collapse to **4 phase lanes** (`PHASES`:
-  Idea / Make it / Ready / Posted) with accent colors; cards show a reel thumbnail, the hook, mode
-  badge, ◀▶ phase move. **+ New video** modal is **paste-first**: angle + a always-open "Paste your
-  script" box (→ `intake.parse_script`, deterministic, no LLM) as the primary action, with "write it
-  in the workspace" and "✨ Let AI draft one" (create + script-factory) demoted to link-sized
-  fallbacks underneath. A scene-less video workspace opens the same paste box expanded. Clicking a card opens **TicketDetail**; a native reel's
-  **"✏️ Open in editor"** calls `build-edit` and routes into the clip editor.
-  An **empty board** replaces the four blank lanes with one "Make your first video" panel + CTA.
-  Below the lanes, on the same page and separated by hairlines (`.board-section`): **📼 Your footage**
-  (`ShootDrop`) and **💡 Ideas** (`Ideas`, the old Intake screen minus its page chrome — saving an
-  idea and "Make a video from this →" refresh the board above in place).
+- **Create** (`CreatePage`) — one hero, then your videos. `CreateHero` asks the only question that
+  matters: **do you have a script?** Yes → paste it in the always-open box (→ `intake.parse_script`,
+  deterministic, no LLM) and "Make my scenes →" drops you in the workspace. No → **"I don't have a
+  script yet"** opens a few plain questions (topic, audience, angle, must-include, how many scenes)
+  and **"✨ Write my AI prompt"** pops a card holding one **copyable prompt** (`scriptPrompt.ts`,
+  pure + unit-tested) that asks Claude/ChatGPT for a script in exactly the labels `parse_script`
+  reads; you paste the reply back into the same box. CVideo never needs an API key for this.
+  Below the hero, **Your videos** is a plain card grid (`.vid-grid`, recently-opened first): thumb,
+  hook, scene/clip/voice chips and one line saying what it needs next (`MAKE_STEPS`). **No lanes,
+  no ◀▶ stage moves, no saved-ideas list, no how-it-works strip** — the pipeline stage is
+  bookkeeping, so its stepper only appears in Advanced mode.
 - **Video workspace guidance** — a **Next line** under the stage stepper says what to do now
-  (`nextStepFor` → `NEXT_STEP_HINT`): the same rule the board groups "Make it" by, so the two can't
+  (`nextStepFor` → `NEXT_STEP_HINT`): the same rule Create labels its cards with, so the two can't
   disagree. `makeStepOf` short-circuits to `footage` for every non-`native-short` capture mode (they
   come from footage you already have, ingested and exported on **Clipping**, so the scene checklist
   would name controls neither screen renders) and otherwise walks script → clips → voice → build;
   the workspace re-runs it against the scenes actually loaded (`makeStepOfBeats`) and adds a `done`
-  step once `clip_url` exists. Every key `makeStepOf` returns needs a `MAKE_STEPS` lane heading or
-  the board drops those cards silently. The rail is ordered by use — **🎬 Make the video** (the only primary button) ·
+  step once `clip_url` exists. Every key `makeStepOf` returns needs a `MAKE_STEPS` label or a card
+  on Create says nothing about what it needs. The rail is ordered by use — **🎬 Make the video** (the only primary button) ·
   **📣 Post copy** · **✨ AI draft** collapsed into a `<details>`, since pasting a script is the
   normal path and the AI draft is the blank-day fallback. Scene rows show only "what you say" +
   "what to film"; the on-screen-text and caption fields sit behind **More options**

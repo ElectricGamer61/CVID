@@ -2,6 +2,8 @@
 // with no DOM involved. Run with `npm test` in frontend/.
 import { describe, expect, it } from "vitest";
 
+import appSource from "./App.tsx?raw";
+
 import {
   beatHasCustomDetails, brainLabel, MAKE_STEPS, makeStepOf, makeStepOfBeats, nextStepFor,
   NEXT_STEP_HINT, optionsSummary, SECTION_LABELS, sidebarViewFor,
@@ -30,6 +32,11 @@ describe("sidebarViewFor", () => {
     expect(sidebarViewFor({ name: "editor", pid: 1, cid: 2 })).toBe("editor");
     expect(sidebarViewFor({ name: "editor", pid: 1, cid: 2, from: "project" })).toBe("editor");
     expect(sidebarViewFor({ name: "editor", pid: 1, cid: 2, from: "video", tid: 7 })).toBe("editor");
+  });
+
+  it("keeps the editor's start screen under Editor", () => {
+    // Nothing open yet is still the editor — the nav button must not bounce you elsewhere.
+    expect(sidebarViewFor({ name: "editorStart" } as any)).toBe("editor");
   });
 
   it("keeps a project's moments grid under Clipping", () => {
@@ -204,5 +211,67 @@ describe("new-project options summary", () => {
       .toBe("local transcription · 9:16");
     expect(optionsSummary({ ...base, genMode: "moments", advanced: true, brand: "SemSeo" }))
       .toBe("Local (free) · local transcription · 9:16");
+  });
+});
+
+/* The screens themselves need a DOM to render, and these tests deliberately don't have one.
+   What they can still hold is the shape of the UI: which components exist, and which copy
+   is allowed on screen. Every assertion below is something a user complained about. */
+describe("the Create and Editor screens", () => {
+  const src = appSource;
+
+  it("starts a video from one hero, not a modal you have to find", () => {
+    expect(src).toMatch(/function CreatePage\(/);
+    expect(src).toMatch(/function CreateHero\(/);
+    expect(src).not.toMatch(/function NewTicketModal\(/);
+  });
+
+  it("has no saved-ideas list — the questions live in the hero instead", () => {
+    expect(src).not.toMatch(/function Ideas\(/);
+    expect(src).not.toContain("Saved ideas");
+    expect(src).not.toContain("swipe file");
+    expect(src).not.toMatch(/Make a video from this/);
+  });
+
+  it("offers a copyable AI prompt when you have no script", () => {
+    expect(src).toMatch(/function ScriptPromptCard\(/);
+    expect(src).toContain("Copy prompt");
+    expect(src).toMatch(/async function copyText\(/);
+  });
+
+  it("has an editor start state with a drop target, not a dead nav button", () => {
+    expect(src).toMatch(/function EditorStart\(/);
+    expect(src).toContain("Drag your footage here");
+    // The old behaviour: the Editor button toasted and dumped you on Clipping.
+    expect(src).not.toContain("Nothing edited yet — open a video below");
+  });
+
+  it("keeps footage inside the editor, not as its own top-level page", () => {
+    expect(src).not.toMatch(/function ShootDrop\(/);
+    expect(src).not.toContain("📼 Your footage");
+  });
+
+  it("never claims clips get placed for you", () => {
+    // There is no auto-placement, and promising one made every drop feel broken.
+    expect(src).not.toMatch(/get placed automatically/);
+    expect(src).not.toMatch(/[Cc]lips you talk in/);
+    expect(src).not.toMatch(/auto-match/);
+  });
+
+  it("keeps caption style out of the create options — it's a per-clip look", () => {
+    // Picking a caption style before any clip exists is a guess you can't see.
+    expect(src).not.toMatch(/field-lab">\s*Caption style/);
+    // The Options fold offers exactly these, and nothing about captions.
+    const at = src.indexOf('<details className="np-more">');
+    const options = src.slice(at, src.indexOf("</details>", at));
+    expect(options).toBeTruthy();
+    expect(options).not.toContain("caption_preset");
+    expect(options).not.toContain("caption_styles");
+    expect(src).toMatch(/const preset = "capcut"/);   // fixed default; the editor picks the real look
+  });
+
+  it("keeps the Cinematic Look and big-title work in the editor", () => {
+    expect(src).toMatch(/function LookPanel\(/);
+    expect(src).toMatch(/function BigTitlePanel\(/);
   });
 });

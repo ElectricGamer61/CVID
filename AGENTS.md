@@ -11,7 +11,9 @@ the original spec, `docs/` holds the session timeline. Read `CONTEXT.md` before 
 ## Validating a change
 
 - Frontend: `cd frontend && npm run build` (tsc + vite) and `npm test` (vitest; pure UI logic in
-  `src/App.test.ts` — no DOM, no server).
+  `src/App.test.ts` — no DOM, no server). There is no jsdom/testing-library here: to pin something
+  about a *screen*, either extract the rule into a pure module (`scriptPrompt.ts`, `looks.ts`) or
+  assert against `import appSource from "./App.tsx?raw"`, which is how the copy guards work.
 - Backend: `cd backend && <venv python> test_reframe.py` and `test_look.py` (Cinematic Look /
   big title). The other `backend/test_*.py` and `verify_*.py` scripts need a **running server**
   and real media; these two do not.
@@ -33,7 +35,9 @@ The app runs fine on Linux for verification, but nothing in-repo sets that up:
   `--remote-debugging-port` and point `chrome-devtools-axi` at it via
   `CHROME_DEVTOOLS_AXI_BROWSER_URL`. Emoji render as tofu in that headless build — **not** an app bug.
 - Vite dev serves on **port 3000** (`vite.config.ts`), not 5173 as some older docs say, and proxies
-  `/api` to `127.0.0.1:8000`.
+  `/api` to `127.0.0.1:8000`. Two checkouts can't both use those ports: run the second one as
+  `PORT=3100 API_PORT=8010 npm run dev` with its backend on `--port 8010`, so you never smoke-test
+  against another worktree's database.
 
 ## Sharp edges found the hard way
 
