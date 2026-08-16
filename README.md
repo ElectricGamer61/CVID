@@ -64,7 +64,8 @@ Windows shortcut to `scripts\open-cvideo.ps1`; there is no desktop app to instal
 
 Other ways in, if you want them:
 - **`serve.cmd`** — one port, `http://127.0.0.1:8000`, also reachable from your phone on the
-  same wifi (run `allow-network.cmd` once).
+  same wifi (run `allow-network.cmd` once). It keeps the window open and restarts the backend
+  if it ever crashes; everything it prints is also written to `data\backend.log`.
 - **`scripts\start.ps1`** — the two-server dev setup (backend + Vite on
   http://localhost:3000), for working on the code.
 

@@ -1,6 +1,6 @@
 # Cvideo one-click launcher (for the desktop / taskbar shortcut).
 # Starts the app server if it isn't already running, then opens Cvideo in its own
-# clean window (Chrome/Edge app mode) — no browser tabs, looks like a real app.
+# clean window (Chrome/Edge app mode) - no browser tabs, looks like a real app.
 # ASCII-only on purpose: fancy dashes break PowerShell 5.1 parsing.
 
 $ErrorActionPreference = "Stop"
@@ -29,9 +29,11 @@ if (-not (Test-Up)) {
   # Backend serves the UI on one port; supervised loop self-heals a crash; log is tee'd.
   # Window is Minimized to dodge the QuickEdit freeze trap. Local-only (127.0.0.1) so no
   # firewall prompt -- use serve.cmd instead when you want other devices to reach it.
+  # cmd does the stderr merge (see serve.ps1): uvicorn logs to stderr, and PowerShell's own
+  # "2>&1" would tee a NativeCommandError block into backend.log for every ordinary INFO line.
   $backendCmd = "`$env:Path=[System.Environment]::GetEnvironmentVariable('Path','Machine')+';'+[System.Environment]::GetEnvironmentVariable('Path','User'); " +
     "Set-Location '$root\backend'; while (`$true) { " +
-    ".\.venv\Scripts\python.exe -m uvicorn app.main:app --port 8000 2>&1 | Tee-Object -FilePath '$log' -Append; " +
+    "cmd /c '.\.venv\Scripts\python.exe -m uvicorn app.main:app --port 8000 2>&1' | Tee-Object -FilePath '$log' -Append; " +
     "Start-Sleep -Seconds 2 }"
   Start-Process powershell -ArgumentList @("-NoExit", "-Command", $backendCmd) -WindowStyle Minimized
   for ($i = 0; $i -lt 60; $i++) { if (Test-Up) { break }; Start-Sleep -Seconds 1 }
