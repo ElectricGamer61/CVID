@@ -15,6 +15,8 @@ from pathlib import Path
 
 import settings
 
+from . import look as look_mod
+
 
 @dataclass
 class CaptionStyle:
@@ -76,8 +78,76 @@ def _align(position: str) -> int:
     return {"top": 8, "mid": 5, "bottom": 2}.get(position, 2)
 
 
-def _ass_header(p: CaptionStyle, out_w: int, out_h: int) -> str:
+# --- big cinematic title -----------------------------------------------------
+# Extra ASS styles + Dialogue events, written into the SAME .ass as the captions so every
+# export path picks them up from the single `subtitles=` filter it already has.
+
+def _ass_escape(text: str) -> str:
+    """Neutralise ASS markup in user text; explicit newlines become hard breaks."""
+    return (text.replace("\\", "∖").replace("{", "(").replace("}", ")")
+            .replace("\r", "").replace("\n", "\\N"))
+
+
+def _title_geometry(t: dict, out_w: int, out_h: int) -> tuple[int, int, int, int, int, list[str]]:
+    """(align, marginL, marginR, marginV, fontsize, lines) for a title placement — the size
+    and the line breaks both come from look.fit_title, so the title always fits its column."""
+    place = look_mod._place(t["place"])
+    ml, mr = look_mod.title_margins(t["place"], out_w)
+    # A bottom title has to clear the caption band (captions sit at 10% of the height).
+    margin_v = int(out_h * (0.10 if t["place"] == "top" else 0.26 if t["place"] == "bottom" else 0.0))
+    lines, size = look_mod.fit_title(t["text"], t["place"], out_w, out_h)
+    return place.align, ml, mr, margin_v, size, lines
+
+
+def _title_styles(t: dict, p: CaptionStyle, out_w: int, out_h: int) -> list[str]:
+    """The style line(s) the title needs. "glow" gets TWO passes — a wide blurred halo
+    underneath and a crisp, thinly-outlined copy on top — because libass has only one
+    outline per style, and a coloured halo alone loses legibility over bright footage."""
+    align, ml, mr, mv, size, _ = _title_geometry(t, out_w, out_h)
+    white = _ass_style_color("#FFFFFF")
+    black = _ass_style_color("#000000")
+    # Border/shadow are sized off the type so a shrunk title keeps the same proportions.
+    k = size / 138.0
+
+    def line(name: str, outline_c: str, back_c: str, border: int, outline: float, shadow: float) -> str:
+        return (f"Style: {name},{p.font},{size},{white},{white},{outline_c},{back_c},1,0,0,0,"
+                f"100,100,1,0,{border},{max(1, round(outline * k))},{round(shadow * k)},"
+                f"{align},{ml},{mr},{mv},1")
+
+    if t["style"] == "glow":
+        return [line("TitleGlow", _ass_style_color(p.highlight, "40"), "&H00000000", 1, 20, 0),
+                line("Title", black, "&HA0000000", 1, 4, 4)]
+    if t["style"] == "boxed":
+        # BorderStyle 3 = filled box behind the text (max contrast over any footage).
+        return [line("Title", "&H20000000", "&H20000000", 3, 14, 0)]
+    return [line("Title", black, "&H90000000", 1, 9, 5)]     # "bold"
+
+
+def _title_events(t: dict, out_w: int, out_h: int) -> list[str]:
+    """Fade in/out plus a small scale-up entrance. Clip-local seconds, layered ABOVE the
+    captions. The glow variant draws its halo pass first, in perfect registration."""
+    _, _, _, _, _, lines = _title_geometry(t, out_w, out_h)
+    if not lines:
+        return []
+    text = _ass_escape("\n".join(lines))
+    start = max(0.0, float(t["start"]))
+    end = start + max(0.4, float(t["duration"]))
+    fade = int(min(400, max(150, t["duration"] * 1000 / 6)))
+    pop = "\\fscx86\\fscy86\\t(0,%d,\\fscx100\\fscy100)" % (fade + 60)
+
+    def event(layer: int, style: str, extra: str = "") -> str:
+        return (f"Dialogue: {layer},{_ts(start)},{_ts(end)},{style},,0,0,0,,"
+                f"{{\\fad({fade},{fade}){extra}{pop}}}{text}")
+
+    if t["style"] == "glow":
+        # libass has no Blur style field, but \blur softens the border into a real halo.
+        return [event(1, "TitleGlow", "\\blur14"), event(2, "Title")]
+    return [event(1, "Title")]
+
+
+def _ass_header(p: CaptionStyle, out_w: int, out_h: int, title: dict | None = None) -> str:
     margin_v = int(out_h * (0.10 if p.position == "bottom" else 0.0))
+    title_style = "".join("\n" + l for l in _title_styles(title, p, out_w, out_h)) if title else ""
     return f"""[Script Info]
 ScriptType: v4.00+
 PlayResX: {out_w}
@@ -87,7 +157,7 @@ ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Base,{p.font},{p.size},{_ass_style_color(p.color)},{_ass_style_color(p.color)},{_ass_style_color(p.outline_color)},&H90000000,{p.bold},0,0,0,100,100,0,0,1,{p.outline},{p.shadow},{_align(p.position)},80,80,{margin_v},1
+Style: Base,{p.font},{p.size},{_ass_style_color(p.color)},{_ass_style_color(p.color)},{_ass_style_color(p.outline_color)},&H90000000,{p.bold},0,0,0,100,100,0,0,1,{p.outline},{p.shadow},{_align(p.position)},80,80,{margin_v},1{title_style}
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -119,8 +189,11 @@ def _group_lines(words: list[dict], max_words: int) -> list[list[dict]]:
 
 def build_ass(words: list[dict], clip_start: float, clip_end: float,
               preset_name: str, overrides: dict | None = None,
-              out_w: int = settings.OUT_W, out_h: int = settings.OUT_H) -> str:
+              out_w: int = settings.OUT_W, out_h: int = settings.OUT_H,
+              title: dict | None = None) -> str:
     p = resolve_style(preset_name, overrides)
+    # Optional big cinematic title (clip-local times). None/blank → not a single byte changes.
+    t = look_mod.normalize_title(title)
     base_c = _ass_inline_color(p.color)
     hi_c = _ass_inline_color(p.highlight)
 
@@ -163,14 +236,17 @@ def build_ass(words: list[dict], clip_start: float, clip_end: float,
                     parts.append(_render(lw))
             text = " ".join(parts)
             body.append(f"Dialogue: 0,{_ts(start)},{_ts(end)},Base,,0,0,0,,{text}")
-    return _ass_header(p, out_w, out_h) + "\n".join(body) + "\n"
+    if t:
+        body.extend(_title_events(t, out_w, out_h))
+    return _ass_header(p, out_w, out_h, t) + "\n".join(body) + "\n"
 
 
 def write_ass(words: list[dict], clip_start: float, clip_end: float,
               preset_name: str, out_path: Path, overrides: dict | None = None,
-              out_w: int = settings.OUT_W, out_h: int = settings.OUT_H) -> Path:
+              out_w: int = settings.OUT_W, out_h: int = settings.OUT_H,
+              title: dict | None = None) -> Path:
     out_path.write_text(
-        build_ass(words, clip_start, clip_end, preset_name, overrides, out_w, out_h),
+        build_ass(words, clip_start, clip_end, preset_name, overrides, out_w, out_h, title),
         encoding="utf-8",
     )
     return out_path

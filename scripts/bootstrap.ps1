@@ -101,8 +101,12 @@ Set-EnvKey $envFile "ELEVENLABS_API_KEY" $el.Trim()
 Set-EnvKey $envFile "OPENAI_API_KEY"     $oa.Trim()
 Write-Host "  [ok] keys saved to backend\.env" -ForegroundColor Green
 
-# --- 5. Launch --------------------------------------------------------------
-Write-Host "5. Starting Cvideo" -ForegroundColor White
+# --- 5. Desktop button ------------------------------------------------------
+# So opening Cvideo from here on is one double-click, not a folder full of .cmd files.
+& powershell -ExecutionPolicy Bypass -NoProfile -File (Join-Path $root "scripts\install-shortcut.ps1") -Quiet
+
+# --- 6. Launch --------------------------------------------------------------
+Write-Host "6. Starting Cvideo" -ForegroundColor White
 $serve = Join-Path $root "serve.cmd"
 Start-Process -FilePath $serve -WorkingDirectory $root
 Start-Sleep -Seconds 6
@@ -111,4 +115,4 @@ Start-Process "http://127.0.0.1:8000"
 Write-Host ""
 Write-Host "=== Done! ===" -ForegroundColor Green
 Write-Host ("Cvideo is at  http://127.0.0.1:8000  (a server window opened - leave it running)." -f $root) -ForegroundColor White
-Write-Host ("Next time, just double-click  serve.cmd  in  {0}" -f $root) -ForegroundColor White
+Write-Host "Next time, just double-click the  Cvideo  icon on your Desktop." -ForegroundColor White

@@ -12,8 +12,9 @@ the original spec, `docs/` holds the session timeline. Read `CONTEXT.md` before 
 
 - Frontend: `cd frontend && npm run build` (tsc + vite) and `npm test` (vitest; pure UI logic in
   `src/App.test.ts` — no DOM, no server).
-- Backend: `cd backend && <venv python> test_reframe.py`. The other `backend/test_*.py` and
-  `verify_*.py` scripts need a **running server** and real media; `test_reframe.py` does not.
+- Backend: `cd backend && <venv python> test_reframe.py` and `test_look.py` (Cinematic Look /
+  big title). The other `backend/test_*.py` and `verify_*.py` scripts need a **running server**
+  and real media; these two do not.
 
 ## Running it on WSL/Linux (the docs assume Windows)
 
@@ -40,6 +41,10 @@ The app runs fine on Linux for verification, but nothing in-repo sets that up:
   `detectMultiScale` then raises `!empty()` instead of finding nothing. `reframe.py` guards this
   now, but the shape generalises: treat every optional CV/ML asset as absent and keep the render
   alive without it.
+- **Anything that changes the picture must be provable as a no-op when it's off.** The Look /
+  big-title feature is the pattern: the opt-in path returns `""`/`None`, the ffmpeg command and
+  the `.ass` come out byte-identical, and a test asserts exactly that. Users' existing exports
+  must never move because a new feature exists.
 - **Exercise the flow, don't trust the API.** Several problems here were only visible in the browser
   — a 500 whose toast had already faded, a raw C++ assertion rendered into the editor, a button
   whose only possible outcome was a 400. Drive the real UI when changing the creation path.

@@ -16,6 +16,7 @@ from pathlib import Path
 import settings
 from .captions import _ts, write_ass
 from .ingest import probe_duration
+from .look import title_for_span
 from .reframe import crop_filter, probe_size
 from .render import _escape_subtitles_path, _fonts_dir, kept_segments, remap_words_for_cuts
 
@@ -285,7 +286,8 @@ def render_scene_reel(source: Path, out_path: Path, markers: list[dict],
                       words: list[dict], scene_vos: list, preset_name: str,
                       style: dict | None = None,
                       out_w: int = W, out_h: int = H,
-                      cuts: list | None = None) -> Path:
+                      cuts: list | None = None,
+                      look: str = "", title: dict | None = None) -> Path:
     """Voice-first export of a stitched reel: re-time each scene to its own voiceover.
     For each scene marker [s,e]: take the kept video of that range (with any `cuts`
     REMOVED, not just greyed); if it has a VO, loop the video to the VO duration with
@@ -297,6 +299,9 @@ def render_scene_reel(source: Path, out_path: Path, markers: list[dict],
     work.mkdir(parents=True, exist_ok=True)
 
     seg_files: list[Path] = []
+    # Scenes are burned independently and concatenated, so a title that spans the finished
+    # reel has to be sliced per scene — `elapsed` is where this scene starts in the OUTPUT.
+    elapsed = 0.0
     for i, m in enumerate(markers):
         s, e = float(m["start"]), float(m["end"])
         # A scene whose whole range was cut away (e.g. the user deleted that clip) is
@@ -345,13 +350,15 @@ def render_scene_reel(source: Path, out_path: Path, markers: list[dict],
             local_words, _ = remap_words_for_cuts(scene_words, scene_segs)
 
         ass = work / f"seg_{i:03d}.ass"
-        write_ass(local_words, 0.0, dur, preset_name, ass, overrides=style)
+        write_ass(local_words, 0.0, dur, preset_name, ass, overrides=style,
+                  title=title_for_span(title, elapsed, elapsed + dur))
         subs = f"subtitles='{_escape_subtitles_path(ass)}'"
         fd = _fonts_dir()
         if fd:
             subs += f":fontsdir='{fd}'"
         rw, rh = probe_size(raw)
-        vf = f"{crop_filter(rw, rh, '9:16', 0.5, out_w, out_h)},{subs}"
+        grade = f",{look}" if look else ""
+        vf = f"{crop_filter(rw, rh, '9:16', 0.5, out_w, out_h)}{grade},{subs}"
 
         seg = work / f"seg_{i:03d}.mp4"
         cmd = ["ffmpeg", "-y", "-stream_loop", "-1", "-i", str(raw)]
@@ -365,6 +372,7 @@ def render_scene_reel(source: Path, out_path: Path, markers: list[dict],
         if proc.returncode != 0:
             raise RuntimeError(f"scene {i + 1} render failed:\n{proc.stderr[-1200:]}")
         seg_files.append(seg)
+        elapsed += dur
 
     _concat_segments(seg_files, out_path, out_w, out_h)
     return out_path

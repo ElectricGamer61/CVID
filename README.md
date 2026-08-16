@@ -24,9 +24,11 @@ git clone https://github.com/ElectricGamer61/CVID.git
 else (Python, Node, ffmpeg), builds the app, asks for your **ElevenLabs** and **OpenAI** API
 keys (press Enter to add them later in `backend\.env`), and launches it.
 
-After the first run, just double-click **`serve.cmd`** to start it again. This is the
-**bare-bones** build: ElevenLabs for voice/transcription + OpenAI for writing — no local AI
-models, ~1 GB total, no GPU needed.
+The installer also drops a **`Cvideo` icon on your Desktop** — after that, opening the app is
+one double-click (it starts the local server if it isn't already running and opens Cvideo in
+its own window). Missing or moved? Double-click **`install-shortcut.cmd`** to put it back, or
+run **`serve.cmd`** to start the server by hand. This is the **bare-bones** build: ElevenLabs
+for voice/transcription + OpenAI for writing — no local AI models, ~1 GB total, no GPU needed.
 
 <sub>If you ever make this repo public, `scripts/bootstrap.ps1` can also run as a single
 `iwr -useb <raw-url> | iex` one-liner that does steps 1–3 for you in one shot.</sub>

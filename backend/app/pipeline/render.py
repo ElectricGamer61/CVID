@@ -180,12 +180,15 @@ def render_clip_segments(source: Path, out_path: Path,
                          ass_path: Path, center: float = 0.5,
                          out_w: int = settings.OUT_W, out_h: int = settings.OUT_H,
                          voiceover: Path | None = None,
-                         zoom: list[dict] | None = None) -> Path:
+                         zoom: list[dict] | None = None,
+                         look: str = "") -> Path:
     """Render kept segments concatenated into one vertical short (middle parts cut
     out), then crop to aspect + burn captions. ASS must already be retimed to the
     compressed timeline (see remap_words_for_cuts)."""
     src_w, src_h = probe_size(source)
     crop = crop_filter(src_w, src_h, aspect, center, out_w, out_h)
+    if look:
+        crop = f"{crop},{look}"   # grade the picture, then burn captions ON TOP of the grade
     subs = f"subtitles='{_escape_subtitles_path(ass_path)}'"
     fd = _fonts_dir()
     if fd:
@@ -218,9 +221,12 @@ def render_clip_segments(source: Path, out_path: Path,
 def render_clip(source: Path, out_path: Path, start: float, end: float,
                 aspect: str, ass_path: Path, center: float = 0.5,
                 out_w: int = settings.OUT_W, out_h: int = settings.OUT_H,
-                voiceover: Path | None = None, zoom: list[dict] | None = None) -> Path:
+                voiceover: Path | None = None, zoom: list[dict] | None = None,
+                look: str = "") -> Path:
     src_w, src_h = probe_size(source)
     vf = crop_filter(src_w, src_h, aspect, center, out_w, out_h)
+    if look:
+        vf = f"{vf},{look}"       # grade the picture, then burn captions ON TOP of the grade
     subs = f"subtitles='{_escape_subtitles_path(ass_path)}'"
     fd = _fonts_dir()
     if fd:

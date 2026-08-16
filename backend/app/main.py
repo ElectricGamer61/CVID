@@ -21,7 +21,7 @@ from .db import (Angle, Beat, Clip, Folder, IngestClip, Outlier, Perf, Project,
                  Ticket, get_session, init_db)
 from .jobs import get_words, start_shootdrop_watcher, submit_analyze, submit_shootdrop
 from .pipeline import captions as caps
-from .pipeline import ingest, reframe, render, shootdrop
+from .pipeline import ingest, look, reframe, render, shootdrop
 
 app = FastAPI(title="Cvideo")
 app.add_middleware(
@@ -1730,6 +1730,11 @@ def _render_clip_job(cid: int):
         # (post-cut) timeline; empty when the clip has none → render is unchanged.
         zoom_kfs = render.remap_keyframes_for_cuts(effects.get("zoom", []), segments)
         sfx_cues = render.remap_keyframes_for_cuts(effects.get("sfx", []), segments)
+        # Cinematic Look + big title (opt-in, one place). Both empty on a clip nobody
+        # applied them to → the ffmpeg command and the .ass are exactly what they were.
+        look_cfg = effects.get("look") or {}
+        grade = look.look_filter(look_cfg.get("id"), look_cfg.get("strength", look.DEFAULT_STRENGTH))
+        title = look.normalize_title(effects.get("title"))
         if markers and any(scene_vos):
             # Per-scene voice-first reel: re-time each scene to its own recorded voice.
             # Honor the trim: clamp every scene to [start,end], drop scenes trimmed away,
@@ -1743,24 +1748,28 @@ def _render_clip_job(cid: int):
                     cl_vos.append(scene_vos[i] if i < len(scene_vos) else None)
             if cl_markers and any(cl_vos):
                 assemble.render_scene_reel(source, out, cl_markers, words, cl_vos, preset,
-                                           style, out_w=out_w, out_h=out_h, cuts=cuts)
+                                           style, out_w=out_w, out_h=out_h, cuts=cuts,
+                                           look=grade, title=title)
             else:
                 # Whole reel trimmed off its voiced scenes → plain trimmed-range render.
-                caps.write_ass(words, start, end, preset, ass, overrides=style)
+                caps.write_ass(words, start, end, preset, ass, overrides=style, title=title)
                 render.render_clip(source, out, start, end, aspect, ass, center,
-                                   out_w=out_w, out_h=out_h, voiceover=vo_path, zoom=zoom_kfs)
+                                   out_w=out_w, out_h=out_h, voiceover=vo_path, zoom=zoom_kfs,
+                                   look=grade)
         elif cuts and len(segments) != 1:
             # Middle parts removed → concat kept segments + retime captions.
             # ASS keeps the 1080×1920 PlayRes baseline; libass scales it to the frame.
             local_words, total = render.remap_words_for_cuts(words, segments)
-            caps.write_ass(local_words, 0.0, total, preset, ass, overrides=style)
+            caps.write_ass(local_words, 0.0, total, preset, ass, overrides=style, title=title)
             render.render_clip_segments(source, out, segments, aspect, ass, center,
-                                        out_w=out_w, out_h=out_h, voiceover=vo_path, zoom=zoom_kfs)
+                                        out_w=out_w, out_h=out_h, voiceover=vo_path, zoom=zoom_kfs,
+                                        look=grade)
         else:
             # No cuts → unchanged single-range fast path.
-            caps.write_ass(words, start, end, preset, ass, overrides=style)
+            caps.write_ass(words, start, end, preset, ass, overrides=style, title=title)
             render.render_clip(source, out, start, end, aspect, ass, center,
-                               out_w=out_w, out_h=out_h, voiceover=vo_path, zoom=zoom_kfs)
+                               out_w=out_w, out_h=out_h, voiceover=vo_path, zoom=zoom_kfs,
+                               look=grade)
 
         # SFX: isolated post-pass (no-op without cues; a failure keeps the clean render).
         if sfx_cues:
@@ -2176,6 +2185,10 @@ def list_presets():
             "transcribe": ["local", "elevenlabs"],
             "transcribe_default": settings.DEFAULT_TRANSCRIBE,
             "resolutions": resolutions,
+            # Cinematic Look presets + big-title placements (mirrored in frontend/src/looks.ts).
+            "looks": [{"id": l.id, "label": l.label, "hint": l.hint} for l in look.LOOKS],
+            "title_places": [{"id": p.id, "label": p.label} for p in look.PLACES],
+            "title_styles": look.TITLE_STYLES,
             "stages": STAGES,
             "formats": sorted(_TICKET_FORMATS),
             "capture_modes": sorted(_CAPTURE_MODES),
