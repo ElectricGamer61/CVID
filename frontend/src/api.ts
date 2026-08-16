@@ -1,5 +1,6 @@
 // Thin API client for the Cvideo backend.
 import { CaptionStyle, Word } from "./captionStyles";
+import type { LookOption, LookSetting, TitleCard } from "./looks";
 import { getApiToken, setApiToken } from "./apiToken";
 
 export interface Project {
@@ -68,6 +69,9 @@ export interface Presets {
   transcribe: string[];
   transcribe_default?: string;   // backend's CVIDEO_DEFAULT_TRANSCRIBE (local | elevenlabs)
   resolutions: ResolutionOption[];
+  looks?: LookOption[];                       // cinematic Look presets (mirrors looks.ts)
+  title_places?: { id: string; label: string }[];
+  title_styles?: { id: string; label: string }[];
   stages: string[];
   formats: string[];
   capture_modes: string[];
@@ -118,7 +122,12 @@ export interface AutopilotState {
 
 export interface ZoomKey { t: number; scale: number; duration: number }
 export interface SfxCue { t: number; name: string }
-export interface ClipEffects { zoom?: ZoomKey[]; sfx?: SfxCue[] }
+export interface ClipEffects {
+  zoom?: ZoomKey[];
+  sfx?: SfxCue[];
+  look?: LookSetting;      // cinematic colour grade (absent / id "none" = untouched export)
+  title?: TitleCard;       // big cinematic title (absent / empty text = untouched export)
+}
 
 export interface Beat {
   id: number;

@@ -2,6 +2,8 @@ import { ChangeEvent, DragEvent as RDragEvent, useEffect, useMemo, useRef, useSt
 import { api, AutopilotState, Beat, Clip, ClipEffects, ExportItem, Folder, IngestClipInfo, InsightsData, OpenScene, Outlier, PostMeta, Presets, Project, QueueData, QueueTicket, ShootdropData, Ticket, VideoPerf } from "./api";
 import { CaptionOverlay } from "./CaptionOverlay";
 import { CaptionStyle, FALLBACK_PRESETS, groupLines, Word, wordsInRange } from "./captionStyles";
+import { DEFAULT_STRENGTH, emptyTitle, FALLBACK_LOOKS, LookSetting, lookLayers, STRENGTHS, TitleCard, TITLE_PLACES, TITLE_STYLES } from "./looks";
+import { TitleOverlay } from "./TitleOverlay";
 import { Sidebar } from "./Sidebar";
 import { useToast } from "./Toast";
 import { useConfirm, usePrompt } from "./Dialog";
@@ -2240,6 +2242,7 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
   const presetMap = presets?.caption_styles ?? FALLBACK_PRESETS;
   const jsonOr = <T,>(s: string | undefined, fb: T): T => { if (s) { try { return JSON.parse(s); } catch { /* */ } } return fb; };
   const baseStyle = presetMap[clip.caption_preset] ?? FALLBACK_PRESETS.capcut;
+  const initEffects: ClipEffects = jsonOr(clip.effects_json, {} as ClipEffects);
   const initDoc: EditDoc = {
     start: clip.start, end: clip.end, preset: clip.caption_preset,
     style: jsonOr(clip.style_json, baseStyle),
@@ -2247,6 +2250,8 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
     center: clip.crop_center, resolution: clip.resolution ?? "1080p", title: clip.title,
     cuts: jsonOr(clip.cuts_json, [] as [number, number][]),
     splits: jsonOr(clip.splits_json, [] as number[]),
+    look: initEffects.look ?? { id: "none", strength: DEFAULT_STRENGTH },
+    bigTitle: initEffects.title ?? emptyTitle(),
   };
   const { doc, set, reset, undo, redo, canUndo, canRedo } = useHistory<EditDoc>(initDoc);
   const confirm = useConfirm();
@@ -2264,7 +2269,7 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
   // we stop auto-resyncing so their edits aren't clobbered by a later trim.
   const [manualWords, setManualWords] = useState<boolean>(false);
   // Opt-in AI auto-effects (zoom/sfx). Emphasis/emoji live on doc.words; these drive the preview.
-  const [effects, setEffects] = useState<ClipEffects>(() => jsonOr(clip.effects_json, {} as ClipEffects));
+  const [effects, setEffects] = useState<ClipEffects>(() => initEffects);
   const [time, setTime] = useState(clip.start);
   const [playing, setPlaying] = useState(false);
   const [recording, setRecording] = useState(false);
@@ -2379,7 +2384,7 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
     setSaveState("saving");
     const id = setTimeout(async () => {
       try {
-        await api.patchClip(clip.id, { start: doc.start, end: doc.end, caption_preset: doc.preset, resolution: doc.resolution, crop_center: doc.center, style: doc.style, words: doc.words, title: doc.title, cuts: doc.cuts, splits: doc.splits });
+        await api.patchClip(clip.id, { start: doc.start, end: doc.end, caption_preset: doc.preset, resolution: doc.resolution, crop_center: doc.center, style: doc.style, words: doc.words, title: doc.title, cuts: doc.cuts, splits: doc.splits, effects: { ...effects, look: doc.look, title: doc.bigTitle } });
         setSaveState("saved"); onChange();
       } catch {
         // Backend down / request failed — surface it instead of silently pretending we saved.
@@ -2584,6 +2589,16 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
     for (const k of effects.zoom ?? []) if (time >= k.t && time < k.t + k.duration) return k.scale;
     return 1;
   }, [effects, time]);
+  // Cinematic Look preview: a CSS approximation of the ffmpeg grade the export burns.
+  const layers = useMemo(() => lookLayers(doc.look), [doc.look]);
+  const activeTools = useMemo(() => {
+    const on = new Set<string>();
+    if (doc.look?.id && doc.look.id !== "none") on.add("look");
+    if (doc.bigTitle?.text.trim()) on.add("title");
+    if (doc.cuts.length) on.add("cut");
+    if ((effects.zoom?.length ?? 0) + (effects.sfx?.length ?? 0) > 0) on.add("fx");
+    return on;
+  }, [doc.look, doc.bigTitle, doc.cuts, effects]);
 
   const rendered = clip.status === "rendered";
   const busy = clip.status === "rendering";
@@ -2620,6 +2635,9 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
             <button key={t.id} className={"rail-btn" + (tool === t.id ? " on" : "")} onClick={() => setTool(t.id)} title={t.label}>
               <span className="rail-ic">{t.icon}</span><span className="rail-lb">{t.label}</span>
               {t.soon && <span className="soon-dot" title="Coming soon" />}
+              {/* A dot on the rail says "this clip has one" — otherwise a look you set
+                  earlier is invisible until you happen to open the panel again. */}
+              {activeTools.has(t.id) && <span className="on-dot" title={`${t.label} is on for this clip`} />}
             </button>
           ))}
         </div>
@@ -2629,9 +2647,14 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
             style={tool === "reframe" ? undefined : { cursor: "pointer" }}
             onClick={() => { if (tool !== "reframe") togglePlay(); }}
             title={tool === "reframe" ? undefined : "Click or press Space to play / pause"}>
-            <video ref={videoRef} src={api.sourceUrl(pid)} onLoadedMetadata={onLoaded} style={{ objectPosition: `${doc.center * 100}% 50%`, transform: zoomScale !== 1 ? `scale(${zoomScale})` : undefined, transition: "transform 0.12s ease-out" }} playsInline />
+            <video ref={videoRef} src={api.sourceUrl(pid)} onLoadedMetadata={onLoaded} style={{ objectPosition: `${doc.center * 100}% 50%`, transform: zoomScale !== 1 ? `scale(${zoomScale})` : undefined, transition: "transform 0.12s ease-out", filter: layers.filter }} playsInline />
             <audio ref={audioRef} src={hasScenes ? undefined : (voUrl ?? undefined)} preload="auto" />
+            {/* The look's tint + vignette sit UNDER the text, exactly like the export
+                (ffmpeg grades the picture, then burns the subtitles on top). */}
+            {layers.tint && <div className="look-layer" style={{ background: layers.tint.color, opacity: layers.tint.opacity, mixBlendMode: layers.tint.blend as any }} />}
+            {layers.vignette > 0 && <div className="look-layer" style={{ background: `radial-gradient(ellipse at center, rgba(0,0,0,0) 45%, rgba(0,0,0,${layers.vignette}) 100%)` }} />}
             <CaptionOverlay words={editedWords} time={editedTime} style={doc.style} containerHeight={boxH} />
+            <TitleOverlay title={doc.bigTitle} time={editedTime} style={doc.style} containerHeight={boxH} />
             {tool === "reframe" && <div className="reframe-guide" style={{ left: `${doc.center * 100}%` }} />}
           </div>
           {tool === "voice" && <Teleprompter words={activeScene ? wordsInRange(editedWords, srcToEdited(Math.max(activeScene.start, clipStart), segments), srcToEdited(Math.min(activeScene.end, doc.end), segments)) : editedWords} time={editedTime} maxWords={doc.style.max_words} />}
@@ -2659,6 +2682,10 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
           {tool === "reframe" && <ReframePanel center={doc.center} set={set} autoCenter={doAutoCenter} autoBusy={autoBusy} />}
           {tool === "text" && <TranscriptEditor words={doc.words} cuts={doc.cuts} start={doc.start} end={doc.end}
             time={time} onSeek={seek} onCutsChange={(c) => set({ cuts: c })} />}
+          {tool === "look" && <LookPanel look={doc.look} onChange={(l) => set({ look: l })}
+            options={presets?.looks ?? FALLBACK_LOOKS} sampleUrl={api.frameUrl(pid, clipStart + 0.5)} />}
+          {tool === "title" && <BigTitlePanel title={doc.bigTitle} onChange={(t) => set({ bigTitle: t })}
+            playhead={editedTime} clipLength={effLen} />}
           {tool === "fx" && <AIEffectsPanel cid={clip.id}
             onApplied={(w, eff) => { setManualWords(true); set({ words: w }); setEffects(eff); onChange(); }} />}
           {tool === "subs" && (
@@ -2710,7 +2737,10 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
 }
 
 /* ---------------- wayin-style clip editor helpers ---------------- */
-type EditDoc = { start: number; end: number; preset: string; style: CaptionStyle; words: Word[]; center: number; resolution: string; title: string; cuts: [number, number][]; splits: number[] };
+type EditDoc = { start: number; end: number; preset: string; style: CaptionStyle; words: Word[]; center: number; resolution: string; title: string; cuts: [number, number][]; splits: number[];
+  /* Cinematic Look (colour grade) + the big cinematic title. Both live in the clip's
+     effects_json, and both are "off" by default so an untouched clip exports unchanged. */
+  look: LookSetting; bigTitle: TitleCard };
 type Seg = [number, number];
 
 /* Keep a trim handle off the MIDDLE of a spoken word so trimming never chops a
@@ -2919,6 +2949,131 @@ function TranscriptEditor({ words, cuts, start, end, time, onSeek, onCutsChange 
   );
 }
 
+/* 🎨 Cinematic Look — the one control that makes a phone clip look shot, not filmed.
+   Six chips, one strength. Everything is plain English: no LUTs, curves or gamma anywhere.
+   "None" is the default and produces an export byte-identical to pre-Look CVID. */
+function LookPanel({ look, onChange, options, sampleUrl }: {
+  look: LookSetting; onChange: (l: LookSetting) => void;
+  options: { id: string; label: string; hint: string }[];
+  sampleUrl?: string;
+}) {
+  const strength = look.strength ?? DEFAULT_STRENGTH;
+  const active = options.find((o) => o.id === look.id) ?? options[0];
+  // Each swatch is a real frame from THIS clip under that look, at the chosen strength —
+  // you pick by looking at your own footage, not at an abstract colour chip. If the frame
+  // can't be fetched the CSS gradient behind it still reads as the look's palette.
+  const [sample, setSample] = useState<string | null>(null);
+  useEffect(() => {
+    if (!sampleUrl) return;
+    const img = new Image();
+    img.onload = () => setSample(sampleUrl);
+    img.src = sampleUrl;
+    return () => { img.onload = null; };
+  }, [sampleUrl]);
+  return (
+    <div className="panel-body">
+      <div className="muted" style={{ fontSize: 12.5, marginBottom: 10 }}>
+        Give the whole clip a film-grade colour look. The preview shows it live.
+      </div>
+      <div className="look-grid">
+        {options.map((o) => (
+          <button key={o.id} className={"look-card" + (look.id === o.id ? " on" : "")}
+            onClick={() => onChange({ id: o.id, strength })}>
+            <LookSwatch id={o.id} strength={strength} sample={sample} />
+            <b>{o.label}</b><span className="muted">{o.hint}</span>
+          </button>
+        ))}
+      </div>
+      {look.id !== "none" && (
+        <>
+          <div className="field-label" style={{ marginTop: 14 }}>How strong?</div>
+          <div className="seg-toggle wide">
+            {STRENGTHS.map((sv) => (
+              <button key={sv.label} className={Math.abs(strength - sv.value) < 0.01 ? "on" : ""}
+                onClick={() => onChange({ id: look.id, strength: sv.value })}>{sv.label}</button>
+            ))}
+          </div>
+          <div className="muted" style={{ fontSize: 11.5, marginTop: 10 }}>
+            {active.label} · {active.hint}. Exported exactly as previewed.
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+/* One preset's swatch: this clip's own frame, graded exactly the way the preview grades
+   the video (same CSS filter + tint + vignette), so the chips ARE the preview. */
+function LookSwatch({ id, strength, sample }: { id: string; strength: number; sample: string | null }) {
+  const l = lookLayers({ id, strength });
+  return (
+    <span className={"look-swatch look-" + id}
+      style={sample ? { backgroundImage: `url(${sample})`, filter: l.filter } : undefined}>
+      {sample && l.tint && <i className="look-layer"
+        style={{ background: l.tint.color, opacity: l.tint.opacity, mixBlendMode: l.tint.blend as any }} />}
+      {sample && l.vignette > 0 && <i className="look-layer"
+        style={{ background: `radial-gradient(ellipse at center, rgba(0,0,0,0) 40%, rgba(0,0,0,${l.vignette}) 100%)` }} />}
+    </span>
+  );
+}
+
+/* Aa Big title — one huge cinematic line placed BESIDE the subject (a narrow column hugging
+   an edge), above/below them, or across them. Layout, not person-cutout: it can never fail
+   the way matting can, and it looks the same in the preview and the export. */
+function BigTitlePanel({ title, onChange, playhead, clipLength }: {
+  title: TitleCard; onChange: (t: TitleCard) => void; playhead: number; clipLength: number;
+}) {
+  const set = (patch: Partial<TitleCard>) => onChange({ ...title, ...patch });
+  const has = !!title.text.trim();
+  return (
+    <div className="panel-body">
+      <div className="muted" style={{ fontSize: 12.5, marginBottom: 10 }}>
+        A big title that lands next to you — the thing that makes a clip look made, not posted.
+      </div>
+      <label className="field">What should it say?
+        <textarea rows={3} value={title.text} placeholder={"THE ONE HABIT\nTHAT CHANGED\nEVERYTHING"}
+          onChange={(e) => set({ text: e.target.value })} />
+      </label>
+      {has && (
+        <>
+          <div className="field-label">Where does it sit?</div>
+          <div className="preset-chips">
+            {TITLE_PLACES.map((p) => (
+              <button key={p.id} className={"chip plain" + (title.place === p.id ? " on" : "")}
+                onClick={() => set({ place: p.id })}>{p.label}</button>
+            ))}
+          </div>
+          <div className="field-label" style={{ marginTop: 12 }}>How does it look?</div>
+          <div className="preset-chips">
+            {TITLE_STYLES.map((st) => (
+              <button key={st.id} className={"chip plain" + (title.style === st.id ? " on" : "")}
+                onClick={() => set({ style: st.id })}>{st.label}</button>
+            ))}
+          </div>
+          <div className="field-label" style={{ marginTop: 12 }}>When does it show?</div>
+          <div className="title-when">
+            <button className="sm" onClick={() => set({ start: Math.max(0, Math.round(playhead * 10) / 10) })}
+              title="Start the title where the playhead is">⤓ Start here</button>
+            <span className="muted">from {fmt(title.start)}</span>
+            <label className="inline-num">for
+              <input type="number" min={0.5} max={60} step={0.5} value={title.duration}
+                onChange={(e) => set({ duration: Math.max(0.5, Number(e.target.value) || 1) })} />s
+            </label>
+          </div>
+          {title.start >= clipLength && clipLength > 0 && (
+            <div className="muted" style={{ fontSize: 11.5, marginTop: 8 }}>
+              ⚠ That start is past the end of this clip ({fmt(clipLength)}) — it won’t be seen.
+            </div>
+          )}
+          <button className="sm danger" style={{ marginTop: 14 }} onClick={() => set({ text: "" })}>
+            Remove title
+          </button>
+        </>
+      )}
+    </div>
+  );
+}
+
 /* Submagic-style AI auto-effects — one panel, three opt-in checkboxes. Nothing changes until
    "Apply". Emphasis/emoji land on the caption words (visible in the preview immediately); zoom
    and SFX are stored for the export (zoom also previews via a CSS scale on the video). */
@@ -2989,6 +3144,8 @@ function subtractRange(cuts: [number, number][], [a, b]: [number, number]): [num
 }
 
 const TOOLS: { id: string; label: string; icon: string; soon?: boolean }[] = [
+  { id: "look", label: "Look", icon: "🎨" },
+  { id: "title", label: "Big title", icon: "Aa" },
   { id: "cut", label: "Cut", icon: "⌦" },
   { id: "reframe", label: "Reframe", icon: "⛶" },
   { id: "subs", label: "Subtitles", icon: "CC" },

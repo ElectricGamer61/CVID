@@ -32,7 +32,9 @@ $env:Path = [System.Environment]::GetEnvironmentVariable('Path','Machine') + ';'
   where a click in the console pauses stdout and hangs the server).
 - The backend reads `backend/.env` (gitignored) for API keys. **No `--reload`** — the supervised loop
   restarts on crash, but you still restart manually after changing `.env` or backend code.
-- **One-click launch:** the **Cvideo desktop shortcut** (and `open-cvideo.cmd`) runs
+- **One-click launch:** the **Cvideo desktop shortcut** — created by `install.cmd` (step 5 of
+  `scripts\bootstrap.ps1`) or by re-running **`install-shortcut.cmd`** (`scripts\install-shortcut.ps1`,
+  `-Remove` to undo); it also lands in the Start menu — and `open-cvideo.cmd` both run
   `scripts\open-cvideo.ps1` — starts the server only if it isn't already up (supervised, minimized,
   local `127.0.0.1`), waits for `/api/health`, then opens the app in a **Chrome/Edge `--app` window**
   (no tabs, looks native). ~3 s when the server's already running. Icon: `assets\cvideo.ico` (Pillow-
@@ -98,7 +100,25 @@ via `render_scene_reel` (voice-first) or `assemble_ticket`.
   `captionStyles.ts`). `build_ass(words, clip_start, clip_end, preset, overrides, out_w, out_h)`.
   **Inline color must be `{\1c&HBBGGRR&}`** (6-digit + trailing &). ASS keeps a 1080×1920 PlayRes
   baseline; libass scales it to the real frame — **don't pass real out_w/out_h to `write_ass`** for
-  hi-res, only to the render's crop/scale.
+  hi-res, only to the render's crop/scale. `write_ass(..., title=)` also burns the **big
+  cinematic title** into the same .ass (extra `Title` style + a layer-1 Dialogue with `\fad`
+  and a scale-up pop), so every export path gets it from the `subtitles=` filter it already
+  has. `bold`/`boxed` are one pass; **`glow` is two** — a wide `\blur`red halo in the caption
+  accent colour under a crisp, thinly-outlined copy, because libass allows only one outline per
+  style and a halo alone loses legibility on bright footage. User text is escaped (`{`/`}`/`\`
+  neutralised) so a title can't inject ASS override tags.
+- **look.py** — the **Cinematic Look** (colour grade) + the **big cinematic title**, both
+  opt-in per clip and both stored in `Clip.effects_json` (`look:{id,strength}` / `title:{...}`).
+  `look_filter(id, strength)` returns a **linear** ffmpeg chain (`eq`/`curves`/`colorbalance`/
+  `unsharp`/`vignette`) spliced in right after the aspect-crop and BEFORE `subtitles=`, so the
+  grade never tints the captions. **Chains must stay linear** — no `split`/`blend`, no
+  `[labels]` — because the same string goes into a simple `-vf` AND into the middle of
+  `render_clip_segments`' `filter_complex`. `"none"`/unknown/strength 0 gives `""`, so the
+  ffmpeg command is byte-for-byte what it was before looks existed. `fit_title()` decides the
+  title's line breaks AND font size (ASS neither wraps nor clips, so an unfitted title runs off
+  the frame); `title_for_span()` slices one title across the per-scene reel export. Mirrored in
+  `frontend/src/looks.ts` — same ids, margins and fit maths, so preview == export. Covered by
+  `backend/test_look.py`.
 - **render.py** — clip export. Three paths, chosen in `main._render_clip_job`:
   - **plain** `render_clip(... voiceover=?)` — cut [start,end] → crop → burn ASS. If the clip has a
     `voiceover`, it's muxed as the audio (`-map 1:a:0 -shortest`).
@@ -306,7 +326,26 @@ it** both stay under Create videos, so the sidebar never disagrees with where yo
 - **ClipEditor** (`.ed2`) — wayin-style workspace: top bar (title · undo/redo · **⟲ Revert to opened** ·
   autosave indicator · Export) · **tool rail** · 9:16 preview (`<video>` CSS-crop + live `CaptionOverlay`,
   + `<audio>` for voice) · contextual panel · **FilmstripTimeline** (one continuous track of frames).
-  Tools: **Trim** · **Cut** · **Reframe** · **Subtitles** · **Voice** (Text/B-roll/Music/Transitions/AI Hook = coming soon).
+  Tools: **Look** · **Big title** · **Trim** · **Cut** · **Reframe** · **Subtitles** · **Voice**
+  (Text/B-roll/Music/Transitions/AI Hook = coming soon).
+  - **Look** (`LookPanel`, `looks.ts`) — six chips (None · Warm Film · Cold Cinema · Punchy ·
+    Soft Glow · Night) plus one Subtle/Medium/Strong strength. Plain English only: no LUT, gamma
+    or curve words anywhere in the UI. Each chip is **a real frame from this clip under that
+    look** at the chosen strength, so you pick by looking at your own footage. The preview
+    approximates the ffmpeg grade with a CSS `filter` on the `<video>` plus a tint + vignette
+    `.look-layer` painted UNDER the text — the same order the export burns — and the constants
+    are **fitted, not guessed**: each look was rendered both ways on the same frame and the
+    brightness/tint iterated until the mean RGB matched (within ~2/255 per channel; Night was
+    off by 29 before). `looks.test.ts` snapshots them, so **re-fit if you change a chain in
+    `look.py`** or the editor quietly starts lying about the export.
+  - **Big title** (`BigTitlePanel`, `TitleOverlay.tsx`) — one huge title placed *beside* the
+    subject (left/right column), above/below, or over them, in Bold/Glow/Boxed, with a
+    start-at-playhead + duration control. **"Beside the person" is LAYOUT, not matting** — a
+    narrow column hugging one edge — so it can never fail the way segmentation does (the
+    deliberate MVP call; real person-matte occlusion stays later, optional polish). Line breaks
+    and size come from `fitTitle`, the mirror of `look.fit_title`.
+  - Both live on `doc.look` / `doc.bigTitle`, so undo/redo and autosave already cover them; the
+    autosave PATCH merges them into `effects_json` beside the AI effects' zoom/sfx.
   - **Autosave is still silent + debounced**, but now has an escape hatch: **⟲ Revert to opened**
     (`useHistory.reset(openedDoc.current)` — `openedDoc` is a ref snapshot of the doc at mount, immune to
     the poll) restores the clip to how it opened and clears history. The **save indicator shows ⚠ Not saved**
@@ -376,6 +415,10 @@ it** both stay under Create videos, so the sidebar never disagrees with where yo
 - **Export 403s:** `ingest._ydl()` retries transient YouTube 403/timeout on `download_full`. URL projects
   also **prefetch the full video in the background** right after analysis (`jobs._prefetch_full`), so the
   first export is usually instant instead of waiting on a download.
+- **One filter order for the picture:** `render.video_chain()` — crop -> look -> captions ->
+  punch-in zoom -> voice pad. ffmpeg applies filters in order, so the grade going in BEFORE
+  `subtitles=` is what keeps captions and titles crisp and untinted. Both clip render paths
+  call it, and `test_look.py` asserts the order.
 - **PATH refresh** mandatory in every new shell (§1).
 - **Opt-in API auth** (`settings.API_TOKEN` / `CVIDEO_API_TOKEN`): empty (default) = no auth, solo/local
   use unchanged. Set it and `main._require_api_token` guards every `/api/*` call (health exempt);
@@ -428,11 +471,22 @@ it** both stay under Create videos, so the sidebar never disagrees with where yo
   (timing correctness needs eyes). Preview stays even-split; export is aligned.
 - **Long-form whole-clip voice** — `-shortest` tail-clip FIXED (2026-07-07, holds last frame when the
   voice overruns; see §7). Still lacks the record-time reading-speed control the per-scene panel has.
+- **A silent source no longer kills the Cut export.** `render_clip_segments` used to ask for
+  `[0:a]atrim` unconditionally; on footage with no audio track (B-roll, a muted take, "I'll
+  voice it over later" — all first-class here) ffmpeg died with a raw
+  `Stream specifier ':a' ... matches no streams` dump in the editor. `render.has_audio()`
+  probes first and builds a video-only concat (silent export) instead. Same shape as the
+  face-detection fix: an absent optional input must degrade, never fail the render.
 - **Middle-cut (Cut) + per-scene voice are mutually exclusive** — the per-scene export path ignores
   `cuts_json`.
 - **Reel render is fixed 1080×1920** (no 1440p/4k tier; long-form clips already support tiers).
 - Reframe is a static smoothed center (no per-frame panning). 4K is upscale-bound by source.
 - Advanced editor tools deferred: Text overlays, B-roll, Music, Transitions, AI Hook.
+- **Cinematic Look + big title shipped (2026-08-16)** — see §3 `look.py` and §6. Deliberately
+  NOT text-behind-the-person: matting was judged too unreliable for a first pass, so "beside the
+  subject" is a layout/column effect. Person-matte occlusion, per-look film grain, and a look on
+  the native `assemble_ticket` path (looks ride on `Clip.effects_json`, so today they apply to
+  editor exports only) are the obvious follow-ups.
 
 ---
 
@@ -444,6 +498,8 @@ it** both stay under Create videos, so the sidebar never disagrees with where yo
   scene's extra fields open, the New-project options summary. No DOM, no server.
 - `cd backend && .\.venv\Scripts\python.exe test_reframe.py` — crop math + the face-detection
   fallbacks. Standalone (no pytest, no ffmpeg, no test asset).
+- `cd backend && .\.venv\Scripts\python.exe test_look.py` — Look presets, "no look/title = no
+  change at all", filter-chain safety (linear only), and title fit/escaping. Also standalone.
 - `cd backend && .\.venv\Scripts\python.exe -c "import app.main; print('OK')"` (imports + would migrate).
 - Schema check: `PRAGMA table_info(clip)` should include cuts_json/markers_json/voiceover_path/scene_vo_json.
 - Reel smoothness: probe an exported reel's `v:0` `pts_time` deltas — uniform ~0.0333 s, no >50 ms gaps.
