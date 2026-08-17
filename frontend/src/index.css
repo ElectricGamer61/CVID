@@ -754,13 +754,24 @@ button.primary.danger-solid:hover { background: #db3a48; border-color: #db3a48; 
 .panel-body textarea { width: 100%; font-family: inherit; font-size: 13px; font-weight: 500; color: var(--text); border: 1px solid var(--border-2); border-radius: var(--r-sm); padding: 8px 10px; background: var(--surface-2); resize: vertical; }
 .chip.plain { text-transform: none; }
 
-/* Big title lives in the Subtitles panel. A dot on its tab says "this clip has one",
-   and the card in the Captions tab is the signpost for people who never open the tab. */
+/* Every text-on-screen control lives in the Captions panel. The big cinematic look is a
+   SUBTITLE STYLE (one tap on the card below), and the optional extra hook line is folded
+   away underneath it — a dot on the fold says "this clip has one". */
 .tab-dot { display: inline-block; width: 5px; height: 5px; border-radius: 50%; background: var(--primary); margin-left: 5px; vertical-align: 2px; }
-.title-jump { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; padding: 10px 12px;
-  border: 1px solid var(--border-2); border-radius: var(--r-sm); background: var(--surface-2); font-size: 12.5px; }
-.title-jump:hover { border-color: var(--primary); }
-.title-jump-ic { flex: none; display: grid; place-items: center; width: 26px; height: 26px; border-radius: 7px;
+.big-subs-card { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; padding: 10px 12px;
+  margin-bottom: 12px; border: 1px solid var(--border-2); border-radius: var(--r-sm);
+  background: var(--surface-2); font-size: 12.5px; }
+.big-subs-card:hover { border-color: var(--primary); }
+.big-subs-card.on { border-color: var(--primary); background: color-mix(in srgb, var(--primary) 10%, var(--surface-2)); }
+.big-subs-ic { flex: none; display: grid; place-items: center; width: 26px; height: 26px; border-radius: 7px;
   background: var(--surface-3); font-weight: 800; font-size: 12px; letter-spacing: -0.3px; }
-.title-jump > span:nth-child(2) { flex: 1; min-width: 0; }
-.title-jump-go { flex: none; color: var(--muted); font-size: 17px; line-height: 1; }
+.big-subs-card.on .big-subs-ic { background: var(--primary); color: #fff; }
+.big-subs-card > span:nth-child(2) { flex: 1; min-width: 0; }
+.big-subs-on { flex: none; color: var(--primary); font-size: 14px; line-height: 1; font-weight: 800; }
+.hook-fold { margin-top: 16px; border-top: 1px solid var(--border-2); padding-top: 12px; }
+.hook-fold > summary { cursor: pointer; font-size: 12.5px; font-weight: 600; color: var(--muted); list-style: none; }
+.hook-fold > summary::-webkit-details-marker { display: none; }
+.hook-fold > summary::before { content: "›"; display: inline-block; margin-right: 6px; transition: transform 0.12s; }
+.hook-fold[open] > summary::before { transform: rotate(90deg); }
+.hook-fold > summary:hover { color: var(--text); }
+.hook-fold[open] > summary { margin-bottom: 10px; }

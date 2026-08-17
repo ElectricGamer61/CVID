@@ -193,6 +193,32 @@ def test_title_for_span():
     check("no title => none", look.title_for_span(None, 0, 5) is None)
 
 
+def test_big_subtitle_preset():
+    """The big cinematic text is a SUBTITLE preset, built from the transcript words —
+    not a title you have to type. It's what a new clip gets."""
+    print("\n[captions] big cinematic subtitles")
+    ids = list(caps.PRESETS)
+    check("'cinematic' ships as a caption preset", "cinematic" in ids, ids)
+    check("it's first, so the editor offers it first", ids[0] == "cinematic", ids)
+    check("it's the default for a new clip", caps.DEFAULT_PRESET == "cinematic")
+    big, classic = caps.PRESETS["cinematic"], caps.PRESETS["capcut"]
+    check("much bigger than the classic preset", big.size >= classic.size * 1.3,
+          (big.size, classic.size))
+    check("few words on screen at once", big.max_words <= 2, big.max_words)
+    ass = caps.build_ass(WORDS, 0, 3, "cinematic")
+    check("renders the transcript words with no title typed",
+          ",Base,," in ass and "HELLO" in ass and "Style: Title," not in ass)
+    # A typical line has to fit the caption column (1080 minus the Base 80px margins) —
+    # ASS WrapStyle 2 never re-wraps, so an oversized preset would run off the frame.
+    typical_chars = big.max_words * 5 + (big.max_words - 1)      # ~5-letter words + spaces
+    check("a typical line fits the caption column",
+          typical_chars * 0.6 * big.size <= 920, big.size)
+    check("it is the biggest preset we ship",
+          big.size == max(p.size for p in caps.PRESETS.values()), big.size)
+    check("unknown presets still fall back to capcut, so old rows don't move",
+          caps.resolve_style("gone_preset") == classic)
+
+
 def test_margins():
     print("\n[title] placement margins")
     l_ml, l_mr = look.title_margins("left", 1080)
@@ -215,6 +241,7 @@ if __name__ == "__main__":
     test_title_fit()
     test_title_ass()
     test_title_for_span()
+    test_big_subtitle_preset()
     test_margins()
     print("\n" + ("ALL PASSED" if not FAILED else f"{len(FAILED)} FAILED: {FAILED}"))
     sys.exit(1 if FAILED else 0)
