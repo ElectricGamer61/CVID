@@ -69,6 +69,12 @@ The app runs fine on Linux for verification, but nothing in-repo sets that up:
   GPU**; a feature whose only path needs either is broken by default, so keep a keyless CPU
   path and gate the key on the feature that truly needs it (voiceover), not the one that
   doesn't (transcription). See `CONTEXT.md` §3 transcribe.py and `backend/test_transcribe.py`.
+- **A screen that fetches must tell "gone" apart from "offline".** Every nav target that
+  restores remembered state (the sidebar's Editor button and `cv.lastEdit`) can point at a row
+  that has since been deleted. Swallowing the error left the editor on its loading skeleton
+  forever, so the button looked dead. Use `isNotFound` from `api.ts` (404 → forget it and fall
+  back to the section's own empty screen); a network failure must keep waiting, because the
+  offline banner already explains that one and bailing out would lose the user's place.
 - **Exercise the flow, don't trust the API.** Several problems here were only visible in the browser
   — a 500 whose toast had already faded, a raw C++ assertion rendered into the editor, a button
   whose only possible outcome was a 400. Drive the real UI when changing the creation path.

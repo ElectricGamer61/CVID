@@ -1,5 +1,5 @@
 import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
-import { api, AutopilotState, Beat, Clip, ClipEffects, ExportItem, Folder, InsightsData, PostMeta, Presets, Project, QueueData, QueueTicket, Ticket, VideoPerf } from "./api";
+import { api, isNotFound, AutopilotState, Beat, Clip, ClipEffects, ExportItem, Folder, InsightsData, PostMeta, Presets, Project, QueueData, QueueTicket, Ticket, VideoPerf } from "./api";
 import { CaptionOverlay } from "./CaptionOverlay";
 import { CaptionStyle, FALLBACK_PRESETS, groupLines, Word, wordsInRange } from "./captionStyles";
 import { DEFAULT_STRENGTH, emptyTitle, FALLBACK_LOOKS, LookSetting, lookLayers, STRENGTHS, TitleCard, TITLE_PLACES, TITLE_STYLES } from "./looks";
@@ -16,7 +16,7 @@ import {
   ScriptAnswers, SCRIPT_QUESTIONS,
 } from "./scriptPrompt";
 
-type Route =
+export type Route =
   | { name: "home" }
   | { name: "board" }
   | { name: "queue" }
@@ -50,6 +50,19 @@ export const readLastEdit = (): LastEdit | null => {
 const writeLastEdit = (e: LastEdit) => {
   try { localStorage.setItem(LAST_EDIT_KEY, JSON.stringify(e)); } catch { /* private mode */ }
 };
+/** Forget the remembered clip once it's gone, so Editor stops aiming at a dead row. */
+export const clearLastEdit = () => {
+  try { localStorage.removeItem(LAST_EDIT_KEY); } catch { /* private mode */ }
+};
+
+/** Where the sidebar's Editor button goes.
+ *
+ *  Back into the clip you had open last, or — with nothing remembered — the editor's own
+ *  start screen, where you drop footage in. Never another section: the button says Editor,
+ *  so it lands on the editor either way. If the remembered clip turns out to be gone, the
+ *  editor forgets it and falls back here (see `EditorPage`'s `onMissing`). */
+export const editorRouteFor = (last: LastEdit | null): Route =>
+  last ? { name: "editor", ...last } : { name: "editorStart" };
 
 /** Which sidebar item lights up for a route.
  *
@@ -69,6 +82,7 @@ export default function App() {
   const [route, setRoute] = useState<Route>({ name: "home" });
   const [projName, setProjName] = useState("");
   const [backendDown, setBackendDown] = useState(false);
+  const toast = useToast();
 
   useEffect(() => { api.presets().then(setPresets); }, []);
   // Poll the backend so a crash is visible immediately — the editor autosaves silently, so a
@@ -84,12 +98,15 @@ export default function App() {
   const goBoard = () => setRoute({ name: "board" });
   const goQueue = () => setRoute({ name: "queue" });
   const goLibrary = () => setRoute({ name: "library" });
-  // Sidebar → Editor: straight back into the clip you had open last. Nothing edited yet?
-  // Open the editor's start screen — a real editor surface you can drop footage onto —
-  // instead of bouncing you to another page with a toast.
-  const goEditor = () => {
-    const last = readLastEdit();
-    setRoute(last ? { name: "editor", ...last } : { name: "editorStart" });
+  const goEditor = () => setRoute(editorRouteFor(readLastEdit()));
+  // The remembered clip can be deleted from under us (or belong to a database that's since
+  // been replaced). Then the editor has nothing to draw and used to sit on its loading
+  // skeleton forever — the Editor button looked broken. Forget it and show the real start
+  // screen instead, so the button always lands somewhere you can work.
+  const editorGone = () => {
+    clearLastEdit();
+    setRoute({ name: "editorStart" });
+    toast("That clip isn't there any more — here's the editor.", "info");
   };
   // Remember where the editor was, so that button has somewhere to go next time.
   useEffect(() => {
@@ -146,6 +163,7 @@ export default function App() {
         )}
         {route.name === "editor" && (
           <EditorPage pid={route.pid} cid={route.cid} presets={presets} onName={setProjName}
+            onMissing={editorGone}
             onBack={() => setRoute(
               route.from === "video" && route.tid != null ? { name: "video", tid: route.tid }
                 : route.from === "board" ? { name: "board" }
@@ -2051,6 +2069,10 @@ function NewProject({ presets, onCreated }: { presets: Presets | null; onCreated
           <label className="field"><span className="field-lab">Transcription</span><select value={transcribe} onChange={(e) => setTranscribe(e.target.value)}>{(presets?.transcribe ?? ["local"]).map((t) => <option key={t} value={t}>{t === "local" ? "Local (free)" : "ElevenLabs"}</option>)}</select></label>
           <label className="field"><span className="field-lab">Shape</span><select value={aspect} onChange={(e) => setAspect(e.target.value)}>{(presets?.aspects ?? ["9:16"]).map((a) => <option key={a}>{a}</option>)}</select></label>
         </div>
+        {/* Captioning a clip has almost nothing to set here on purpose — the look of the
+            captions, the trim, titles and effects are all per-clip things you do once you can
+            see the video. Say so, so this short list doesn't read as "that's all you get". */}
+        {genMode === "caption" && <div className="muted np-editor-note">✏️ Caption style, trims, titles and effects come next — open the finished clip in the <b>Editor</b> to style it.</div>}
       </details>
       <div className="row" style={{ marginTop: 16, justifyContent: "flex-end" }}>
         <button className="primary" disabled={busy} onClick={submit}>{busy ? "Starting…" : genMode === "caption" ? "Caption my clip" : "Generate clips"}</button>
@@ -2209,20 +2231,29 @@ function MomentCard({ clip, onEdit, onRender, onDelete }: {
 }
 
 /* ------------------------------ Editor --------------------------------- */
-function EditorPage({ pid, cid, presets, onName, onBack }: {
+function EditorPage({ pid, cid, presets, onName, onBack, onMissing }: {
   pid: number; cid: number; presets: Presets | null; onName: (s: string) => void; onBack: () => void;
+  onMissing?: () => void;
 }) {
   const [project, setProject] = useState<Project | null>(null);
   const [clip, setClip] = useState<Clip | null>(null);
   const [words, setWords] = useState<Word[]>([]);
+  // "Gone" is only ever the backend answering — a 404, or a project that no longer lists this
+  // clip. An unreachable server keeps us on the skeleton (the offline banner explains that
+  // one), because bouncing out of an editor over a dropped request would be worse.
+  const [gone, setGone] = useState(false);
   const refresh = () => api.getProject(pid).then((d) => {
     setProject(d.project); onName(d.project.name);
-    setClip(d.clips.find((c) => c.id === cid) || null);
-  }).catch(() => {});
+    const c = d.clips.find((c) => c.id === cid) || null;
+    setClip(c);
+    if (!c) setGone(true);
+  }).catch((e) => { if (isNotFound(e)) setGone(true); });
   useEffect(() => {
+    setGone(false);
     refresh(); api.getWords(pid).then((d) => setWords(d.words)).catch(() => {});
     const t = setInterval(refresh, 3000); return () => clearInterval(t);
   }, [pid, cid]);
+  useEffect(() => { if (gone) onMissing?.(); }, [gone]);
 
   if (!project || !clip) return <div className="page"><div className="skeleton" style={{ height: 420 }} /></div>;
   return <ClipEditor key={clip.id} pid={pid} clip={clip} words={words} duration={project.duration} presets={presets} onChange={refresh} onBack={onBack} />;
