@@ -1,7 +1,7 @@
 import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
 import { api, isNotFound, Beat, Clip, ClipEffects, ExportItem, Folder, Presets, Project, Ticket } from "./api";
 import { CaptionOverlay } from "./CaptionOverlay";
-import { CaptionStyle, FALLBACK_PRESETS, groupLines, Word, wordsInRange } from "./captionStyles";
+import { CaptionStyle, DEFAULT_PRESET, FALLBACK_PRESETS, groupLines, isBigSubtitleStyle, presetHint, presetLabel, Word, wordsInRange } from "./captionStyles";
 import { DEFAULT_STRENGTH, emptyTitle, FALLBACK_LOOKS, LookSetting, lookLayers, STRENGTHS, TitleCard, TITLE_PLACES, TITLE_STYLES } from "./looks";
 import { TitleOverlay } from "./TitleOverlay";
 import { Sidebar } from "./Sidebar";
@@ -882,7 +882,7 @@ function EditorStart({ presets, onOpenClip, onGoCreate }: {
       fd.append("brain", presets?.brains_default ?? "ollama");
       fd.append("transcribe_backend", presets?.transcribe_default ?? "local");
       fd.append("aspect", "9:16");
-      fd.append("caption_preset", "capcut");
+      fd.append("caption_preset", DEFAULT_PRESET);
       fd.append("mode", "caption");     // one editable video, not a hunt for moments
       fd.append("brand", "");
       fd.append("file", vid);
@@ -1351,7 +1351,7 @@ function NewProject({ presets, onCreated }: { presets: Presets | null; onCreated
   const [name, setName] = useState(""); const [url, setUrl] = useState(""); const [file, setFile] = useState<File | null>(null);
   const [brain, setBrain] = useState("ollama"); const [aspect, setAspect] = useState("9:16");
   // Caption style is chosen per clip in the editor; every new project starts on the default.
-  const preset = "capcut";
+  const preset = DEFAULT_PRESET;
   const [transcribe, setTranscribe] = useState("local");
   const [busy, setBusy] = useState(false); const toast = useToast();
   // Default the transcription + brain picks to the backend defaults (CVIDEO_DEFAULT_TRANSCRIBE /
@@ -1617,7 +1617,7 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
 }) {
   const presetMap = presets?.caption_styles ?? FALLBACK_PRESETS;
   const jsonOr = <T,>(s: string | undefined, fb: T): T => { if (s) { try { return JSON.parse(s); } catch { /* */ } } return fb; };
-  const baseStyle = presetMap[clip.caption_preset] ?? FALLBACK_PRESETS.capcut;
+  const baseStyle = presetMap[clip.caption_preset] ?? FALLBACK_PRESETS[DEFAULT_PRESET];
   const initEffects: ClipEffects = jsonOr(clip.effects_json, {} as ClipEffects);
   const initDoc: EditDoc = {
     start: clip.start, end: clip.end, preset: clip.caption_preset,
@@ -1636,9 +1636,9 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
   const openedDoc = useRef(initDoc);
 
   const [tool, setTool] = useState<string>("subs");
-  // Captions/Subtitles owns every text-on-screen control, big cinematic title included —
-  // "where do I set the huge title?" is a captions question in everyone's head.
-  const [subsTab, setSubsTab] = useState<"style" | "edit" | "title">("style");
+  // Captions owns every text-on-screen control. "Where do I get the huge text?" is a
+  // captions question in everyone's head, and the answer is a subtitle style, not a tool.
+  const [subsTab, setSubsTab] = useState<"style" | "edit">("style");
   // Multi-clip timeline: which block is selected + transient split marks (a no-gap
   // split that isn't stored in start/end/cuts — see applySplits).
   const [selClip, setSelClip] = useState<number | null>(null);
@@ -1944,7 +1944,7 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
   const playScene = (i: number) => { previewChain.current = false; setPreviewMode("scene"); runScene(i); };
   const playReel = (startIdx = 0) => { previewChain.current = true; setPreviewMode("reel"); runScene(startIdx); };
   const selectScene = (i: number) => { if (previewMode !== "off") stopPreview(); const j = Math.max(0, Math.min(i, markers.length - 1)); setSceneIdx(j); if (markers[j]) seek(Math.max(markers[j].start, clipStart)); };
-  const choosePreset = (name: string) => set({ preset: name, style: presetMap[name] ?? FALLBACK_PRESETS.capcut });
+  const choosePreset = (name: string) => set({ preset: name, style: presetMap[name] ?? FALLBACK_PRESETS[DEFAULT_PRESET] });
   const doAutoCenter = async () => { setAutoBusy(true); try { const r = await api.autoCenter(clip.id); set({ center: r.center }); toast("Centered on the speaker", "ok"); } catch { toast("Auto-center failed", "err"); } finally { setAutoBusy(false); } };
   const onPreviewDown = (e: React.PointerEvent) => {
     if (tool !== "reframe") return;
@@ -1972,7 +1972,7 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
   const activeTools = useMemo(() => {
     const on = new Set<string>();
     if (doc.look?.id && doc.look.id !== "none") on.add("look");
-    // The big title lives inside Subtitles now, so its "you have one" dot belongs on that rail button.
+    // The optional hook line lives inside Captions, so its "you have one" dot goes there.
     if (doc.bigTitle?.text.trim()) on.add("subs");
     if (doc.cuts.length) on.add("cut");
     if ((effects.zoom?.length ?? 0) + (effects.sfx?.length ?? 0) > 0) on.add("fx");
@@ -2068,28 +2068,27 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
           {tool === "subs" && (
             <div className="panel-body">
               <div className="seg-toggle wide">
-                <button className={subsTab === "style" ? "on" : ""} onClick={() => setSubsTab("style")}>Captions</button>
+                <button className={subsTab === "style" ? "on" : ""} onClick={() => setSubsTab("style")}>Style</button>
                 <button className={subsTab === "edit" ? "on" : ""} onClick={() => setSubsTab("edit")}>Edit words</button>
-                <button className={subsTab === "title" ? "on" : ""} onClick={() => setSubsTab("title")}>
-                  Big title{doc.bigTitle?.text.trim() ? <span className="tab-dot" title="This clip has a big title" /> : null}
-                </button>
               </div>
-              {subsTab === "title" ? (
-                <BigTitlePanel title={doc.bigTitle} onChange={(t) => set({ bigTitle: t })}
-                  playhead={editedTime} clipLength={effLen} />
-              ) : subsTab === "style" ? (
+              {subsTab === "style" ? (
                 <>
-                  {/* The one thing people hunt for and never find: say it right here, in captions. */}
-                  <button className="title-jump" onClick={() => setSubsTab("title")}>
-                    <span className="title-jump-ic">Aa</span>
+                  {/* The big cinematic text IS the subtitles: it's a style you pick here, made
+                      out of the words you already have — never a second thing you have to type. */}
+                  <button className={"big-subs-card" + (isBigSubtitleStyle(doc.style) ? " on" : "")}
+                    onClick={() => choosePreset("cinematic")}>
+                    <span className="big-subs-ic">AA</span>
                     <span>
-                      <b>Cinematic title</b>
-                      <span className="muted"> — big text beside the person. {doc.bigTitle?.text.trim() ? "On for this clip." : "Off."}</span>
+                      <b>Big cinematic subtitles</b>
+                      <span className="muted"> — your words, huge, two at a time, across the frame.{" "}
+                        {isBigSubtitleStyle(doc.style) ? "On for this clip." : "Tap to switch."}</span>
                     </span>
-                    <span className="title-jump-go">›</span>
+                    {isBigSubtitleStyle(doc.style) && <span className="big-subs-on">✓</span>}
                   </button>
+                  <div className="field-label">Subtitle style</div>
                   <div className="preset-chips">{(presets?.captions ?? Object.keys(FALLBACK_PRESETS)).map((c) => (
-                    <button key={c} className={"chip" + (doc.preset === c ? " on" : "")} onClick={() => choosePreset(c)}>{c}</button>))}</div>
+                    <button key={c} className={"chip" + (doc.preset === c ? " on" : "")} onClick={() => choosePreset(c)}
+                      title={presetHint(c)}>{presetLabel(c)}</button>))}</div>
                   <StyleEditor style={doc.style} onChange={(s) => set({ style: s })} />
                   <label className="field">Export resolution
                     <select value={doc.resolution} onChange={(e) => set({ resolution: e.target.value })}>
@@ -2097,6 +2096,16 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
                         <option key={r.id} value={r.id}>{r.label} · {r.hint}</option>))}
                     </select>
                   </label>
+                  {/* Secondary, and deliberately folded away: one extra standalone line, for a
+                      hook that isn't in the transcript. Not a tool, not a tab. */}
+                  <details className="hook-fold" open={!!doc.bigTitle?.text.trim()}>
+                    <summary>
+                      Extra hook line (optional)
+                      {doc.bigTitle?.text.trim() ? <span className="tab-dot" title="This clip has a hook line" /> : null}
+                    </summary>
+                    <HookLinePanel title={doc.bigTitle} onChange={(t) => set({ bigTitle: t })}
+                      playhead={editedTime} clipLength={effLen} />
+                  </details>
                 </>
               ) : (
                 <>
@@ -2130,7 +2139,7 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
 
 /* ---------------- wayin-style clip editor helpers ---------------- */
 type EditDoc = { start: number; end: number; preset: string; style: CaptionStyle; words: Word[]; center: number; resolution: string; title: string; cuts: [number, number][]; splits: number[];
-  /* Cinematic Look (colour grade) + the big cinematic title. Both live in the clip's
+  /* Cinematic Look (colour grade) + the optional extra hook line. Both live in the clip's
      effects_json, and both are "off" by default so an untouched clip exports unchanged. */
   look: LookSetting; bigTitle: TitleCard };
 type Seg = [number, number];
@@ -2409,12 +2418,13 @@ function LookSwatch({ id, strength, sample }: { id: string; strength: number; sa
   );
 }
 
-/* Aa Big title — one huge cinematic line placed BESIDE the subject (a narrow column hugging
-   an edge), above/below them, or across them. Layout, not person-cutout: it can never fail
-   the way matting can, and it looks the same in the preview and the export.
-   It renders as a TAB inside the Subtitles/Captions panel (not its own rail tool), so it
-   returns bare fields — the captions panel already provides the .panel-body wrapper. */
-function BigTitlePanel({ title, onChange, playhead, clipLength }: {
+/* One optional standalone hook line — for a line that ISN'T in the transcript. The everyday
+   big text is the `cinematic` subtitle style above; this is the secondary escape hatch, so it
+   lives folded away inside Captions and has no rail tool and no tab of its own.
+   Placement is layout (a narrow column hugging an edge, or across the frame), never a
+   person-cutout: it can't fail the way matting can, and preview and export agree.
+   Returns bare fields — the captions panel already provides the .panel-body wrapper. */
+function HookLinePanel({ title, onChange, playhead, clipLength }: {
   title: TitleCard; onChange: (t: TitleCard) => void; playhead: number; clipLength: number;
 }) {
   const set = (patch: Partial<TitleCard>) => onChange({ ...title, ...patch });
@@ -2422,8 +2432,9 @@ function BigTitlePanel({ title, onChange, playhead, clipLength }: {
   return (
     <>
       <div className="muted" style={{ fontSize: 12.5, marginBottom: 10 }}>
-        Big cinematic text placed <b>near the person</b> — beside, above, below or across them.
-        It’s laid out around the subject, not cut out behind them.
+        One extra line that isn’t in your transcript — a hook, a name, a stat. Big text
+        laid out <b>near the subject</b>, across the frame. Your spoken words already show
+        as subtitles; this is on top of them.
       </div>
       <label className="field">What should it say?
         <textarea rows={3} value={title.text} placeholder={"THE ONE HABIT\nTHAT CHANGED\nEVERYTHING"}
@@ -2542,9 +2553,9 @@ const TOOLS: { id: string; label: string; icon: string; soon?: boolean }[] = [
   { id: "look", label: "Look", icon: "🎨" },
   { id: "cut", label: "Cut", icon: "⌦" },
   { id: "reframe", label: "Reframe", icon: "⛶" },
-  // One home for every word on screen: captions, the words themselves, and the big
-  // cinematic title. There is no separate "Big title" rail tool — people looked for it here.
-  { id: "subs", label: "Text & titles", icon: "CC" },
+  // One home for every word on screen. The big cinematic text is a SUBTITLE STYLE, so it
+  // lives in here too — there is no "Big title" rail tool and there never should be one.
+  { id: "subs", label: "Captions", icon: "CC" },
   { id: "voice", label: "Voice", icon: "🎙" },
   { id: "text", label: "Transcript", icon: "T" },
   { id: "fx", label: "AI Effects", icon: "✨" },

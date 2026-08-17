@@ -5,8 +5,9 @@ Two user-facing ideas, both centralised here so every export path behaves the sa
 1. `look_filter(look_id, strength)` → an ffmpeg **video filter chain** (a plain, comma-joined
    string) that makes ordinary footage look graded. `"none"` / unknown ids / strength 0 return
    `""`, so a clip nobody applied a look to renders **byte-identical** to before.
-2. `title_events(title, style)` → the ASS style + Dialogue lines for one big cinematic title
-   placed beside/near the subject. `None` → no events, again byte-identical.
+2. `title_events(title, style)` → the ASS style + Dialogue lines for one optional big hook
+   line, placed across the frame near the subject. `None` → no events, again byte-identical.
+   The everyday big-text experience is the `cinematic` CAPTION preset, not this.
 
 **Filter chains here MUST stay linear** (no `split`/`blend`, no `[label]`s): they are spliced
 into both a simple `-vf` chain and the middle of a `filter_complex`, and a label would break
@@ -144,15 +145,15 @@ class TitlePlace:
     align: int          # ASS numpad alignment
 
 
-# "Beside the subject" is done by LAYOUT, not by matting the person out: a narrow, tall
-# column of big type hugging one edge reads as text wrapped around the speaker, and it can
-# never fail the way segmentation can.
+# Placement is pure LAYOUT — a narrow, tall column of big type hugging one edge lands near
+# the subject without any matting, so it can never fail the way segmentation can. The labels
+# name the FRAME, not the person: nothing here cuts anyone out.
 PLACES: list[TitlePlace] = [
-    TitlePlace("left", "Left of them", 4),
-    TitlePlace("right", "Right of them", 6),
-    TitlePlace("top", "Above them", 8),
-    TitlePlace("bottom", "Below them", 2),
-    TitlePlace("center", "Over them", 5),
+    TitlePlace("left", "Left side", 4),
+    TitlePlace("right", "Right side", 6),
+    TitlePlace("top", "Top", 8),
+    TitlePlace("bottom", "Bottom", 2),
+    TitlePlace("center", "Across frame", 5),
 ]
 PLACE_IDS = [p.id for p in PLACES]
 
@@ -239,8 +240,8 @@ def title_size(out_h: int, place_id: str = "center") -> int:
 
 
 def title_margins(place_id: str, out_w: int) -> tuple[int, int]:
-    """(MarginL, MarginR). A side title lives in a ~58% column hugging its edge, which is what
-    makes it read as sitting *beside* the person instead of on top of them."""
+    """(MarginL, MarginR). A side title lives in a ~58% column hugging its edge, so it lands
+    near the subject by layout alone — there is no cut-out and nothing to segment."""
     edge = int(out_w * 0.06)
     gutter = int(out_w * 0.36)
     if place_id == "left":

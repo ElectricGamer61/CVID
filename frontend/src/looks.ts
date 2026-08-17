@@ -72,7 +72,13 @@ export function lookLayers(look: LookSetting | undefined | null): LookLayers {
   }
 }
 
-/* ---------------- big cinematic title ---------------- */
+/* ---------------- optional one-off big hook line ----------------
+ *
+ * The everyday big-text experience is the `cinematic` CAPTION preset (captionStyles.ts):
+ * the subtitles themselves are the big text. What follows is the SECONDARY, optional
+ * extra — one standalone hook line you type, laid out across the frame near the subject
+ * by margins alone. There is no matting and nothing is cut out behind anyone.
+ */
 
 export interface TitlePlaceOption { id: string; label: string }
 export interface TitleCard {
@@ -84,11 +90,11 @@ export interface TitleCard {
 }
 
 export const TITLE_PLACES: TitlePlaceOption[] = [
-  { id: "left", label: "Left of them" },
-  { id: "right", label: "Right of them" },
-  { id: "top", label: "Above them" },
-  { id: "bottom", label: "Below them" },
-  { id: "center", label: "Over them" },
+  { id: "left", label: "Left side" },
+  { id: "right", label: "Right side" },
+  { id: "top", label: "Top" },
+  { id: "bottom", label: "Bottom" },
+  { id: "center", label: "Across frame" },
 ];
 export const TITLE_STYLES: { id: string; label: string }[] = [
   { id: "bold", label: "Bold" },

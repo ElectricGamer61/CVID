@@ -63,8 +63,11 @@ export function CaptionOverlay({
               color: active || emph ? style.highlight : style.color,
               fontWeight: emph ? 900 : undefined,
               display: "inline-block",
-              transform: `scale(${scale})`,
-              transition: "transform 0.08s",
+              // The pop scales the TYPE, not a transform: libass's \fscx112 widens the glyphs
+              // and pushes the rest of the line along, so a transform (which doesn't reflow)
+              // made the popped word overlap its neighbour — badly at the big cinematic size.
+              fontSize: scale === 1 ? undefined : `${scale}em`,
+              transition: "font-size 0.08s",
               margin: "0 0.12em",
             }}
           >

@@ -3,10 +3,10 @@ import type { CSSProperties } from "react";
 import { CaptionStyle } from "./captionStyles";
 import { fitTitle, TITLE_BASE_H, TitleCard, titleMargins, TITLE_BASE_W, titleVisible } from "./looks";
 
-/* The big cinematic title over the 9:16 preview. Geometry mirrors captions._title_style_line
-   (ASS alignment + margins) and looks.wrap_title, so what you place here is what gets burned:
-   a side title lives in a ~52% column hugging its edge — that's how it ends up BESIDE the
-   person without any segmentation to go wrong. */
+/* The optional one-off hook line over the 9:16 preview (the everyday big text is the
+   `cinematic` caption preset). Geometry mirrors captions._title_style_line (ASS alignment +
+   margins) and looks.wrap_title, so what you place here is what gets burned: a side line
+   lives in a ~52% column hugging its edge, landing near the subject by layout alone. */
 export function TitleOverlay({ title, time, style, containerHeight }: {
   title: TitleCard | undefined | null;
   time: number;                 // clip-local (post-cut) seconds, same clock as the captions

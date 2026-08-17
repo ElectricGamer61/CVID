@@ -34,7 +34,13 @@ class CaptionStyle:
 
 
 # Canonical presets — mirrored on the frontend in src/captionStyles.ts.
+# "cinematic" is FIRST and is the default for a new clip: the big cinematic look people ask
+# for is simply how the subtitles are styled — huge, two words at a time, across the middle
+# of the frame — not a second text layer you have to type by hand.
 PRESETS: dict[str, CaptionStyle] = {
+    "cinematic": CaptionStyle(font="Arial", size=126, color="#FFFFFF", highlight="#FFD400",
+                              outline=10, shadow=0, bold=1, uppercase=True, max_words=2,
+                              position="mid"),
     "capcut": CaptionStyle(font="Arial", size=92, color="#FFFFFF", highlight="#FFD400",
                            outline=7, uppercase=False, max_words=4, position="bottom"),
     "hormozi": CaptionStyle(font="Arial", size=104, color="#FFFFFF", highlight="#22FF55",
@@ -46,7 +52,14 @@ PRESETS: dict[str, CaptionStyle] = {
 }
 
 
+# What a brand-new project/clip gets. Existing rows keep whatever they stored, so no
+# export that already exists moves because this changed.
+DEFAULT_PRESET = "cinematic"
+
+
 def resolve_style(preset_name: str, overrides: dict | None = None) -> CaptionStyle:
+    # Unknown names still fall back to capcut, so old rows carrying a preset we no longer
+    # ship keep rendering exactly as they did.
     base = PRESETS.get(preset_name, PRESETS["capcut"])
     data = asdict(base)
     if overrides:

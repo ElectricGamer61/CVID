@@ -11,6 +11,8 @@ import {
   sidebarViewFor,
 } from "./App";
 import type { Ticket } from "./api";
+import { DEFAULT_PRESET, FALLBACK_PRESETS, isBigSubtitleStyle } from "./captionStyles";
+import { TITLE_PLACES } from "./looks";
 
 const ticket = (over: Partial<Ticket> = {}): Ticket => ({
   id: 1, brand: "NoCrapDiet", angle: "", format: "reel", capture_mode: "native-short",
@@ -272,41 +274,69 @@ describe("the Create and Editor screens", () => {
     expect(options).toBeTruthy();
     expect(options).not.toContain("caption_preset");
     expect(options).not.toContain("caption_styles");
-    expect(src).toMatch(/const preset = "capcut"/);   // fixed default; the editor picks the real look
+    expect(src).toMatch(/const preset = DEFAULT_PRESET/);   // fixed default; the editor restyles
   });
 
-  it("keeps the Cinematic Look and big-title work in the editor", () => {
+  it("keeps the Cinematic Look and the big-text work in the editor", () => {
     expect(src).toMatch(/function LookPanel\(/);
-    expect(src).toMatch(/function BigTitlePanel\(/);
+    expect(src).toMatch(/function HookLinePanel\(/);
   });
 
-  // The captain opened the Editor, looked for the big cinematic title, and didn't find it:
-  // he expected text controls to live with the caption controls. They do now.
-  it("puts the big cinematic title inside the Subtitles/Captions panel", () => {
+  // The captain wanted the big cinematic text to BE the subtitles, not a second layer he
+  // has to type: it's a subtitle style, made from the words he already has.
+  it("offers the big cinematic look as a subtitle style inside Captions", () => {
     const at = src.indexOf('{tool === "subs" && (');
-    const subs = src.slice(at, src.indexOf('{COMING_SOON.includes(tool)', at));
+    const subs = src.slice(at, src.indexOf("{COMING_SOON.includes(tool)", at));
     expect(subs).toBeTruthy();
-    expect(subs).toContain("<BigTitlePanel");                 // the controls themselves
-    expect(subs).toMatch(/setSubsTab\("title"\)/);            // a tab in the captions toggle
-    expect(subs).toMatch(/Cinematic title/);                  // and a signpost card in the Captions tab
-    // BigTitlePanel is rendered nowhere else — the Subtitles panel is its only home.
-    expect(src.match(/<BigTitlePanel/g)).toHaveLength(1);
+    expect(subs).toMatch(/Big cinematic subtitles/);
+    expect(subs).toMatch(/choosePreset\("cinematic"\)/);       // one tap, no typing
+    expect(subs).toMatch(/isBigSubtitleStyle\(doc\.style\)/);   // and it says when it's on
+    expect(subs).toMatch(/Subtitle style/);                    // the preset chips are right here
+    // The tabs are style vs words — there is no "Big title" tab any more.
+    expect(subs).not.toMatch(/Big title/);
+    expect(src).not.toMatch(/setSubsTab\("title"\)/);
   });
 
-  it("has no separate Big title rail tool to hunt for", () => {
+  it("makes big cinematic subtitles what a new clip gets", () => {
+    expect(FALLBACK_PRESETS.cinematic).toBeTruthy();
+    expect(DEFAULT_PRESET).toBe("cinematic");
+    // Big by construction: much larger than the classic preset, few words on screen.
+    expect(FALLBACK_PRESETS.cinematic.size).toBeGreaterThan(FALLBACK_PRESETS.capcut.size);
+    expect(FALLBACK_PRESETS.cinematic.max_words).toBeLessThanOrEqual(2);
+    expect(isBigSubtitleStyle(FALLBACK_PRESETS.cinematic)).toBe(true);
+    expect(isBigSubtitleStyle(FALLBACK_PRESETS.capcut)).toBe(false);
+    expect(src).toMatch(/const preset = DEFAULT_PRESET/);      // the create flow uses it too
+  });
+
+  it("keeps the one-off hook line secondary inside Captions and out of the rail", () => {
+    const at = src.indexOf('{tool === "subs" && (');
+    const subs = src.slice(at, src.indexOf("{COMING_SOON.includes(tool)", at));
+    expect(subs).toContain("<HookLinePanel");                  // its only home
+    expect(subs).toMatch(/hook-fold/);                         // folded away, not a tab
+    expect(subs).toMatch(/Extra hook line \(optional\)/);
+    expect(src.match(/<HookLinePanel/g)).toHaveLength(1);
+  });
+
+  it("has no Big title item anywhere in the editor rail", () => {
     const at = src.indexOf("const TOOLS:");
     const tools = src.slice(at, src.indexOf("];", at));
     expect(tools).not.toMatch(/id: "title"/);
-    expect(tools).toMatch(/id: "subs", label: "Text & titles"/);
-    // With no rail tool of its own, the "you have one" dot has to land on Subtitles.
+    // No rail label says "title" — the word only survives in the comment saying why.
+    const labels = [...tools.matchAll(/label: "([^"]+)"/g)].map((m) => m[1]);
+    expect(labels.length).toBeGreaterThan(3);
+    expect(labels.join(" ")).not.toMatch(/title/i);
+    expect(tools).toMatch(/id: "subs", label: "Captions"/);
+    // With no rail tool of its own, the "you have one" dot has to land on Captions.
     expect(src).toMatch(/if \(doc\.bigTitle\?\.text\.trim\(\)\) on\.add\("subs"\)/);
   });
 
-  it("promises text NEAR the person, not a true behind-person cutout", () => {
-    const at = src.indexOf("function BigTitlePanel(");
+  it("promises text NEAR the subject, not a true behind-person cutout", () => {
+    const at = src.indexOf("function HookLinePanel(");
     const panel = src.slice(at, src.indexOf("\nfunction ", at + 10));
-    expect(panel).toMatch(/near the person/i);
-    expect(panel).not.toMatch(/behind (you|the (person|subject))/i);
+    expect(panel).toMatch(/near the subject/i);
+    expect(panel).not.toMatch(/behind (you|the (person|subject)|them)/i);
+    // Placement names the frame, never a claim about masking a person out.
+    expect(TITLE_PLACES.map((p) => p.label).join(" ")).not.toMatch(/them|person/i);
   });
 
   it("tells you the rest of the styling is in the Editor when you're just captioning a clip", () => {
@@ -438,7 +468,7 @@ describe("the app is only an editor", () => {
   it("keeps the editor product itself intact", () => {
     // The point of the cull was to leave these standing, so pin them.
     for (const kept of [/function EditorStart\(/, /function ClipEditor\(/, /function LookPanel\(/,
-      /function BigTitlePanel\(/, /function Library\(/, /function NewProject\(/,
+      /function HookLinePanel\(/, /function Library\(/, /function NewProject\(/,
       /field-lab">Transcription/]) {
       expect(appSource).toMatch(kept);
     }

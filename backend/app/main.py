@@ -147,7 +147,7 @@ class CreateProject(BaseModel):
     brain: str = settings.DEFAULT_BRAIN
     transcribe_backend: str = settings.DEFAULT_TRANSCRIBE
     aspect: str = "9:16"
-    caption_preset: str = "capcut"
+    caption_preset: str = caps.DEFAULT_PRESET
     mode: str = "moments"             # moments | caption
     brand: Optional[str] = None       # reel brand (caption mode); None -> unset
 
@@ -281,7 +281,7 @@ def create_project(body: CreateProject):
 async def create_project_upload(
     name: str = Form(...), brain: str = Form(settings.DEFAULT_BRAIN),
     transcribe_backend: str = Form(settings.DEFAULT_TRANSCRIBE),
-    aspect: str = Form("9:16"), caption_preset: str = Form("capcut"),
+    aspect: str = Form("9:16"), caption_preset: str = Form(caps.DEFAULT_PRESET),
     mode: str = Form("moments"), brand: str = Form(""),
     file: UploadFile = File(...),
 ):
@@ -1561,7 +1561,7 @@ def build_edit(tid: int):
         proj = s.get(Project, existing_pid) if existing_pid else None
         if not proj:
             proj = Project(name=title, source_type="file", mode="caption",
-                           aspect="9:16", caption_preset="capcut")
+                           aspect="9:16", caption_preset=caps.DEFAULT_PRESET)
         proj.status, proj.stage, proj.progress = "analyzing", "Building video", 30
         s.add(proj); s.commit(); s.refresh(proj); pid = proj.id
     try:
@@ -1592,10 +1592,15 @@ def build_edit(tid: int):
                                 or (clip.start or 0) > 0.05
                                 or (0 < (clip.end or 0) < full - 0.05)))
         reuse = bool(clip and edited and prev_scene_ct == new_scene_ct)
+        fresh_clip = clip is None
         if not clip:
             clip = Clip(project_id=pid, idx=0)
         clip.title = title
-        clip.aspect, clip.caption_preset = "9:16", "capcut"
+        clip.aspect = "9:16"
+        # A rebuild must not restyle a video someone already captioned — only a brand-new
+        # clip picks up the default (big cinematic subtitles).
+        if fresh_clip:
+            clip.caption_preset = caps.DEFAULT_PRESET
         clip.score = reel_score                       # rate the reel from its script
         clip.markers_json = json.dumps(result["scenes"])  # markers always refresh
         if not reuse:
