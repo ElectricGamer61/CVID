@@ -95,12 +95,29 @@ via `render_scene_reel` (voice-first) or `assemble_ticket`.
   demotes a keyless `elevenlabs` default to `local` so the UI names the backend that will run.
   When *nothing* can run it raises **`TranscriptionUnavailable`** — a config problem, not a device
   one, so it is never retried per-device and never reported as a GPU fault.
+  **`cuda_available()` requires a device AND a loadable cuBLAS** (`cublas_available()`): the
+  bare-bones install ships no `nvidia-*` wheels, so on a laptop with an NVIDIA card
+  `get_cuda_device_count()` returns 1 while `cublas64_12.dll` is absent — and the GPU attempt
+  paid a 3.1 GB `large-v3` download purely to fail.
+  **The weights are fetched before `WhisperModel()` is built**, by `ensure_model_downloaded()`:
+  a first-run message plus live megabytes go out as `PROGRESS` lines, and a dead network raises
+  **`ModelDownloadError`** (also not a device fault; not retried onto a device that shares the
+  same missing model). Inside the constructor that download was invisible — the project row sat
+  on "Transcribing" 20% for the whole of it. `pick_model()` then caps what a *default* may
+  download (`settings.WHISPER_MAX_AUTO_DOWNLOAD_MB`, 700 MB): a cached model is used at any
+  size and `CVIDEO_WHISPER_MODEL` overrides outright, but nothing multi-GB is ever fetched
+  just because a default said so.
   **Runs in a subprocess** via `transcribe_worker.py` (`jobs.transcribe_subprocess` spawns
   `python -m app.pipeline.transcribe_worker`): a native cuBLAS/cuDNN crash on the Blackwell GPU kills
   only the child (non-zero exit → project marked errored), never the API. Progress streams back as
   `PROGRESS <pct> <msg>` stdout lines and the failure reason as one `ERROR <reason>` line, which
   `jobs.worker_failure_message()` puts in front of the user verbatim — only a *native* exit code
-  (signal, or ≥ `0xC0000000` on Windows) is ever attributed to the GPU.
+  (signal, or ≥ `0xC0000000` on Windows) is ever attributed to the GPU. The parent reads that
+  stream through a queue with a **stall timeout** (`jobs.STALL_SECONDS`, 900 s): the worker
+  narrates both slow phases, so total silence means wedged and the child is killed rather than
+  waited on forever. **`POST /api/projects/{pid}/retry`** re-runs analyze on the media already in
+  the project dir (no re-upload, and a part-downloaded model resumes); the UI shows it as ↻ Retry
+  on any errored card.
   Trade-off: the whisper model reloads per analyze (no in-process cache).
 - **brain.py** — viral-moment picker: `claude`/`ollama`/`gemini`/`heuristic`. Virality-framework prompt,
   chunking + cross-chunk de-dupe, sentence-boundary snapping. Fields must be in `_CLIPS_SCHEMA` required.

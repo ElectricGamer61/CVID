@@ -50,6 +50,22 @@ Write-Host "Installing backend deps (bare-bones - CPU only, no CUDA, no local LL
 & .\.venv\Scripts\python.exe -m pip install -r requirements-bare.txt
 if ($LASTEXITCODE -ne 0) { Write-Host "pip install failed - see errors above." -ForegroundColor Red; exit 1 }
 
+# --- 2b. Pre-download the speech model --------------------------------------
+# faster-whisper fetches its weights on FIRST USE, inside the model constructor. Left to
+# the app that download lands on the user's first upload, where a few hundred MB with no
+# visible progress reads as a hung job - the "stuck on Transcribing" report. Setup is the
+# honest place to wait: the console shows it, and it only happens once.
+# Non-fatal on purpose: an offline install should still finish, and the app now narrates
+# and retries the download itself.
+Set-Location "$root\backend"
+Write-Host "Downloading the speech model (one time, a few hundred MB)..." -ForegroundColor Cyan
+& .\.venv\Scripts\python.exe -c "import settings; from app.pipeline.transcribe import ensure_model_downloaded as d; d(settings.WHISPER_MODEL_CPU, lambda p, m: print(m))"
+if ($LASTEXITCODE -ne 0) {
+  Write-Host "Could not download the speech model now - the app will fetch it on your first upload." -ForegroundColor Yellow
+} else {
+  Write-Host "Speech model ready - transcription works offline from here." -ForegroundColor Green
+}
+
 # --- 3. Seed backend\.env ---------------------------------------------------
 if (-not (Test-Path "$root\backend\.env")) {
   Copy-Item "$root\backend\.env.example" "$root\backend\.env"

@@ -301,6 +301,10 @@ export const api = {
     req(`/api/projects/${id}/words`),
   deleteProject: (id: number): Promise<{ deleted: number }> =>
     req(`/api/projects/${id}`, { method: "DELETE" }),
+  // Re-run analyze on a project that errored, reusing the media already on disk — so a
+  // dropped model download or a throttled fetch doesn't cost you the upload.
+  retryProject: (id: number): Promise<{ ok: boolean; id: number }> =>
+    req(`/api/projects/${id}/retry`, { method: "POST" }),
   patchProject: (id: number, body: { name?: string; folder?: string | null }): Promise<Project> =>
     req(`/api/projects/${id}`, jsonInit("PATCH", body)),
   // --- Home folders ---

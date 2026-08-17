@@ -28,8 +28,18 @@ WHISPER_MODEL = _WHISPER_MODEL_ENV or "large-v3"
 # at int8 takes many minutes for a one-minute clip on an ordinary laptop — a "fallback"
 # nobody would wait out. Pinning CVIDEO_WHISPER_MODEL explicitly still wins on both
 # devices, so anyone who chose large-v3 on purpose keeps it everywhere.
-WHISPER_MODEL_CPU = (os.getenv("CVIDEO_WHISPER_MODEL_CPU", "").strip()
-                     or _WHISPER_MODEL_ENV or "small")
+_WHISPER_MODEL_CPU_ENV = os.getenv("CVIDEO_WHISPER_MODEL_CPU", "").strip()
+WHISPER_MODEL_CPU = _WHISPER_MODEL_CPU_ENV or _WHISPER_MODEL_ENV or "small"
+# Did a human actually ask for these weights? Only then may Cvideo start a large
+# first-run download; a *default* never should. See WHISPER_MAX_AUTO_DOWNLOAD_MB.
+WHISPER_MODEL_PINNED = bool(_WHISPER_MODEL_ENV)
+WHISPER_MODEL_CPU_PINNED = bool(_WHISPER_MODEL_CPU_ENV or _WHISPER_MODEL_ENV)
+# Biggest first-run download Cvideo will start on its own, in MB. This app is local-first
+# and offline-friendly: the default GPU model (large-v3) is 3.1 GB, and fetching that
+# because a default said so is what left the first upload frozen on "Transcribing" for a
+# quarter of an hour and then failed on a dropped connection. An already-cached model is
+# used whatever its size, and CVIDEO_WHISPER_MODEL still forces any model you want.
+WHISPER_MAX_AUTO_DOWNLOAD_MB = int(os.getenv("CVIDEO_WHISPER_MAX_DOWNLOAD_MB", "700"))
 # auto = use the GPU only when CTranslate2 reports one, else go straight to CPU;
 # cuda  = always try the GPU first (still falls back to CPU if it fails);
 # cpu   = never touch the GPU. Every path ends on cpu/int8, so transcription always runs.
