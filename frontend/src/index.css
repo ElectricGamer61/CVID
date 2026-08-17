@@ -218,7 +218,7 @@ label.field { display: flex; flex-direction: column; gap: 6px; font-size: 12.5px
 .empty { text-align: center; padding: 60px 20px; color: var(--muted); }
 .empty .big { width: 64px; height: 64px; border-radius: 18px; background: var(--primary-soft); color: var(--primary); display: grid; place-items: center; margin: 0 auto 16px; }
 .empty-title { font-weight: 700; color: var(--text); font-size: 17px; margin-bottom: 4px; }
-.big-cta { padding: 11px 22px; font-size: 15px; }
+.big-cta { padding: 13px 26px; font-size: 15.5px; font-weight: 700; border-radius: var(--r); }
 .skeleton { background: linear-gradient(90deg, #eef0f4 25%, #e4e7ee 37%, #eef0f4 63%); background-size: 400% 100%; animation: shimmer 1.4s ease infinite; border-radius: var(--r); }
 @keyframes shimmer { 0% { background-position: 100% 0; } 100% { background-position: -100% 0; } }
 
@@ -330,15 +330,25 @@ input[type=range] { width: 100%; accent-color: var(--primary); }
 /* -------------------------------- Create ------------------------------- */
 .board-page { padding: 6px 4px 40px; }
 
-/* --- The hero: one script box, one button, and the "no script yet" questions --- */
-.create-hero { display: flex; flex-direction: column; gap: 12px; }
-.ch-head h3 { margin: 0 0 3px; font-size: 17px; font-weight: 800; }
-.ch-head .muted { font-size: 12.5px; }
-.create-hero textarea, .create-hero input[type="text"], .create-hero input:not([type]) { width: 100%; font-family: inherit; font-size: 13px; border: 1px solid var(--border-2); border-radius: var(--r-sm); padding: 9px 11px; background: var(--surface-2); }
+/* --- The hero: one script box, one button, and the "no script yet" questions ---
+   The old Create tab opened on a centred empty state — a big icon tile, a headline and one
+   obvious button — and that's the feel this keeps, with the script box living inside it. */
+.create-hero { display: flex; flex-direction: column; gap: 14px; max-width: 720px; margin: 14px auto 0; padding: 30px 30px 26px; border-radius: var(--r-lg); background: linear-gradient(150deg, var(--primary-soft), var(--surface) 62%); box-shadow: var(--shadow); }
+@media (max-width: 640px) { .create-hero { padding: 24px 18px 20px; } }
+.ch-head { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 4px; }
+.ch-icon { width: 64px; height: 64px; border-radius: 20px; background: var(--surface); color: var(--primary); display: grid; place-items: center; font-size: 28px; margin-bottom: 10px; box-shadow: var(--shadow-sm); }
+.ch-head h3 { margin: 0; font-size: 22px; font-weight: 800; letter-spacing: -0.01em; }
+.ch-head .muted { font-size: 13px; line-height: 1.5; max-width: 460px; }
+/* First run only: the three steps the old how-it-works strip spelled out, minus the lanes. */
+.ch-steps { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.ch-step { display: inline-flex; align-items: center; font-size: 12.5px; font-weight: 700; color: var(--text-2); background: var(--surface); border: 1px solid var(--border); border-radius: 999px; padding: 4px 12px 4px 4px; box-shadow: var(--shadow-sm); }
+.ch-step b { display: inline-grid; place-items: center; width: 20px; height: 20px; background: var(--primary); color: #fff; border-radius: 999px; font-size: 11px; margin-right: 7px; }
+.create-hero textarea, .create-hero input[type="text"], .create-hero input:not([type]) { width: 100%; font-family: inherit; font-size: 13px; border: 1px solid var(--border-2); border-radius: var(--r-sm); padding: 9px 11px; background: var(--surface); }
 .ch-script { resize: vertical; min-height: 150px; line-height: 1.5; }
 .ch-row { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; }
-.ch-actions { display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap; margin-top: 2px; }
-.ch-actions .link-btn { padding: 0; font-size: 13px; }
+.ch-actions { display: flex; flex-direction: column; align-items: center; gap: 10px; margin-top: 4px; }
+.ch-actions .big-cta { min-width: 220px; justify-content: center; }
+.ch-actions .link-btn { padding: 0; font-size: 13px; align-self: center; }
 .ch-helper { display: flex; flex-direction: column; gap: 10px; border-top: 1px solid var(--border); padding-top: 14px; margin-top: 2px; }
 .ch-helper-h { display: flex; flex-direction: column; gap: 3px; }
 .ch-helper-h .muted { font-size: 12.5px; line-height: 1.45; }
@@ -352,6 +362,8 @@ input[type=range] { width: 100%; accent-color: var(--primary); }
 .prompt-text { width: 100%; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; line-height: 1.5; background: var(--surface-2); border: 1px solid var(--border-2); border-radius: var(--r-sm); padding: 11px 13px; resize: vertical; }
 
 /* --- Videos in progress: a plain grid, no lanes to drag between --- */
+.cv-below { max-width: 720px; margin: 34px auto 0; }
+.board-page .ap-strip { max-width: 720px; margin-left: auto; margin-right: auto; }
 .vid-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 10px; }
 .tkt-next { font-size: 11px; color: var(--muted); margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 

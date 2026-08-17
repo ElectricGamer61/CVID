@@ -317,11 +317,10 @@ function CreatePage({ presets, onOpenTicket }: { presets: Presets | null; onOpen
 
   return (
     <div className="board-page">
-      <div className="page-head">
-        <h2>Create</h2>
-      </div>
-
-      <CreateHero presets={presets} onCreated={(tid) => { markRecent(tid); onOpenTicket(tid); }} />
+      {/* No "Create" h2 here: the topbar already says Create, and a lone left-aligned title
+          floating beside the centred hero just pulled the eye off the one thing to do. */}
+      <CreateHero presets={presets} firstRun={tickets != null && tickets.length === 0}
+        onCreated={(tid) => { markRecent(tid); onOpenTicket(tid); }} />
 
       {/* Autopilot control strip — the whole autonomous flow lives here, and only in advanced
           mode. The everyday page never mentions it. */}
@@ -341,10 +340,11 @@ function CreatePage({ presets, onOpenTicket }: { presets: Presets | null; onOpen
       )}
 
       {/* Everything you're already making, newest (and most recently opened) first. No lanes,
-          no stages to drag between — each card says what it still needs. */}
+          no stages to drag between — each card says what it still needs. They sit in the same
+          centred column as the hero above them, so the page reads as one thing. */}
       {tickets == null ? <div className="muted" style={{ marginTop: 24 }}>Loading…</div> : tickets.length === 0 ? null : (
-        <>
-          <div className="page-head" style={{ marginTop: 30, marginBottom: 12 }}>
+        <div className="cv-below">
+          <div className="page-head" style={{ marginBottom: 12 }}>
             <h3 style={{ margin: 0 }}>Your videos</h3><span className="muted">{tickets.length} in progress</span>
           </div>
           {mine.length === 0
@@ -358,7 +358,7 @@ function CreatePage({ presets, onOpenTicket }: { presets: Presets | null; onOpen
                 ))}
               </div>
             )}
-        </>
+        </div>
       )}
     </div>
   );
@@ -426,7 +426,7 @@ function VideoCard({ t, gate, advanced, recent, onOpen, onDelete }: {
  *         AI you use, and paste the script it writes back into the same box. CVideo never
  *         has to be the one holding an API key for this.
  */
-function CreateHero({ presets, onCreated }: { presets: Presets | null; onCreated: (tid: number) => void }) {
+function CreateHero({ presets, firstRun, onCreated }: { presets: Presets | null; firstRun?: boolean; onCreated: (tid: number) => void }) {
   const advanced = useAdvanced();
   const [brand, setBrand] = useState(ACTIVE_BRAND);
   const [angle, setAngle] = useState("");
@@ -468,8 +468,16 @@ function CreateHero({ presets, onCreated }: { presets: Presets | null; onCreated
   return (
     <div className="card create-hero">
       <div className="ch-head">
-        <h3>Make a video</h3>
+        <div className="ch-icon" aria-hidden>🎬</div>
+        <h3>{firstRun ? "Make your first video" : "Make a video"}</h3>
         <span className="muted">Paste your script and it becomes scenes. Then add clips, style it in the editor, and export.</span>
+        {firstRun && (
+          <div className="ch-steps">
+            <span className="ch-step"><b>1</b> Paste the script</span><span className="how-arrow">→</span>
+            <span className="ch-step"><b>2</b> Add your clips</span><span className="how-arrow">→</span>
+            <span className="ch-step"><b>3</b> Style &amp; export</span>
+          </div>
+        )}
       </div>
 
       <label className="field"><span className="field-lab">Your script</span>
@@ -500,13 +508,15 @@ function CreateHero({ presets, onCreated }: { presets: Presets | null; onCreated
         </label>
       )}
 
+      {/* The one obvious button on the page, centred under the box the way the old Create
+          tab's empty state did it — the "no script" way in stays a quiet line below it. */}
       <div className="ch-actions">
-        <button className="link-btn" onClick={() => setHelper((v) => !v)}>
-          {helper ? "Hide the questions" : "I don't have a script yet"}
-        </button>
         <button className="primary big-cta" onClick={start} disabled={busy || !script.trim()}
           title={!script.trim() ? "Paste your script first" : "Split it into scenes"}>
-          {busy ? "Making scenes…" : "Make my scenes →"}
+          {busy ? "Making scenes…" : "🎬 Create Video"}
+        </button>
+        <button className="link-btn" onClick={() => setHelper((v) => !v)}>
+          {helper ? "Hide the questions" : "I don't have a script yet"}
         </button>
       </div>
 

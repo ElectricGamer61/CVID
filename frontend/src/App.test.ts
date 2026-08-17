@@ -226,6 +226,15 @@ describe("the Create and Editor screens", () => {
     expect(src).not.toMatch(/function NewTicketModal\(/);
   });
 
+  it("leads with an icon and one obvious Create Video button", () => {
+    // What people missed after the board went away: the old empty state's big icon tile and
+    // a button that said what it makes. Both live in the hero now.
+    expect(src).toContain('className="ch-icon"');
+    expect(src).toContain("Create Video");
+    expect(src).toMatch(/className="primary big-cta"/);
+    expect(src).toContain("Make your first video");   // first-run headline, no videos yet
+  });
+
   it("has no saved-ideas list — the questions live in the hero instead", () => {
     expect(src).not.toMatch(/function Ideas\(/);
     expect(src).not.toContain("Saved ideas");
