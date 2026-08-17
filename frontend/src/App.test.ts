@@ -300,6 +300,27 @@ describe("the Create and Editor screens", () => {
     expect(src).toMatch(/if \(isNotFound\(e\)\) setGone\(true\)/);
     expect(src).toMatch(/clearLastEdit\(\);\s*\n\s*setRoute\(\{ name: "editorStart" \}\)/);
   });
+
+  // A failed analyze used to be a dead end: the Clipping card showed the error with only a
+  // 🗑, and the Editor toasted once and then looked like nothing had ever been uploaded.
+  // The media is still on disk, so there must always be a way forward from an error.
+  it("offers Retry on a project that failed", () => {
+    expect(src).toMatch(/onRetry\(p\)/);
+    expect(src).toContain("↻ Retry");
+    expect(src).toMatch(/api\.retryProject/);
+  });
+
+  it("holds a failed editor upload on screen instead of only toasting", () => {
+    expect(src).toMatch(/const prepFailed = prepping\?\.status === "error"/);
+    expect(src).toContain("Couldn't get “{pending.name}” ready");
+    expect(src).toContain("Pick another file");
+    // The old behaviour: clear the upload and rely on a toast the user may never see.
+    expect(src).not.toContain("Couldn't prepare that footage");
+  });
+
+  it("shows the error text on the card, not just an error badge", () => {
+    expect(src).toMatch(/\{p\.error && <div className="err">\{p\.error\}<\/div>\}/);
+  });
 });
 
 describe("editorRouteFor", () => {

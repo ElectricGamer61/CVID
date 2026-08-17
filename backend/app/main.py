@@ -301,6 +301,31 @@ async def create_project_upload(
     return {"id": pid}
 
 
+@app.post("/api/projects/{pid}/retry")
+def retry_project(pid: int):
+    """Run the analyze pipeline again on a project that errored.
+
+    The failures worth retrying are transient and external — a dropped model download, a
+    throttled YouTube fetch — and until now the only way through one was to delete the
+    project and re-upload the clip. The media is already in the project dir, so a retry
+    resumes from there (a half-downloaded model resumes too) instead of starting over."""
+    from sqlmodel import select
+    with get_session() as s:
+        p = s.get(Project, pid)
+        if not p:
+            raise HTTPException(404, "project not found")
+        if p.status not in ("error", "ready"):
+            raise HTTPException(409, f"project is still {p.status}")
+        # Clips are re-created by the run; leaving the old ones would duplicate them.
+        for c in s.exec(select(Clip).where(Clip.project_id == pid)).all():
+            s.delete(c)
+        p.status, p.stage, p.progress, p.error = "created", "Retrying", 0, None
+        s.add(p)
+        s.commit()
+    submit_analyze(pid)
+    return {"ok": True, "id": pid}
+
+
 @app.get("/api/projects")
 def list_projects():
     with get_session() as s:

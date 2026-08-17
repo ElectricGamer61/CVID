@@ -6,8 +6,11 @@ back onto the Project row so the UI can poll it.
 from __future__ import annotations
 
 import json
+import os
+import queue
 import subprocess
 import sys
+import threading
 import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor
@@ -28,6 +31,20 @@ _executor = ThreadPoolExecutor(max_workers=1)
 # blaming CUDA for every non-zero exit is what sent a missing pip package to the user as
 # "likely a GPU fault".
 _NATIVE_EXIT_FLOOR = 0xC0000000
+
+# How long the worker may say nothing at all before we call it wedged. It narrates both of
+# its slow phases now — megabytes while the model downloads, segments while it transcribes
+# — so real silence means a hung native call or a socket that will never time out, not
+# honest work. Generous by default (one CPU segment on a big model is minutes), and
+# tunable for anyone running a huge model on a slow machine.
+STALL_SECONDS = float(os.getenv("CVIDEO_TRANSCRIBE_STALL_SEC", "900"))
+
+
+def stall_message(seconds: float) -> str:
+    return (f"transcription stopped responding - no progress for {int(seconds / 60)} "
+            f"minutes, so it was cancelled rather than left running forever. Press Retry; "
+            f"if it keeps happening, set CVIDEO_WHISPER_DEVICE=cpu in backend/.env. "
+            f"See data/backend.log for the last output.")
 
 
 def worker_failure_message(code: int, reason: str, tail: list[str]) -> str:
@@ -50,7 +67,11 @@ def transcribe_subprocess(audio: Path, out_json: Path, backend: str,
     Streams the worker's "PROGRESS <pct> <msg>" lines to `progress` and reads the
     result JSON back. A failure surfaces here as a non-zero exit code, which the caller
     turns into a job-level error instead of a dead backend — carrying the worker's own
-    "ERROR <reason>" line through when it managed to print one."""
+    "ERROR <reason>" line through when it managed to print one.
+
+    Reads through a queue rather than `for line in proc.stdout` so a worker that stops
+    talking altogether is *noticed*. Blocking straight on the pipe has no upper bound: the
+    job sat on "Transcribing" forever and the only way out was killing the backend."""
     cmd = [sys.executable, "-m", "app.pipeline.transcribe_worker",
            str(audio), str(out_json), backend]
     proc = subprocess.Popen(
@@ -58,10 +79,30 @@ def transcribe_subprocess(audio: Path, out_json: Path, backend: str,
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
     )
     assert proc.stdout is not None
+    lines: queue.Queue = queue.Queue()
+
+    def _pump(stream):
+        try:
+            for raw in stream:
+                lines.put(raw)
+        finally:
+            lines.put(None)
+
+    threading.Thread(target=_pump, args=(proc.stdout,), daemon=True).start()
+
     reason = ""
     tail: list[str] = []
-    for line in proc.stdout:
-        line = line.rstrip()
+    stalled = False
+    while True:
+        try:
+            raw = lines.get(timeout=STALL_SECONDS)
+        except queue.Empty:
+            stalled = True
+            proc.kill()
+            break
+        if raw is None:
+            break
+        line = raw.rstrip()
         if line.startswith("PROGRESS "):
             try:
                 _, pct, msg = line.split(" ", 2)
@@ -76,6 +117,8 @@ def transcribe_subprocess(audio: Path, out_json: Path, backend: str,
                 tail = (tail + [line])[-5:]
             print(f"[transcribe_worker] {line}")
     code = proc.wait()
+    if stalled:
+        raise RuntimeError(stall_message(STALL_SECONDS))
     if code != 0:
         raise RuntimeError(worker_failure_message(code, reason, tail))
     result = json.loads(out_json.read_text(encoding="utf-8"))
@@ -118,9 +161,13 @@ def _analyze(project_id: int, upload_path: str | None):
             _set(project_id, status="ingesting", stage="Downloading audio", progress=5)
             _, duration = ingest.download_audio(source_url, audio)
             _set(project_id, duration=duration)
-        else:
+        elif upload_path or not audio.exists():
             _set(project_id, status="ingesting", stage="Reading upload", progress=5)
-            ingest.save_upload(Path(upload_path), source)
+            if upload_path:
+                ingest.save_upload(Path(upload_path), source)
+            elif not source.exists():
+                raise RuntimeError(
+                    "the uploaded file is no longer on disk - upload the clip again.")
             _set(project_id, stage="Extracting audio", progress=15)
             ingest.extract_audio(source, audio)
             _set(project_id, duration=ingest.probe_duration(source))

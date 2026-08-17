@@ -75,6 +75,20 @@ The app runs fine on Linux for verification, but nothing in-repo sets that up:
   forever, so the button looked dead. Use `isNotFound` from `api.ts` (404 → forget it and fall
   back to the section's own empty screen); a network failure must keep waiting, because the
   offline banner already explains that one and bailing out would lose the user's place.
+- **A first-run download is a UX problem, not a detail.** faster-whisper fetches its weights
+  inside `WhisperModel()`, so the first upload on a fresh install spent minutes in a constructor
+  that emitted nothing — the project row froze on "Transcribing" 20%, the frontend polled it
+  forever, and when the connection dropped at 2.68 of 3.09 GB the reason arrived as a raw
+  `WinError 10054` blob. Three rules came out of it, and they generalise past Whisper. (1) Any
+  step that can take minutes must **narrate itself** before it starts, not after; the parent's
+  stall timeout is only meaningful once silence is unambiguous. (2) A *default* must never
+  commit the user to a multi-GB download — cap it (`WHISPER_MAX_AUTO_DOWNLOAD_MB`), use what's
+  already cached at any size, and make the big model an explicit opt-in. (3) Probe the
+  **runtime**, not the device: `get_cuda_device_count()` returns 1 on a bare-bones install with
+  no cuBLAS, and "just try it and see" cost a 3.1 GB download to learn that. Every failure a
+  user can hit needs a visible way forward — here `POST /api/projects/{pid}/retry` plus a ↻ Retry
+  on the card, because the media is still on disk and deleting the project to re-upload was the
+  only previous escape.
 - **Exercise the flow, don't trust the API.** Several problems here were only visible in the browser
   — a 500 whose toast had already faded, a raw C++ assertion rendered into the editor, a button
   whose only possible outcome was a 400. Drive the real UI when changing the creation path.

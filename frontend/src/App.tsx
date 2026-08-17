@@ -1075,14 +1075,12 @@ function EditorStart({ presets, onOpenClip, onGoCreate }: {
 
   // The footage we just dropped: watch it until it's editable, then open it.
   const prepping = pending ? (projects ?? []).find((p) => p.id === pending.pid) ?? null : null;
+  // It died on the way in (bad file, no ffmpeg, no model download, …). Hold it on screen
+  // with the reason and a Retry: a toast fades, and the drop zone underneath it looked
+  // exactly like nothing had ever been uploaded.
+  const prepFailed = prepping?.status === "error";
   useEffect(() => {
     if (!pending || !prepping) return;
-    // It died on the way in (bad file, no ffmpeg, …) — say so instead of spinning forever.
-    if (prepping.status === "error") {
-      setPending(null);
-      toast(`Couldn't prepare that footage${prepping.error ? `: ${prepping.error}` : ""}`, "err");
-      return;
-    }
     if (prepping.status !== "ready") return;
     let alive = true;
     api.getProject(pending.pid).then((d) => {
@@ -1116,6 +1114,12 @@ function EditorStart({ presets, onOpenClip, onGoCreate }: {
     } catch (e: any) { toast(`Upload failed: ${e?.message || e}`, "err"); } finally { setUploading(false); }
   };
 
+  const retryPending = async () => {
+    if (!pending) return;
+    try { await api.retryProject(pending.pid); toast("Retrying…", "ok"); refresh(); }
+    catch (e: any) { toast(`Retry failed: ${e?.message || e}`, "err"); }
+  };
+
   const open = async (p: Project) => {
     try {
       const d = await api.getProject(p.id);
@@ -1140,7 +1144,17 @@ function EditorStart({ presets, onOpenClip, onGoCreate }: {
           onDragLeave={() => setDragOver(false)}
           onDrop={(e) => { e.preventDefault(); setDragOver(false); take(Array.from(e.dataTransfer.files)); }}
         >
-          {pending ? (
+          {pending && prepFailed ? (
+            <div className="es-prep" onClick={(e) => e.stopPropagation()}>
+              <div className="es-icon">⚠️</div>
+              <div className="es-title">Couldn't get “{pending.name}” ready</div>
+              {prepping?.error && <div className="err" style={{ maxWidth: 420, marginTop: 8 }}>{prepping.error}</div>}
+              <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+                <button className="primary" onClick={() => retryPending()}>↻ Retry</button>
+                <button onClick={() => { setPending(null); fileInput.current?.click(); }}>Pick another file</button>
+              </div>
+            </div>
+          ) : pending ? (
             <div className="es-prep">
               <div className="es-icon">⏳</div>
               <div className="es-title">Getting “{pending.name}” ready…</div>
@@ -1804,6 +1818,10 @@ function Home({ presets, onOpen }: { presets: Presets | null; onOpen: (id: numbe
     try { await api.deleteProject(p.id); toast("Project deleted", "ok"); refresh(); }
     catch (e: any) { toast(`Delete failed: ${e?.message || e}`, "err"); }
   };
+  const retry = async (p: Project) => {
+    try { await api.retryProject(p.id); toast("Retrying…", "ok"); refresh(); }
+    catch (e: any) { toast(`Retry failed: ${e?.message || e}`, "err"); }
+  };
   const move = async (pid: number, folder: string) => {
     try { await api.patchProject(pid, { folder }); refresh(); }
     catch (e: any) { toast(`Move failed: ${e?.message || e}`, "err"); }
@@ -1866,11 +1884,11 @@ function Home({ presets, onOpen }: { presets: Presets | null; onOpen: (id: numbe
         </div>
       ) : (
         <div className="proj-grid" onDragOver={(e) => e.preventDefault()} onDrop={gridDrop}>
-          {loose.map((p) => <ProjectCard key={p.id} p={p} onOpen={onOpen} onDelete={del} onRename={rename} />)}
+          {loose.map((p) => <ProjectCard key={p.id} p={p} onOpen={onOpen} onDelete={del} onRename={rename} onRetry={retry} />)}
           {folderNames.map((name) => (
             <FolderCard key={name} name={name} fid={idByName.get(name)} members={buckets.get(name)!}
               expanded={expanded.has(name)} onToggle={() => toggle(name)} onOpen={onOpen} onDeleteProject={del}
-              onRenameProject={rename} onDropProject={(pid) => move(pid, name)}
+              onRenameProject={rename} onRetryProject={retry} onDropProject={(pid) => move(pid, name)}
               onRenameFolder={renameFolder} onDeleteFolder={deleteFolder} />
           ))}
           <NewFolderTile onCreate={() => newFolder()} onDropProject={(pid) => newFolder(pid)} />
@@ -1880,9 +1898,10 @@ function Home({ presets, onOpen }: { presets: Presets | null; onOpen: (id: numbe
   );
 }
 
-function FolderCard({ name, fid, members, expanded, onToggle, onOpen, onDeleteProject, onRenameProject, onDropProject, onRenameFolder, onDeleteFolder }: {
+function FolderCard({ name, fid, members, expanded, onToggle, onOpen, onDeleteProject, onRenameProject, onRetryProject, onDropProject, onRenameFolder, onDeleteFolder }: {
   name: string; fid?: number; members: Project[]; expanded: boolean; onToggle: () => void;
   onOpen: (id: number) => void; onDeleteProject: (p: Project) => void; onRenameProject: (p: Project, n: string) => void;
+  onRetryProject: (p: Project) => void;
   onDropProject: (pid: number) => void; onRenameFolder: (f: Folder) => void; onDeleteFolder: (f: Folder) => void;
 }) {
   const [over, setOver] = useState(false);
@@ -1932,7 +1951,7 @@ function FolderCard({ name, fid, members, expanded, onToggle, onOpen, onDeletePr
       </div>
       {members.length === 0
         ? <div className="cv-lane-empty">Empty — drag a project here to add it.</div>
-        : <div className="proj-grid">{members.map((p) => <ProjectCard key={p.id} p={p} onOpen={onOpen} onDelete={onDeleteProject} onRename={onRenameProject} />)}</div>}
+        : <div className="proj-grid">{members.map((p) => <ProjectCard key={p.id} p={p} onOpen={onOpen} onDelete={onDeleteProject} onRename={onRenameProject} onRetry={onRetryProject} />)}</div>}
     </div>
   );
 }
@@ -1949,11 +1968,12 @@ function NewFolderTile({ onCreate, onDropProject }: { onCreate: () => void; onDr
   );
 }
 
-function ProjectCard({ p, onOpen, onDelete, onRename }: { p: Project; onOpen: (id: number) => void; onDelete: (p: Project) => void; onRename?: (p: Project, name: string) => void }) {
+function ProjectCard({ p, onOpen, onDelete, onRename, onRetry }: { p: Project; onOpen: (id: number) => void; onDelete: (p: Project) => void; onRename?: (p: Project, name: string) => void; onRetry?: (p: Project) => void }) {
   const [imgOk, setImgOk] = useState(true);
   const [editing, setEditing] = useState(false);
   const [nm, setNm] = useState(p.name);
   const ready = p.status === "ready";
+  const failed = p.status === "error";
   const finishRename = () => { setEditing(false); const v = nm.trim(); if (v && v !== p.name) onRename?.(p, v); };
   return (
     <div className="proj-card" draggable={!editing}
@@ -1972,14 +1992,15 @@ function ProjectCard({ p, onOpen, onDelete, onRename }: { p: Project; onOpen: (i
           <div className="name" title="Double-click to rename" onDoubleClick={(e) => { e.stopPropagation(); setNm(p.name); setEditing(true); }}>{p.name}</div>
         )}
         <div className="proj-tags"><span className="tag">{p.brain}</span><span className="tag">{p.aspect}</span><span className="tag">{p.caption_preset}</span></div>
-        {!ready && p.status !== "error" && (
+        {!ready && !failed && (
           <div><div className="muted" style={{ marginBottom: 5, fontSize: 12.5 }}>{p.stage || p.status}…</div>
             <div className="progress"><div style={{ width: `${p.progress}%` }} /></div></div>
         )}
         <div className="proj-foot">
-          {ready ? <span className="badge ready">✓ ready</span> : p.status === "error" ? <span className="badge error">error</span> : <span className="badge busy">working</span>}
-          <div className="proj-actions" onClick={(e) => e.stopPropagation()}>
+          {ready ? <span className="badge ready">✓ ready</span> : failed ? <span className="badge error">error</span> : <span className="badge busy">working</span>}
+          <div className={"proj-actions" + (failed ? " always" : "")} onClick={(e) => e.stopPropagation()}>
             {ready && <button className="sm" onClick={() => onOpen(p.id)}>Open</button>}
+            {failed && onRetry && <button className="sm" title="Run it again — your upload is still here" onClick={() => onRetry(p)}>↻ Retry</button>}
             {onRename && <button className="sm" title="Rename" onClick={() => { setNm(p.name); setEditing(true); }}>✏️</button>}
             <button className="sm danger" title="Delete" onClick={() => onDelete(p)}>🗑</button>
           </div>
