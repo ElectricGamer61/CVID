@@ -63,8 +63,10 @@ Claude Code — **NOT Lovable/Supabase** (see `SPEC.md`'s stack-override header)
 
 ## 2. Machine / environment (verified)
 
-- **GPU:** RTX 5070 (Blackwell, `sm_120`, 12 GB). Transcription runs **on GPU** via
-  faster-whisper / CTranslate2 (no PyTorch). **Do NOT add PyTorch/mediapipe.**
+- **GPU:** RTX 5070 (Blackwell, `sm_120`, 12 GB). Transcription uses faster-whisper /
+  CTranslate2 (no PyTorch) — GPU when there is one, **CPU otherwise, always**. This is a
+  dev box, not the target: an ordinary laptop with no GPU and no API keys is a supported
+  install and must transcribe fine. **Do NOT add PyTorch/mediapipe.**
 - **Python:** 3.11 venv at `backend/.venv` (system `py` is 3.13, too new for the ML stack).
 - **Tools:** ffmpeg 8.x, Ollama (qwen2.5:7b), Node 24, yt-dlp (keep updated: `pip install -U yt-dlp`).
 - **CUDA DLL gotcha:** `transcribe.py::_register_cuda_dlls()` adds the pip `nvidia/*/bin` dirs via
@@ -83,11 +85,23 @@ via `render_scene_reel` (voice-first) or `assemble_ticket`.
   `save_upload`. **Two audio extractors:** `extract_audio()` = 16 kHz mono (for Whisper);
   **`extract_voiceover()` = 48 kHz stereo** (for recorded voice that ends up in the export — do NOT
   run voiceovers through the 16 kHz Whisper path or they sound bad).
-- **transcribe.py** — `local` faster-whisper (GPU→CPU fallback) / `elevenlabs` Scribe. Output → `words.json`.
-  **Runs in a subprocess** via `transcribe_worker.py` (`jobs._transcribe_subprocess` spawns
+- **transcribe.py** — `local` faster-whisper / `elevenlabs` Scribe. Output → `words.json`.
+  **Local always works with no key and no GPU**, and every route ends on CPU:
+  `cuda_available()` (a cheap CTranslate2 probe) decides whether `auto` even tries the GPU,
+  so a laptop never downloads the 3 GB `large-v3` just to find out it has no CUDA; a GPU that
+  *is* present but faults still falls through to `cpu`/`int8`; and CPU uses its own smaller
+  default model (`settings.WHISPER_MODEL_CPU`, `small`) because large-v3 on a laptop CPU is
+  minutes per clip. `elevenlabs` with no key falls back to local, and `settings.DEFAULT_TRANSCRIBE`
+  demotes a keyless `elevenlabs` default to `local` so the UI names the backend that will run.
+  When *nothing* can run it raises **`TranscriptionUnavailable`** — a config problem, not a device
+  one, so it is never retried per-device and never reported as a GPU fault.
+  **Runs in a subprocess** via `transcribe_worker.py` (`jobs.transcribe_subprocess` spawns
   `python -m app.pipeline.transcribe_worker`): a native cuBLAS/cuDNN crash on the Blackwell GPU kills
   only the child (non-zero exit → project marked errored), never the API. Progress streams back as
-  `PROGRESS <pct> <msg>` stdout lines. Trade-off: the whisper model reloads per analyze (no in-process cache).
+  `PROGRESS <pct> <msg>` stdout lines and the failure reason as one `ERROR <reason>` line, which
+  `jobs.worker_failure_message()` puts in front of the user verbatim — only a *native* exit code
+  (signal, or ≥ `0xC0000000` on Windows) is ever attributed to the GPU.
+  Trade-off: the whisper model reloads per analyze (no in-process cache).
 - **brain.py** — viral-moment picker: `claude`/`ollama`/`gemini`/`heuristic`. Virality-framework prompt,
   chunking + cross-chunk de-dupe, sentence-boundary snapping. Fields must be in `_CLIPS_SCHEMA` required.
 - **reframe.py** — 9:16 crop center via OpenCV **YuNet DNN** (+ Haar fallback). `crop_filter()` builds
@@ -515,6 +529,10 @@ section label even though `SECTION_LABELS` names it for the sidebar.
   fallbacks. Standalone (no pytest, no ffmpeg, no test asset).
 - `cd backend && .\.venv\Scripts\python.exe test_look.py` — Look presets, "no look/title = no
   change at all", filter-chain safety (linear only), and title fit/escaping. Also standalone.
+- `cd backend && .\.venv\Scripts\python.exe test_transcribe.py` — transcription fallback and
+  failure reporting: no-GPU and broken-GPU both land on CPU, a missing engine / missing key is
+  reported as itself rather than as a GPU fault, and no secret is tracked in the repo. Also
+  standalone (it shims `faster_whisper` away, so it needs neither the package nor a model).
 - `cd backend && .\.venv\Scripts\python.exe -c "import app.main; print('OK')"` (imports + would migrate).
 - Schema check: `PRAGMA table_info(clip)` should include cuts_json/markers_json/voiceover_path/scene_vo_json.
 - Reel smoothness: probe an exported reel's `v:0` `pts_time` deltas — uniform ~0.0333 s, no >50 ms gaps.

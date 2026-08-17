@@ -14,9 +14,10 @@ the original spec, `docs/` holds the session timeline. Read `CONTEXT.md` before 
   `src/App.test.ts` — no DOM, no server). There is no jsdom/testing-library here: to pin something
   about a *screen*, either extract the rule into a pure module (`scriptPrompt.ts`, `looks.ts`) or
   assert against `import appSource from "./App.tsx?raw"`, which is how the copy guards work.
-- Backend: `cd backend && <venv python> test_reframe.py` and `test_look.py` (Cinematic Look /
-  big title). The other `backend/test_*.py` and `verify_*.py` scripts need a **running server**
-  and real media; these two do not.
+- Backend: `cd backend && <venv python> test_reframe.py`, `test_look.py` (Cinematic Look /
+  big title) and `test_transcribe.py` (transcription fallback + failure reporting + secret
+  hygiene). The other `backend/test_*.py` and `verify_*.py` scripts need a **running server**
+  and real media; these three do not.
 
 ## Running it on WSL/Linux (the docs assume Windows)
 
@@ -58,6 +59,16 @@ The app runs fine on Linux for verification, but nothing in-repo sets that up:
   stdout; `serve.ps1`, `open-cvideo.ps1` and `start.ps1` all use that form. Test any launcher
   change by actually double-clicking the `.cmd` (`cmd.exe /c serve.cmd`) and then checking both
   `/api/health` and that `backend.log` holds plain `INFO:` lines.
+- **The laptop build is a real target, and an exit code is not a diagnosis.** Every upload on the
+  Windows install failed with "exit 1 — likely a GPU/CUDA fault" on a machine with no GPU in
+  play at all: the bare-bones install shipped no faster-whisper, the ElevenLabs key was blank,
+  and `jobs.transcribe_subprocess` discarded the child's traceback and guessed CUDA for *any*
+  non-zero exit. Two rules came out of it. (1) A subprocess must report its own reason
+  (`ERROR <reason>` on stdout) and the parent must relay it — guessing from an exit code sends
+  people to debug hardware they never used. (2) The default install has **no API keys and no
+  GPU**; a feature whose only path needs either is broken by default, so keep a keyless CPU
+  path and gate the key on the feature that truly needs it (voiceover), not the one that
+  doesn't (transcription). See `CONTEXT.md` §3 transcribe.py and `backend/test_transcribe.py`.
 - **Exercise the flow, don't trust the API.** Several problems here were only visible in the browser
   — a 500 whose toast had already faded, a raw C++ assertion rendered into the editor, a button
   whose only possible outcome was a 400. Drive the real UI when changing the creation path.

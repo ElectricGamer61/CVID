@@ -176,7 +176,9 @@ def _transcript_for(video: Path) -> str:
         try:
             result = transcribe_subprocess(wav, video.with_suffix(".words.json"), backend)
         except Exception as e:  # noqa: BLE001 — transcription trouble ≠ dead clip; place it by hand
-            print(f"[shootdrop] {video.name}: transcription failed ({type(e).__name__}); treating as silent")
+            # Print the reason, not just the type: this path swallows the failure, so the
+            # log line is the only place a missing engine / bad key can ever show up.
+            print(f"[shootdrop] {video.name}: transcription failed ({e}); treating as silent")
             return ""
         return (result.get("text") or "").strip()
     finally:

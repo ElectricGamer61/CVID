@@ -22,9 +22,18 @@ DB_PATH = DATA_DIR / "cvideo.db"
 PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
 
 # --- Models / engines --------------------------------------------------------
-WHISPER_MODEL = os.getenv("CVIDEO_WHISPER_MODEL", "large-v3")
-# Allowed: cuda (float16) -> falls back to cpu (int8) automatically if cuda fails.
-WHISPER_DEVICE = os.getenv("CVIDEO_WHISPER_DEVICE", "auto")
+_WHISPER_MODEL_ENV = os.getenv("CVIDEO_WHISPER_MODEL", "").strip()
+WHISPER_MODEL = _WHISPER_MODEL_ENV or "large-v3"
+# The CPU fallback needs its OWN default. A CPU has no float16 tensor cores, so large-v3
+# at int8 takes many minutes for a one-minute clip on an ordinary laptop — a "fallback"
+# nobody would wait out. Pinning CVIDEO_WHISPER_MODEL explicitly still wins on both
+# devices, so anyone who chose large-v3 on purpose keeps it everywhere.
+WHISPER_MODEL_CPU = (os.getenv("CVIDEO_WHISPER_MODEL_CPU", "").strip()
+                     or _WHISPER_MODEL_ENV or "small")
+# auto = use the GPU only when CTranslate2 reports one, else go straight to CPU;
+# cuda  = always try the GPU first (still falls back to CPU if it fails);
+# cpu   = never touch the GPU. Every path ends on cpu/int8, so transcription always runs.
+WHISPER_DEVICE = os.getenv("CVIDEO_WHISPER_DEVICE", "auto").strip().lower()
 
 OLLAMA_MODEL = os.getenv("CVIDEO_OLLAMA_MODEL", "qwen3.5:9b")
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434")
@@ -65,7 +74,13 @@ ELEVENLABS_MODEL = os.getenv("CVIDEO_ELEVENLABS_MODEL", "scribe_v1")
 # Text-to-speech (read a transcript into a voiceover). Default voice = "Rachel" (public).
 ELEVENLABS_VOICE_ID = os.getenv("CVIDEO_ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")
 ELEVENLABS_TTS_MODEL = os.getenv("CVIDEO_ELEVENLABS_TTS_MODEL", "eleven_turbo_v2_5")
-DEFAULT_TRANSCRIBE = os.getenv("CVIDEO_DEFAULT_TRANSCRIBE", "local")
+_DEFAULT_TRANSCRIBE = os.getenv("CVIDEO_DEFAULT_TRANSCRIBE", "local").strip().lower()
+# Asking for ElevenLabs without a key is not a choice, it's a dead end: the .env template
+# ships `elevenlabs` and the installer lets you skip the key, which left the default
+# pointing at a backend that can never run. Demote to local so /api/presets — and the
+# picker the UI seeds from it — name the backend that will actually be used.
+DEFAULT_TRANSCRIBE = ("local" if _DEFAULT_TRANSCRIBE == "elevenlabs" and not ELEVENLABS_API_KEY
+                      else _DEFAULT_TRANSCRIBE)
 
 # --- Shoot Drop (batch raw-footage intake) ------------------------------------
 # Watched folder: copy raw phone clips here and the backend auto-ingests them

@@ -45,29 +45,54 @@ import settings  # noqa: E402
 _model_cache: dict = {}
 
 
-def _get_model(device: str, compute: str):
+class TranscriptionUnavailable(RuntimeError):
+    """No transcription engine can run *at all* — nothing is installed and no key is set.
+
+    Deliberately distinct from a device failure: retrying on another device, or blaming
+    the GPU, is wrong and only hides the one thing the user has to fix.
+    """
+
+
+NO_ENGINE_MSG = (
+    "no transcription engine is available. Re-run the installer "
+    "(scripts\\setup-laptop.ps1, or `pip install -r requirements-bare.txt` in the venv) "
+    "to add faster-whisper for offline transcription, or put an ELEVENLABS_API_KEY in "
+    "backend/.env to transcribe in the cloud.")
+
+
+def _get_model(name: str, device: str, compute: str):
     try:
         from faster_whisper import WhisperModel
     except ModuleNotFoundError:
-        # Bare-bones build (requirements-bare.txt) ships no local Whisper — transcription
-        # is ElevenLabs-only. Give a clear reason instead of a raw import error.
-        raise RuntimeError(
-            "local transcription isn't installed (bare-bones build). Set "
-            "CVIDEO_DEFAULT_TRANSCRIBE=elevenlabs and add your ELEVENLABS_API_KEY, or "
-            "install faster-whisper (requirements-lean.txt) for offline transcription.")
+        # faster-whisper missing is a *config* problem, not a device one — say so with a
+        # dedicated type so the caller doesn't loop over devices pretending it might help.
+        raise TranscriptionUnavailable(NO_ENGINE_MSG) from None
 
-    key = (settings.WHISPER_MODEL, device, compute)
+    key = (name, device, compute)
     if key not in _model_cache:
-        _model_cache[key] = WhisperModel(
-            settings.WHISPER_MODEL, device=device, compute_type=compute
-        )
+        _model_cache[key] = WhisperModel(name, device=device, compute_type=compute)
     return _model_cache[key]
 
 
-def _run(device: str, compute: str, audio_path: Path,
+def cuda_available() -> bool:
+    """Is there a GPU CTranslate2 can actually use? Cheap — no model touched.
+
+    Worth asking before the attempt list is built: `auto` used to *discover* the answer by
+    trying, which on a GPU-less laptop means downloading the 3 GB large-v3 model, failing,
+    and then downloading the CPU model too. An explicit CVIDEO_WHISPER_DEVICE=cuda still
+    tries regardless, so this can never veto a deliberate choice."""
+    try:
+        import ctranslate2
+        return ctranslate2.get_cuda_device_count() > 0
+    except Exception as e:  # noqa: BLE001 - no ctranslate2, no driver, old API: all mean "no"
+        print(f"[transcribe] no usable CUDA device ({e}); going straight to CPU")
+        return False
+
+
+def _run(device: str, model_name: str, compute: str, audio_path: Path,
          progress: Callable[[int, str], None] | None):
     """Build model + fully consume transcription on one device. Raises on failure."""
-    model = _get_model(device, compute)
+    model = _get_model(model_name, device, compute)
     if progress:
         progress(0, f"Transcribing on {device}")
     segments, info = model.transcribe(
@@ -94,18 +119,24 @@ def _run(device: str, compute: str, audio_path: Path,
 
 def _transcribe_local(audio_path: Path, progress: Callable[[int, str], None] | None = None):
     attempts = []
-    if settings.WHISPER_DEVICE in ("auto", "cuda"):
-        attempts.append(("cuda", "float16"))
-    attempts.append(("cpu", "int8"))
+    if settings.WHISPER_DEVICE == "cuda" or (
+            settings.WHISPER_DEVICE == "auto" and cuda_available()):
+        attempts.append(("cuda", settings.WHISPER_MODEL, "float16"))
+    # CPU is always last and always present, so a broken/absent CUDA runtime still ends
+    # in a working transcription rather than a failed job. CVIDEO_WHISPER_DEVICE=cpu
+    # skips the GPU attempt entirely.
+    attempts.append(("cpu", settings.WHISPER_MODEL_CPU, "int8"))
 
     last_err = None
-    for device, compute in attempts:
+    for device, model_name, compute in attempts:
         try:
-            return _run(device, compute, audio_path, progress)
+            return _run(device, model_name, compute, audio_path, progress)
+        except TranscriptionUnavailable:
+            raise  # nothing is installed — another device cannot help
         except Exception as e:  # noqa: BLE001 - fall through to CPU
             last_err = e
             print(f"[transcribe] {device}/{compute} failed: {e}")
-            _model_cache.pop((settings.WHISPER_MODEL, device, compute), None)
+            _model_cache.pop((model_name, device, compute), None)
             continue
     raise RuntimeError(f"Transcription failed on all devices: {last_err}")
 
@@ -115,7 +146,7 @@ def _transcribe_elevenlabs(audio_path: Path, progress: Callable[[int, str], None
     import requests
 
     if not settings.ELEVENLABS_API_KEY:
-        raise RuntimeError("ELEVENLABS_API_KEY not set")
+        raise TranscriptionUnavailable("ELEVENLABS_API_KEY not set")
     if progress:
         progress(0, "Transcribing on ElevenLabs")
     with open(audio_path, "rb") as f:
@@ -148,9 +179,19 @@ def _transcribe_elevenlabs(audio_path: Path, progress: Callable[[int, str], None
 def transcribe(audio_path: Path, backend: str = "local",
                progress: Callable[[int, str], None] | None = None):
     """Dispatch to the chosen transcription backend; ElevenLabs falls back to local."""
+    cloud_err = None
     if backend == "elevenlabs":
         try:
             return _transcribe_elevenlabs(audio_path, progress)
         except Exception as e:  # noqa: BLE001
+            cloud_err = e
             print(f"[transcribe] elevenlabs failed: {e}; falling back to local")
-    return _transcribe_local(audio_path, progress)
+    try:
+        return _transcribe_local(audio_path, progress)
+    except TranscriptionUnavailable as e:
+        # Both routes are out. Report both reasons — reporting only the local one sent
+        # people hunting for a GPU that was never in play.
+        if cloud_err is not None:
+            raise TranscriptionUnavailable(
+                f"{e} (ElevenLabs was tried first and failed: {cloud_err})") from e
+        raise
