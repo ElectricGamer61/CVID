@@ -444,7 +444,9 @@ input[type=range] { width: 100%; accent-color: var(--primary); }
 .primary.round { border-radius: 99px; width: 44px; height: 44px; justify-content: center; padding: 0; }
 
 .ed2-panel { border-left: 1px solid var(--border); background: var(--surface); overflow-y: auto; }
-.seg-toggle.wide { display: flex; width: 100%; } .seg-toggle.wide button { flex: 1; }
+/* Three tabs (Captions · Edit words · Big title) have to fit the 300px panel on one line —
+   wrapping made the toggle two rows tall and stranded the "has a title" dot. */
+.seg-toggle.wide { display: flex; width: 100%; } .seg-toggle.wide button { flex: 1; min-width: 0; padding: 6px 6px; font-size: 12.5px; white-space: nowrap; }
 .coming { align-items: center; text-align: center; padding-top: 40px; gap: 8px; }
 .coming-ic { font-size: 40px; }
 
@@ -751,3 +753,14 @@ button.primary.danger-solid:hover { background: #db3a48; border-color: #db3a48; 
 .inline-num input { width: 62px; padding: 5px 7px; border: 1px solid var(--border-2); border-radius: var(--r-sm); background: var(--surface-2); font: inherit; }
 .panel-body textarea { width: 100%; font-family: inherit; font-size: 13px; font-weight: 500; color: var(--text); border: 1px solid var(--border-2); border-radius: var(--r-sm); padding: 8px 10px; background: var(--surface-2); resize: vertical; }
 .chip.plain { text-transform: none; }
+
+/* Big title lives in the Subtitles panel. A dot on its tab says "this clip has one",
+   and the card in the Captions tab is the signpost for people who never open the tab. */
+.tab-dot { display: inline-block; width: 5px; height: 5px; border-radius: 50%; background: var(--primary); margin-left: 5px; vertical-align: 2px; }
+.title-jump { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; padding: 10px 12px;
+  border: 1px solid var(--border-2); border-radius: var(--r-sm); background: var(--surface-2); font-size: 12.5px; }
+.title-jump:hover { border-color: var(--primary); }
+.title-jump-ic { flex: none; display: grid; place-items: center; width: 26px; height: 26px; border-radius: 7px;
+  background: var(--surface-3); font-weight: 800; font-size: 12px; letter-spacing: -0.3px; }
+.title-jump > span:nth-child(2) { flex: 1; min-width: 0; }
+.title-jump-go { flex: none; color: var(--muted); font-size: 17px; line-height: 1; }

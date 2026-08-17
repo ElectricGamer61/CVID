@@ -1636,7 +1636,9 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
   const openedDoc = useRef(initDoc);
 
   const [tool, setTool] = useState<string>("subs");
-  const [subsTab, setSubsTab] = useState<"style" | "edit">("style");
+  // Captions/Subtitles owns every text-on-screen control, big cinematic title included —
+  // "where do I set the huge title?" is a captions question in everyone's head.
+  const [subsTab, setSubsTab] = useState<"style" | "edit" | "title">("style");
   // Multi-clip timeline: which block is selected + transient split marks (a no-gap
   // split that isn't stored in start/end/cuts — see applySplits).
   const [selClip, setSelClip] = useState<number | null>(null);
@@ -1970,7 +1972,8 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
   const activeTools = useMemo(() => {
     const on = new Set<string>();
     if (doc.look?.id && doc.look.id !== "none") on.add("look");
-    if (doc.bigTitle?.text.trim()) on.add("title");
+    // The big title lives inside Subtitles now, so its "you have one" dot belongs on that rail button.
+    if (doc.bigTitle?.text.trim()) on.add("subs");
     if (doc.cuts.length) on.add("cut");
     if ((effects.zoom?.length ?? 0) + (effects.sfx?.length ?? 0) > 0) on.add("fx");
     return on;
@@ -2060,18 +2063,31 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
             time={time} onSeek={seek} onCutsChange={(c) => set({ cuts: c })} />}
           {tool === "look" && <LookPanel look={doc.look} onChange={(l) => set({ look: l })}
             options={presets?.looks ?? FALLBACK_LOOKS} sampleUrl={api.frameUrl(pid, clipStart + 0.5)} />}
-          {tool === "title" && <BigTitlePanel title={doc.bigTitle} onChange={(t) => set({ bigTitle: t })}
-            playhead={editedTime} clipLength={effLen} />}
           {tool === "fx" && <AIEffectsPanel cid={clip.id}
             onApplied={(w, eff) => { setManualWords(true); set({ words: w }); setEffects(eff); onChange(); }} />}
           {tool === "subs" && (
             <div className="panel-body">
               <div className="seg-toggle wide">
-                <button className={subsTab === "style" ? "on" : ""} onClick={() => setSubsTab("style")}>Style</button>
+                <button className={subsTab === "style" ? "on" : ""} onClick={() => setSubsTab("style")}>Captions</button>
                 <button className={subsTab === "edit" ? "on" : ""} onClick={() => setSubsTab("edit")}>Edit words</button>
+                <button className={subsTab === "title" ? "on" : ""} onClick={() => setSubsTab("title")}>
+                  Big title{doc.bigTitle?.text.trim() ? <span className="tab-dot" title="This clip has a big title" /> : null}
+                </button>
               </div>
-              {subsTab === "style" ? (
+              {subsTab === "title" ? (
+                <BigTitlePanel title={doc.bigTitle} onChange={(t) => set({ bigTitle: t })}
+                  playhead={editedTime} clipLength={effLen} />
+              ) : subsTab === "style" ? (
                 <>
+                  {/* The one thing people hunt for and never find: say it right here, in captions. */}
+                  <button className="title-jump" onClick={() => setSubsTab("title")}>
+                    <span className="title-jump-ic">Aa</span>
+                    <span>
+                      <b>Cinematic title</b>
+                      <span className="muted"> — big text beside the person. {doc.bigTitle?.text.trim() ? "On for this clip." : "Off."}</span>
+                    </span>
+                    <span className="title-jump-go">›</span>
+                  </button>
                   <div className="preset-chips">{(presets?.captions ?? Object.keys(FALLBACK_PRESETS)).map((c) => (
                     <button key={c} className={"chip" + (doc.preset === c ? " on" : "")} onClick={() => choosePreset(c)}>{c}</button>))}</div>
                   <StyleEditor style={doc.style} onChange={(s) => set({ style: s })} />
@@ -2395,16 +2411,19 @@ function LookSwatch({ id, strength, sample }: { id: string; strength: number; sa
 
 /* Aa Big title — one huge cinematic line placed BESIDE the subject (a narrow column hugging
    an edge), above/below them, or across them. Layout, not person-cutout: it can never fail
-   the way matting can, and it looks the same in the preview and the export. */
+   the way matting can, and it looks the same in the preview and the export.
+   It renders as a TAB inside the Subtitles/Captions panel (not its own rail tool), so it
+   returns bare fields — the captions panel already provides the .panel-body wrapper. */
 function BigTitlePanel({ title, onChange, playhead, clipLength }: {
   title: TitleCard; onChange: (t: TitleCard) => void; playhead: number; clipLength: number;
 }) {
   const set = (patch: Partial<TitleCard>) => onChange({ ...title, ...patch });
   const has = !!title.text.trim();
   return (
-    <div className="panel-body">
+    <>
       <div className="muted" style={{ fontSize: 12.5, marginBottom: 10 }}>
-        A big title that lands next to you — the thing that makes a clip look made, not posted.
+        Big cinematic text placed <b>near the person</b> — beside, above, below or across them.
+        It’s laid out around the subject, not cut out behind them.
       </div>
       <label className="field">What should it say?
         <textarea rows={3} value={title.text} placeholder={"THE ONE HABIT\nTHAT CHANGED\nEVERYTHING"}
@@ -2446,7 +2465,7 @@ function BigTitlePanel({ title, onChange, playhead, clipLength }: {
           </button>
         </>
       )}
-    </div>
+    </>
   );
 }
 
@@ -2521,10 +2540,11 @@ function subtractRange(cuts: [number, number][], [a, b]: [number, number]): [num
 
 const TOOLS: { id: string; label: string; icon: string; soon?: boolean }[] = [
   { id: "look", label: "Look", icon: "🎨" },
-  { id: "title", label: "Big title", icon: "Aa" },
   { id: "cut", label: "Cut", icon: "⌦" },
   { id: "reframe", label: "Reframe", icon: "⛶" },
-  { id: "subs", label: "Subtitles", icon: "CC" },
+  // One home for every word on screen: captions, the words themselves, and the big
+  // cinematic title. There is no separate "Big title" rail tool — people looked for it here.
+  { id: "subs", label: "Text & titles", icon: "CC" },
   { id: "voice", label: "Voice", icon: "🎙" },
   { id: "text", label: "Transcript", icon: "T" },
   { id: "fx", label: "AI Effects", icon: "✨" },
