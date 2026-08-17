@@ -280,6 +280,35 @@ describe("the Create and Editor screens", () => {
     expect(src).toMatch(/function BigTitlePanel\(/);
   });
 
+  // The captain opened the Editor, looked for the big cinematic title, and didn't find it:
+  // he expected text controls to live with the caption controls. They do now.
+  it("puts the big cinematic title inside the Subtitles/Captions panel", () => {
+    const at = src.indexOf('{tool === "subs" && (');
+    const subs = src.slice(at, src.indexOf('{COMING_SOON.includes(tool)', at));
+    expect(subs).toBeTruthy();
+    expect(subs).toContain("<BigTitlePanel");                 // the controls themselves
+    expect(subs).toMatch(/setSubsTab\("title"\)/);            // a tab in the captions toggle
+    expect(subs).toMatch(/Cinematic title/);                  // and a signpost card in the Captions tab
+    // BigTitlePanel is rendered nowhere else — the Subtitles panel is its only home.
+    expect(src.match(/<BigTitlePanel/g)).toHaveLength(1);
+  });
+
+  it("has no separate Big title rail tool to hunt for", () => {
+    const at = src.indexOf("const TOOLS:");
+    const tools = src.slice(at, src.indexOf("];", at));
+    expect(tools).not.toMatch(/id: "title"/);
+    expect(tools).toMatch(/id: "subs", label: "Text & titles"/);
+    // With no rail tool of its own, the "you have one" dot has to land on Subtitles.
+    expect(src).toMatch(/if \(doc\.bigTitle\?\.text\.trim\(\)\) on\.add\("subs"\)/);
+  });
+
+  it("promises text NEAR the person, not a true behind-person cutout", () => {
+    const at = src.indexOf("function BigTitlePanel(");
+    const panel = src.slice(at, src.indexOf("\nfunction ", at + 10));
+    expect(panel).toMatch(/near the person/i);
+    expect(panel).not.toMatch(/behind (you|the (person|subject))/i);
+  });
+
   it("tells you the rest of the styling is in the Editor when you're just captioning a clip", () => {
     // "Just caption my clip" has almost no options, which read as "this is all you get".
     const at = src.indexOf('<details className="np-more">');

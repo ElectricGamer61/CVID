@@ -373,7 +373,7 @@ section label even though `SECTION_LABELS` names it for the sidebar.
 - **ClipEditor** (`.ed2`) — wayin-style workspace: top bar (title · undo/redo · **⟲ Revert to opened** ·
   autosave indicator · Export) · **tool rail** · 9:16 preview (`<video>` CSS-crop + live `CaptionOverlay`,
   + `<audio>` for voice) · contextual panel · **FilmstripTimeline** (one continuous track of frames).
-  Tools: **Look** · **Big title** · **Trim** · **Cut** · **Reframe** · **Subtitles** · **Voice**
+  Tools: **Look** · **Trim** · **Cut** · **Reframe** · **Text & titles** · **Voice**
   (Text/B-roll/Music/Transitions/AI Hook = coming soon).
   - **Look** (`LookPanel`, `looks.ts`) — six chips (None · Warm Film · Cold Cinema · Punchy ·
     Soft Glow · Night) plus one Subtle/Medium/Strong strength. Plain English only: no LUT, gamma
@@ -385,9 +385,13 @@ section label even though `SECTION_LABELS` names it for the sidebar.
     brightness/tint iterated until the mean RGB matched (within ~2/255 per channel; Night was
     off by 29 before). `looks.test.ts` snapshots them, so **re-fit if you change a chain in
     `look.py`** or the editor quietly starts lying about the export.
-  - **Big title** (`BigTitlePanel`, `TitleOverlay.tsx`) — one huge title placed *beside* the
+  - **Big title** (`BigTitlePanel`, `TitleOverlay.tsx`) — **lives inside the Text & titles
+    (`subs`) panel as its third tab**, next to Captions and Edit words; it has *no* rail tool of
+    its own, because people look for text controls where the caption controls are (the Captions
+    tab also carries a "Cinematic title ›" card that jumps to the tab, and the rail's `subs`
+    on-dot lights when a title is set). One huge title placed *beside* the
     subject (left/right column), above/below, or over them, in Bold/Glow/Boxed, with a
-    start-at-playhead + duration control. **"Beside the person" is LAYOUT, not matting** — a
+    start-at-playhead + duration control. **"Near the person" is LAYOUT, not matting** — a
     narrow column hugging one edge — so it can never fail the way segmentation does (the
     deliberate MVP call; real person-matte occlusion stays later, optional polish). Line breaks
     and size come from `fitTitle`, the mirror of `look.fit_title`.
