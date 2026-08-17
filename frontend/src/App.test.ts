@@ -1,12 +1,13 @@
 // Unit tests for App.tsx's pure UI logic — the rules that decide what the app shows you,
 // with no DOM involved. Run with `npm test` in frontend/.
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 
 import appSource from "./App.tsx?raw";
 
 import {
-  beatHasCustomDetails, brainLabel, MAKE_STEPS, makeStepOf, makeStepOfBeats, nextStepFor,
-  NEXT_STEP_HINT, optionsSummary, SECTION_LABELS, sidebarViewFor,
+  beatHasCustomDetails, brainLabel, clearLastEdit, editorRouteFor, MAKE_STEPS, makeStepOf,
+  makeStepOfBeats, nextStepFor, NEXT_STEP_HINT, optionsSummary, readLastEdit, SECTION_LABELS,
+  sidebarViewFor,
 } from "./App";
 import { ACTIVE_BRAND } from "./advanced";
 import type { Ticket } from "./api";
@@ -282,5 +283,70 @@ describe("the Create and Editor screens", () => {
   it("keeps the Cinematic Look and big-title work in the editor", () => {
     expect(src).toMatch(/function LookPanel\(/);
     expect(src).toMatch(/function BigTitlePanel\(/);
+  });
+
+  it("tells you the rest of the styling is in the Editor when you're just captioning a clip", () => {
+    // "Just caption my clip" has almost no options, which read as "this is all you get".
+    const at = src.indexOf('<details className="np-more">');
+    const options = src.slice(at, src.indexOf("</details>", at));
+    expect(options).toContain("np-editor-note");
+    expect(options).toMatch(/genMode === "caption" && <div className="muted np-editor-note"/);
+    expect(options).toMatch(/<b>Editor<\/b>/);
+  });
+
+  it("lets the editor bail out to its start screen when the remembered clip is gone", () => {
+    // A 404 must not leave the Editor button parked on a loading skeleton forever.
+    expect(src).toMatch(/onMissing={editorGone}/);
+    expect(src).toMatch(/if \(isNotFound\(e\)\) setGone\(true\)/);
+    expect(src).toMatch(/clearLastEdit\(\);\s*\n\s*setRoute\(\{ name: "editorStart" \}\)/);
+  });
+});
+
+describe("editorRouteFor", () => {
+  it("reopens the clip you had open last", () => {
+    expect(editorRouteFor({ pid: 3, cid: 9 })).toEqual({ name: "editor", pid: 3, cid: 9 });
+    expect(editorRouteFor({ pid: 3, cid: 9, from: "video", tid: 4 }))
+      .toEqual({ name: "editor", pid: 3, cid: 9, from: "video", tid: 4 });
+  });
+
+  it("opens the editor's own drop-footage start screen when nothing is remembered", () => {
+    // Not Clipping, not Create: the button says Editor, so it lands on the editor.
+    expect(editorRouteFor(null)).toEqual({ name: "editorStart" });
+    expect(sidebarViewFor(editorRouteFor(null))).toBe("editor");
+  });
+});
+
+describe("last-edited clip", () => {
+  // localStorage doesn't exist in the node test env; a tiny stand-in is enough to pin
+  // the read/clear rules that decide where the Editor button points.
+  const store: Record<string, string> = {};
+  const stub = {
+    getItem: (k: string) => (k in store ? store[k] : null),
+    setItem: (k: string, v: string) => { store[k] = v; },
+    removeItem: (k: string) => { delete store[k]; },
+  };
+  beforeEach(() => {
+    for (const k of Object.keys(store)) delete store[k];
+    (globalThis as any).localStorage = stub;
+  });
+
+  it("ignores a half-written or foreign entry instead of routing at it", () => {
+    for (const bad of ["", "not json", "{}", '{"pid":1}', '{"pid":"1","cid":2}', "null"]) {
+      store["cv.lastEdit"] = bad;
+      expect(readLastEdit()).toBeNull();
+      expect(editorRouteFor(readLastEdit())).toEqual({ name: "editorStart" });
+    }
+  });
+
+  it("reads back what the editor remembered", () => {
+    store["cv.lastEdit"] = JSON.stringify({ pid: 2, cid: 5, from: "home" });
+    expect(readLastEdit()).toEqual({ pid: 2, cid: 5, from: "home" });
+  });
+
+  it("forgets a clip that's gone, so the next Editor click starts clean", () => {
+    store["cv.lastEdit"] = JSON.stringify({ pid: 2, cid: 5 });
+    clearLastEdit();
+    expect(readLastEdit()).toBeNull();
+    expect(editorRouteFor(readLastEdit())).toEqual({ name: "editorStart" });
   });
 });

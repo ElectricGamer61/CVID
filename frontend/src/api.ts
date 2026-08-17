@@ -255,6 +255,16 @@ const J = { "Content-Type": "application/json" };
    Error carrying the backend's `detail` when the response isn't OK. Every call below
    routes through this, so a failed action surfaces as one readable toast instead of
    silently "succeeding" or blowing up later with "cannot read properties of undefined". */
+/** A request the backend answered with an error, carrying the HTTP status.
+ *
+ *  Callers that need to tell "this thing is gone" (404) apart from "the server is down"
+ *  use `isNotFound` — deleting the row is permanent, an outage is not, so they must not
+ *  produce the same reaction. A network failure never becomes an ApiError. */
+export class ApiError extends Error {
+  constructor(message: string, readonly status: number) { super(message); this.name = "ApiError"; }
+}
+export const isNotFound = (e: unknown): boolean => e instanceof ApiError && e.status === 404;
+
 async function req<T>(input: string, init?: RequestInit): Promise<T> {
   let r: Response;
   try {
@@ -273,7 +283,7 @@ async function req<T>(input: string, init?: RequestInit): Promise<T> {
   if (!r.ok) {
     let detail = "";
     try { detail = (await r.json())?.detail ?? ""; } catch { /* non-JSON error body */ }
-    throw new Error(detail || `Request failed (${r.status})`);
+    throw new ApiError(detail || `Request failed (${r.status})`, r.status);
   }
   if (r.status === 204) return undefined as T;
   return r.json() as Promise<T>;
