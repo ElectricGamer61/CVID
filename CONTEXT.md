@@ -229,6 +229,12 @@ uploads AND by `build-edit` reels).
 
 ## 5. API (backend/app/main.py)
 
+> **Dormant since the 2026-08-16 declutter:** `/api/autopilot/*`, `/api/queue`,
+> `/api/tickets/{id}/schedule|post|post-copy`, `/api/insights`, `/api/perf*`, `/api/outliers*`,
+> `/api/shootdrop*` and `/api/brands*` still exist and still work, but **no frontend code calls
+> them any more** — CVideo's UI is a video editor (see §6). Treat them as unreferenced when
+> reasoning about the app, and don't wire new UI to them.
+
 - **Projects:** `POST /api/projects` (url) · `POST /api/projects/upload` (file) — both take brain,
   transcribe_backend, aspect, caption_preset, **mode**. `GET /api/projects` · `GET /{pid}` ·
   `DELETE /{pid}` · `/{pid}/source` · `/{pid}/thumb` · `/{pid}/frame?t=`.
@@ -272,45 +278,45 @@ uploads AND by `build-edit` reels).
 
 ## 6. Frontend (frontend/src/, React + Vite + TS, plain CSS)
 
-Light "Soft-UI" theme (Plus Jakarta Sans). **Sidebar (5 stops):** **Clipping** · **Create** ·
-**Editor** · **Schedule & Results** · **Downloads** (internal routes: home/board/editor/queue/library).
+Light "Soft-UI" theme (Plus Jakarta Sans). **Sidebar (4 stops):** **Clipping** · **Create** ·
+**Editor** · **Downloads** (internal routes: home/board/editor/library).
 **The app opens on Clipping** — the long-form clipper and everything you've already cut (the old
-"Home"/"Projects"); the logo button goes there too. Sections were folded away rather than
-kept as their own stops: the old **Ideas** screen is now the "no script yet" questions inside
-**Create** (there is no saved-ideas list in the UI any more), raw **footage** is dropped in the
-**Editor** where you edit it, and **Results** is the lower half of the **Schedule & Results** page.
+"Home"/"Projects"); the logo button goes there too. **CVideo is a local video editor and nothing
+else**: footage in (Clipping or Create) → edit it (Editor) → take the file away (Downloads).
+Sections were folded away or removed rather than kept as their own stops: the old **Ideas** screen
+is now the "no script yet" questions inside **Create** (there is no saved-ideas list in the UI any
+more), raw **footage** is dropped in the **Editor** where you edit it, and the whole
+**Schedule / Results / posting** half of the old product is gone from the UI (see below).
 **Editor** reopens the clip you last had open (`localStorage["cv.lastEdit"]`); with nothing to
 reopen it shows its own **start screen** (route `editorStart`) — a drop target for footage plus the
 projects you can pick back up — instead of bouncing you elsewhere.
-**There is no Autopilot tab** — autopilot is a per-video *mode*, not a place (see below),
-and by default it isn't visible at all (see **Advanced mode**).
-Plain-language UI: a ticket = "video", a beat = "scene". (`Outlier` rows and the
-`/api/shootdrop` endpoints still exist on the backend; nothing in the UI reads them any more.)
+Plain-language UI: a ticket = "video", a beat = "scene".
 `sidebarViewFor(route)` maps a route to the lit sidebar item — a video stays under **Create**, a
 project's moments grid under **Clipping**, and the editor lights **Editor** however you got there.
 The editor keeps its own breadcrumb trail (section / project / moments), so it takes no flat
 section label even though `SECTION_LABELS` names it for the sidebar.
 
-- **Advanced mode** (`frontend/src/advanced.ts`) — one flag that separates the daily loop from the
-  launch-gated machinery. **Off by default.** Turn it on with `?advanced=1` or the ⚙ **Advanced**
-  button at the bottom of the sidebar (`?advanced=0` / clicking again turns it off; the choice is
-  kept in `localStorage["cv.advanced"]`). OFF hides: the board's Autopilot strip + "Needs you"
-  filter, card 🤖/gate badges, the per-video Autopilot toggle and the Approve/Regenerate/Kill gate
-  panel, and every multi-brand picker (everything uses `ACTIVE_BRAND` = NoCrapDiet, the only loaded
-  cartridge). Nothing is deleted and no backend behavior changed — `useAutopilot` simply stops
-  polling `/api/autopilot/state` when the flag is off, and new videos are created with
-  `autopilot: false` so the loop can't quietly drive a video whose controls are hidden.
+- **What the UI deliberately does NOT have** (removed 2026-08-16; there is no flag, no
+  "Advanced" button and no URL parameter that brings any of it back). Gone from the frontend:
+  **Autopilot** (the autonomous operator, its Start/Pause/Run-once strip, the "Needs you (N)"
+  filter, the 🤖 card badge and the Approve / Regenerate / Kill **gate** panel), the pipeline
+  **stage stepper**, the **multi-brand picker** (every video is filed under the `BRAND` constant
+  in `App.tsx`), the **Schedule / Queue / posting** screens, the **Results / Insights** metrics
+  screens (KPIs, trend chart, bulk logger, per-platform tracker, Google-Sheet sync), the
+  **📣 Post copy** card, and the **capture-mode** dropdown. `frontend/src/advanced.ts` and the
+  matching client methods in `api.ts` are deleted; `App.test.ts` › *"the app is only an editor"*
+  fails the build if any of it reappears.
+  **The backend is untouched and dormant**: `app/autopilot.py`, `app/gates.py`, `app/learn.py`,
+  `app/sheets.py`, `app/cartridge.py`, `pipeline/poster.py`, `pipeline/shootdrop.py` and their
+  routes (`/api/autopilot/*`, `/api/queue`, `/api/tickets/{id}/schedule|post|post-copy`,
+  `/api/insights`, `/api/perf*`, `/api/outliers*`, `/api/shootdrop*`, `/api/brands*`) still exist
+  and still answer. Nothing starts them: autopilot only ticks when something POSTs it, and the
+  shoot-drop watcher is a no-op unless `SHOOT_DROP_DIR` is set. Deleting them is a **follow-up**,
+  gated on the `backend/test_*.py` suites that need a running server + real media.
 
-- **App.tsx** — routes (home | board | queue | library | video | project | **editorStart** |
+- **App.tsx** — routes (home | board | library | video | project | **editorStart** |
   **editor** with an optional `from:"board"`), shell, and all screens + the **ClipEditor** workspace. A top **backend-offline
   banner** polls `GET /api/health` every 5 s and warns "edits are NOT saving" the instant the server dies.
-- **Autopilot = a mode, folded into Create, behind Advanced mode** (`useAutopilot(enabled)` hook +
-  `GATE_LABEL`/`isGated`/`GATE_POINTS`).
-  In Advanced mode Create has an **Autopilot strip** (Start / Pause / Run once) and a **"Needs you (N)" filter**
-  that shows only gated videos. Cards carry a 🤖 badge + a "⏸ Needs your OK" gate badge. The
-  Approve / Regenerate / Kill actions live in the video workspace (`VideoWorkspace`), which also shows the
-  gate points ("Pauses for you at: script · reel · post") whenever a video is on autopilot. Backend
-  autopilot state is unchanged — this was a pure frontend re-home of the old separate tab.
 - **Projects / NewProject** ("Clip a long video") — paste URL or upload. A **mode toggle**: "Find
   viral moments" (default) vs **"Just caption my clip"** (caption mode → one full-length clip →
   auto-opens the editor). Brain / transcription / aspect are folded into an
@@ -325,11 +331,8 @@ section label even though `SECTION_LABELS` names it for the sidebar.
   `error` says so instead of spinning. Beside it: the ready projects you can reopen, and a link to
   **Create** for when what you have is a script. Scene rows in the video workspace also take a
   dropped file on their **＋ Add video** slot. **Nothing is auto-placed** — the old Shoot Drop bin
-  (and its "clips you talk in get placed automatically" claim) is gone from the UI; the
-  `/api/shootdrop` endpoints and the watched folder are untouched on the backend.
-- **Video workspace — 📣 Post copy card** (`PostCopyCard`, in the vw-rail): "🪄 Write my post copy"
-  → editable per-platform fields (TT/IG caption+hashtags, YT title/description/tags) saved via
-  `patchTicket({post_meta})` on blur, "↻ Rewrite it" regenerates.
+  (and its "clips you talk in get placed automatically" claim) is gone from the UI, client and
+  all; the `/api/shootdrop` endpoints and the watched folder are untouched on the backend.
 - **Create** (`CreatePage`) — one hero, then your videos. `CreateHero` asks the only question that
   matters: **do you have a script?** Yes → paste it in the always-open box (→ `intake.parse_script`,
   deterministic, no LLM) and "Make my scenes →" drops you in the workspace. No → **"I don't have a
@@ -339,9 +342,9 @@ section label even though `SECTION_LABELS` names it for the sidebar.
   reads; you paste the reply back into the same box. CVideo never needs an API key for this.
   Below the hero, **Your videos** is a plain card grid (`.vid-grid`, recently-opened first): thumb,
   hook, scene/clip/voice chips and one line saying what it needs next (`MAKE_STEPS`). **No lanes,
-  no ◀▶ stage moves, no saved-ideas list, no how-it-works strip** — the pipeline stage is
-  bookkeeping, so its stepper only appears in Advanced mode.
-- **Video workspace guidance** — a **Next line** under the stage stepper says what to do now
+  no ◀▶ stage moves, no saved-ideas list, no how-it-works strip, no stage stepper** — the
+  pipeline stage is bookkeeping the user never sees.
+- **Video workspace guidance** — a **Next line** under the header says what to do now
   (`nextStepFor` → `NEXT_STEP_HINT`): the same rule Create labels its cards with, so the two can't
   disagree. `makeStepOf` short-circuits to `footage` for every non-`native-short` capture mode (they
   come from footage you already have, ingested and exported on **Clipping**, so the scene checklist
@@ -349,8 +352,8 @@ section label even though `SECTION_LABELS` names it for the sidebar.
   the workspace re-runs it against the scenes actually loaded (`makeStepOfBeats`) and adds a `done`
   step once `clip_url` exists. Every key `makeStepOf` returns needs a `MAKE_STEPS` label or a card
   on Create says nothing about what it needs. The rail is ordered by use — **🎬 Make the video** (the only primary button) ·
-  **📣 Post copy** · **✨ AI draft** collapsed into a `<details>`, since pasting a script is the
-  normal path and the AI draft is the blank-day fallback. Scene rows show only "what you say" +
+  **✨ AI draft** collapsed into a `<details>`, since pasting a script is the normal path and the
+  AI draft is the blank-day fallback. Scene rows show only "what you say" +
   "what to film"; the on-screen-text and caption fields sit behind **More options**
   (`beatHasCustomDetails` keeps them open when they hold something other than an echo of the spoken
   line, which is what `intake.parse_script` writes into `caption`).
@@ -359,8 +362,6 @@ section label even though `SECTION_LABELS` names it for the sidebar.
   With AI voice on and no `ELEVENLABS_API_KEY`, the card warns up front (`GET /api/presets`
   → `tts_available`, the key check only — `GET /api/tts/voices` also calls ElevenLabs and is
   reserved for the editor's voice picker) rather than letting the build run and fail partway.
-- **TicketDetail** drawer — edit ticket + per-beat fields, add/reorder/delete scenes, proof toggle,
-  AI buttons, per-beat clip/voiceover upload, "Open in editor" + "Make my video" (assemble).
 - **Downloads (Library)** — **collapsible folders**, each listing its videos as **draggable rows**
   (`.exp-rows`/`.exp-row`, not a grid). **Drag a video onto another folder to move it** (HTML5 DnD;
   folders highlight on drag-over) or onto the **"＋ new folder"** drop zone (prompts a name). The move

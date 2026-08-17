@@ -1,5 +1,5 @@
 import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
-import { api, isNotFound, AutopilotState, Beat, Clip, ClipEffects, ExportItem, Folder, InsightsData, PostMeta, Presets, Project, QueueData, QueueTicket, Ticket, VideoPerf } from "./api";
+import { api, isNotFound, Beat, Clip, ClipEffects, ExportItem, Folder, Presets, Project, Ticket } from "./api";
 import { CaptionOverlay } from "./CaptionOverlay";
 import { CaptionStyle, FALLBACK_PRESETS, groupLines, Word, wordsInRange } from "./captionStyles";
 import { DEFAULT_STRENGTH, emptyTitle, FALLBACK_LOOKS, LookSetting, lookLayers, STRENGTHS, TitleCard, TITLE_PLACES, TITLE_STYLES } from "./looks";
@@ -10,16 +10,19 @@ import { useConfirm, usePrompt } from "./Dialog";
 import { useRecorder } from "./useRecorder";
 import { VideoModal } from "./VideoModal";
 import { exportDirSupported, getExportDir, pickExportDir } from "./exportDir";
-import { ACTIVE_BRAND, BRANDS, brandChoices, useAdvanced } from "./advanced";
 import {
   buildScriptPrompt, canBuildPrompt, clampScenes, EMPTY_ANSWERS, MAX_SCENES, MIN_SCENES,
   ScriptAnswers, SCRIPT_QUESTIONS,
 } from "./scriptPrompt";
 
+/* Every video is filed under one name. There is no brand picker any more — this app edits
+   your videos, it doesn't run a multi-brand content operation — but exports still group by
+   it, so the constant keeps existing folders where they are. */
+const BRAND = "NoCrapDiet";
+
 export type Route =
   | { name: "home" }
   | { name: "board" }
-  | { name: "queue" }
   | { name: "library" }
   | { name: "video"; tid: number }
   | { name: "project"; pid: number }
@@ -28,13 +31,11 @@ export type Route =
 
 /** The sidebar sections, and the name each one shows in the breadcrumb.
  *
- *  One stop per thing you actually do. Ideas folded into Create (you answer the same
- *  questions right where you start the video, instead of keeping a separate saved-ideas
- *  list) and "Results" folded into Schedule (you post a video and then watch how it did,
- *  so they're one page). "Clipping" is the long-form clipper — the home page. */
+ *  One stop per thing you actually do, and nothing else: get footage in (Clipping or
+ *  Create), edit it (Editor), take the finished file away (Downloads). Scheduling,
+ *  posting and performance tracking are not part of a video editor and are gone. */
 export const SECTION_LABELS: Record<string, string> = {
-  home: "Clipping", board: "Create", editor: "Editor",
-  queue: "Schedule & Results", library: "Downloads",
+  home: "Clipping", board: "Create", editor: "Editor", library: "Downloads",
 };
 
 /* The editor is where the actual work happens, so the sidebar links straight at it: remember
@@ -96,7 +97,6 @@ export default function App() {
   }, []);
   const goHome = () => setRoute({ name: "home" });
   const goBoard = () => setRoute({ name: "board" });
-  const goQueue = () => setRoute({ name: "queue" });
   const goLibrary = () => setRoute({ name: "library" });
   const goEditor = () => setRoute(editorRouteFor(readLastEdit()));
   // The remembered clip can be deleted from under us (or belong to a database that's since
@@ -122,7 +122,7 @@ export default function App() {
 
   return (
     <div className="shell">
-      <Sidebar view={sbView} onHome={goHome} onBoard={goBoard} onEditor={goEditor} onQueue={goQueue} onLibrary={goLibrary} />
+      <Sidebar view={sbView} onHome={goHome} onBoard={goBoard} onEditor={goEditor} onLibrary={goLibrary} />
       <main className="main">
         {backendDown && (
           <div className="backend-down-banner" role="alert">
@@ -152,7 +152,6 @@ export default function App() {
           <VideoWorkspace tid={route.tid} presets={presets} onBack={goBoard}
             onOpenEditor={(pid, cid) => setRoute({ name: "editor", pid, cid, from: "video", tid: route.tid })} />
         )}
-        {route.name === "queue" && <SchedulePage />}
         {route.name === "library" && <Library />}
         {route.name === "home" && <Home presets={presets} onOpen={(pid) => setRoute({ name: "project", pid })} />}
         {route.name === "project" && (
@@ -175,61 +174,9 @@ export default function App() {
   );
 }
 
-/* ------------------------------ Autopilot ------------------------------ */
-// Autopilot is no longer a separate place — it's a per-video MODE plus a control strip on the
-// board. A gated video ("waiting for you") surfaces as a badge on its card and in the "Needs
-// you" filter; approve / regenerate / kill live in the video workspace. These are the shared bits.
-const GATE_LABEL: Record<string, string> = {
-  awaiting_approval: "Needs your OK", awaiting_footage: "Needs footage",
-  parked: "Parked", running: "Working…", done: "Posted",
-};
-// A ticket is "waiting for you" when it's paused at an approval or footage gate.
-const isGated = (t: Ticket) => t.gate === "awaiting_approval" || t.gate === "awaiting_footage";
-// The gate points a supervised video will pause at, shown so autopilot's behavior is legible.
-const GATE_POINTS = "Pauses for you at: ✍️ script · 🎬 reel · 📤 post";
-
-// Shared autopilot loop controls (start/stop/run-once) + the gated queue, polled together.
-// Used by the board header strip and to drive card badges. Only polls when advanced mode is
-// on — the default board never shows autopilot, so it shouldn't be asking about it either.
-function useAutopilot(enabled: boolean) {
-  const [state, setState] = useState<AutopilotState | null>(null);
-  const refresh = () => { if (enabled) api.autopilotState().then(setState).catch(() => {}); };
-  useEffect(() => {
-    if (!enabled) { setState(null); return; }
-    refresh(); const t = setInterval(refresh, 5000); return () => clearInterval(t);
-  }, [enabled]);
-  const gated = (state?.queue ?? []).filter(isGated);
-  return { state, refresh, gated };
-}
-
-/* ------------------------------- Board --------------------------------- */
-// The 8 DB stages collapse into 4 dead-simple Board columns (matches the how-banner).
-// Stage stays the DB source of truth; this is display-only grouping.
-type Phase = { key: string; label: string; stages: string[] };
-const PHASES: Phase[] = [
-  { key: "idea",   label: "1. Idea",    stages: ["outlier"] },
-  { key: "make",   label: "2. Make it", stages: ["scripted", "staged", "sourced"] },
-  { key: "ready",  label: "3. Ready",   stages: ["assembled", "ready"] },
-  { key: "posted", label: "4. Posted",  stages: ["scheduled", "posted"] },
-];
-const phaseOf = (stage: string) => Math.max(0, PHASES.findIndex((p) => p.stages.includes(stage)));
-const phaseLabel = (stage: string) => PHASES[phaseOf(stage)].label;
-const PHASE_HINT: Record<string, string> = {
-  idea: "New videos start here", make: "Write & film your scenes",
-  ready: "Made — ready to post", posted: "Posted videos land here",
-};
-// Plain-language labels for the capture mode (how the video gets made).
-const MODE_LABELS: Record<string, string> = {
-  "native-short": "Film it myself", "longform-clip": "From a long video", "repurpose": "Reuse old footage",
-};
-const MODE_ICONS: Record<string, string> = {
-  "native-short": "🎬", "longform-clip": "✂", "repurpose": "♻",
-};
-const modeLabel = (m: string) => MODE_LABELS[m] ?? m;
-const modeIcon = (m: string) => MODE_ICONS[m] ?? "🎬";
-
-// "Recently opened" memory (localStorage) — the board floats these to the top of their
-// column and marks them, so you never lose track of the videos you were working on.
+/* ------------------------------- Create --------------------------------- */
+// "Recently opened" memory (localStorage) — Create floats these to the top of the grid and
+// marks them, so you never lose track of the videos you were working on.
 const RECENT_KEY = "cv.recentTickets";
 const getRecent = (): number[] => {
   try { return JSON.parse(localStorage.getItem(RECENT_KEY) || "[]"); } catch { return []; }
@@ -238,11 +185,11 @@ const markRecent = (tid: number) => {
   try {
     const r = [tid, ...getRecent().filter((i) => i !== tid)].slice(0, 8);
     localStorage.setItem(RECENT_KEY, JSON.stringify(r));
-  } catch { /* private mode etc. — the board just skips the highlight */ }
+  } catch { /* private mode etc. — Create just skips the highlight */ }
 };
 
-// What a "Make it" video needs NEXT, derived from its real scene progress (not the stage
-// field, which nobody remembers to bump) — this is what unclutters the Make It column.
+// What a video needs NEXT, derived from its real scene progress (not the stage field,
+// which nobody remembers to bump). It's the one line every video card ends with.
 type MakeStep = { key: string; label: string };
 export const MAKE_STEPS: MakeStep[] = [
   { key: "script", label: "✍️ Needs a script" },
@@ -252,9 +199,9 @@ export const MAKE_STEPS: MakeStep[] = [
   { key: "footage", label: "📼 From footage — ingest on Clipping" },
 ];
 export const makeStepOf = (t: Ticket): string => {
-  // Only a native short is built here from scenes; the other modes come from footage you
-  // already have, which is ingested and exported on Clipping — so the scene checklist
-  // would be naming controls neither the board nor the workspace rail puts on screen.
+  // Only a native short is built here from scenes; the older footage modes come from
+  // video you already have, which is ingested and exported on Clipping — so the scene
+  // checklist would be naming controls the workspace rail doesn't put on screen.
   if (t.capture_mode !== "native-short") return "footage";
   const beats = t.n_beats ?? 0, clips = t.n_clips ?? 0, vo = t.n_vo ?? 0;
   if (beats === 0) return "script";
@@ -273,19 +220,19 @@ export const makeStepOfBeats = (t: Ticket, beats: { clip_path?: string | null; v
     n_vo: beats.filter((b) => b.voiceover_path).length,
   });
 
-// The board says what a video is waiting on; the workspace says what to DO about it.
+// The card says what a video is waiting on; the workspace says what to DO about it.
 export const NEXT_STEP_HINT: Record<string, string> = {
   script: "Paste the script you wrote — it turns into your scenes.",
   clips: "Add a video to every scene, then make and export your video.",
   voice: "Record a voiceover per scene, or switch on 🎙 AI voice up top.",
   build: "Everything's in — make and export your video, or open the editor first.",
   footage: "This one comes from footage you already have — ingest it on Clipping, then edit and export it there.",
-  done: "Your video's made — save it, write the post copy, then log its numbers on Results.",
+  done: "Your video's made — save it here, or pick it up again in Downloads.",
 };
 
-/** The workspace's next step — the same {@link makeStepOf} rule the board groups by, so the
- *  two never disagree, plus a `done` step the board has no use for (it only ever groups
- *  videos that aren't made yet). */
+/** The workspace's next step — the same {@link makeStepOf} rule the video cards show, so
+ *  the two never disagree, plus a `done` step the cards have no use for (they only ever
+ *  label videos that aren't made yet). */
 export const nextStepFor = (t: Ticket, beats: { clip_path?: string | null; voiceover_path?: string | null }[]): string =>
   t.clip_url ? "done" : makeStepOfBeats(t, beats);
 
@@ -297,25 +244,11 @@ export const nextStepFor = (t: Ticket, beats: { clip_path?: string | null; voice
  *  a plain grid of what's in flight. Footage lives in the Editor, where you edit it. */
 function CreatePage({ presets, onOpenTicket }: { presets: Presets | null; onOpenTicket: (tid: number) => void }) {
   const [tickets, setTickets] = useState<Ticket[] | null>(null);
-  const [needsYouOnly, setNeedsYouOnly] = useState(false);
-  const [apBusy, setApBusy] = useState(false);
   const toast = useToast();
   const confirm = useConfirm();
-  const advanced = useAdvanced();
-  const { state: apState, refresh: refreshAp, gated } = useAutopilot(advanced);
 
   const refresh = () => api.listTickets().then(setTickets).catch(() => {});
   useEffect(() => { refresh(); const t = setInterval(refresh, 4000); return () => clearInterval(t); }, []);
-
-  // Gate lookup by ticket id (from the autopilot queue) so cards can show a "waiting" badge.
-  const gateById = useMemo(() => new Map(gated.map((t) => [t.id, t])), [gated]);
-  const gatedCount = gated.length;
-
-  const apAct = async (fn: () => Promise<unknown>, ok: string) => {
-    setApBusy(true);
-    try { await fn(); toast(ok, "ok"); refreshAp(); refresh(); }
-    catch (e: any) { toast(`Failed: ${e?.message || e}`, "err"); } finally { setApBusy(false); }
-  };
 
   const del = async (t: Ticket) => {
     if (!await confirm({ title: "Delete this video?", body: t.angle ? `“${t.angle}” and its scenes will be removed.` : "Its scenes will be removed.", confirmLabel: "Delete", danger: true })) return;
@@ -323,15 +256,10 @@ function CreatePage({ presets, onOpenTicket }: { presets: Presets | null; onOpen
     catch (e: any) { toast(`Delete failed: ${e?.message || e}`, "err"); }
   };
 
-  const visible = (list: Ticket[]) => (advanced && needsYouOnly) ? list.filter((t) => gateById.has(t.id)) : list;
-
   // Recently-opened first (the ones you were working on), then newest.
   const recent = getRecent();
   const recencyRank = (t: Ticket) => { const i = recent.indexOf(t.id); return i === -1 ? Infinity : i; };
-  const sortCol = (list: Ticket[]) =>
-    [...list].sort((a, b) => recencyRank(a) - recencyRank(b) || b.id - a.id);
-
-  const mine = sortCol(visible(tickets ?? []));
+  const mine = [...(tickets ?? [])].sort((a, b) => recencyRank(a) - recencyRank(b) || b.id - a.id);
 
   return (
     <div className="board-page">
@@ -339,23 +267,6 @@ function CreatePage({ presets, onOpenTicket }: { presets: Presets | null; onOpen
           floating beside the centred hero just pulled the eye off the one thing to do. */}
       <CreateHero presets={presets} firstRun={tickets != null && tickets.length === 0}
         onCreated={(tid) => { markRecent(tid); onOpenTicket(tid); }} />
-
-      {/* Autopilot control strip — the whole autonomous flow lives here, and only in advanced
-          mode. The everyday page never mentions it. */}
-      {advanced && (
-      <div className="ap-strip">
-        <span className={"ap-dot" + (apState?.running ? " on" : "")} />
-        <span className="ap-strip-label">Autopilot {apState?.running ? "running" : "paused"}</span>
-        {apState?.running
-          ? <button onClick={() => apAct(api.autopilotStop, "Autopilot paused")} disabled={apBusy}>Pause</button>
-          : <button className="primary" onClick={() => apAct(api.autopilotStart, "Autopilot running")} disabled={apBusy}>Start</button>}
-        <button onClick={() => apAct(() => api.autopilotTick(), "Advanced one step")} disabled={apBusy} title="Advance every video that's on autopilot by one step now">Run once</button>
-        <button className={"ap-needs" + (needsYouOnly ? " on" : "")} disabled={gatedCount === 0 && !needsYouOnly}
-          onClick={() => setNeedsYouOnly((v) => !v)} title="Show only videos paused for your approval">
-          {needsYouOnly ? "✓ " : ""}Needs you ({gatedCount})
-        </button>
-      </div>
-      )}
 
       {/* Everything you're already making, newest (and most recently opened) first. No lanes,
           no stages to drag between — each card says what it still needs. They sit in the same
@@ -365,17 +276,13 @@ function CreatePage({ presets, onOpenTicket }: { presets: Presets | null; onOpen
           <div className="page-head" style={{ marginBottom: 12 }}>
             <h3 style={{ margin: 0 }}>Your videos</h3><span className="muted">{tickets.length} in progress</span>
           </div>
-          {mine.length === 0
-            ? <div className="cv-lane-empty">Nothing waiting on you.</div>
-            : (
-              <div className="vid-grid">
-                {mine.map((t) => (
-                  <VideoCard key={t.id} t={t} gate={gateById.get(t.id)} advanced={advanced}
-                    recent={recent.indexOf(t.id) > -1 && recent.indexOf(t.id) < 3}
-                    onOpen={() => { markRecent(t.id); onOpenTicket(t.id); }} onDelete={del} />
-                ))}
-              </div>
-            )}
+          <div className="vid-grid">
+            {mine.map((t) => (
+              <VideoCard key={t.id} t={t}
+                recent={recent.indexOf(t.id) > -1 && recent.indexOf(t.id) < 3}
+                onOpen={() => { markRecent(t.id); onOpenTicket(t.id); }} onDelete={del} />
+            ))}
+          </div>
         </div>
       )}
     </div>
@@ -384,20 +291,17 @@ function CreatePage({ presets, onOpenTicket }: { presets: Presets | null; onOpen
 
 /** One video you're making. Says what it needs next and opens where you do that — no stage
  *  arrows, no lane it has to be dragged out of. */
-function VideoCard({ t, gate, advanced, recent, onOpen, onDelete }: {
-  t: Ticket; gate?: Ticket; advanced?: boolean; recent?: boolean; onOpen: () => void; onDelete: (t: Ticket) => void;
+function VideoCard({ t, recent, onOpen, onDelete }: {
+  t: Ticket; recent?: boolean; onOpen: () => void; onDelete: (t: Ticket) => void;
 }) {
   const made = !!t.clip_url;
   const step = MAKE_STEPS.find((s) => s.key === makeStepOf(t));
   const beats = t.n_beats ?? 0, clips = t.n_clips ?? 0, vo = t.n_vo ?? 0;
-  const onAp = advanced && t.autopilot;   // the 🤖 chip is autopilot vocabulary — advanced only
   return (
-    <div className={"tkt-card" + (gate ? " tkt-gated" : "") + (recent ? " tkt-recent" : "")} onClick={onOpen} title="Open">
-      {(gate || onAp || recent) && (
+    <div className={"tkt-card" + (recent ? " tkt-recent" : "")} onClick={onOpen} title="Open">
+      {recent && (
         <div className="tkt-badges">
-          {recent && !gate && <span className="tkt-recent-chip" title="You opened this recently">⏱</span>}
-          {onAp && <span className="tkt-ap" title="On autopilot">🤖</span>}
-          {gate && <span className="tkt-gate" title={gate.gate_reason || ""}>⏸ {GATE_LABEL[gate.gate || "awaiting_approval"]}</span>}
+          <span className="tkt-recent-chip" title="You opened this recently">⏱</span>
         </div>
       )}
       <div className="tkt-thumb">
@@ -405,7 +309,7 @@ function VideoCard({ t, gate, advanced, recent, onOpen, onDelete }: {
           <img src={api.ticketThumbUrl(t.id)} alt="" loading="lazy"
             onError={(e) => ((e.target as HTMLImageElement).style.display = "none")} />
         ) : (
-          <div className="tkt-thumb-ph"><span>{modeIcon(t.capture_mode)}</span></div>
+          <div className="tkt-thumb-ph"><span>🎬</span></div>
         )}
         {made && <span className="tkt-made" title="Video made">✓</span>}
       </div>
@@ -423,9 +327,9 @@ function VideoCard({ t, gate, advanced, recent, onOpen, onDelete }: {
             </span>
           </div>
         ) : (
-          <div className="tkt-sub">{t.hook_text ? (t.angle || modeLabel(t.capture_mode)) : modeLabel(t.capture_mode)}</div>
+          <div className="tkt-sub">{t.angle || <span className="muted">Untitled video</span>}</div>
         )}
-        <div className="tkt-next">{made ? "✓ Made — open to export or post" : step?.label}</div>
+        <div className="tkt-next">{made ? "✓ Made — open it to export" : step?.label}</div>
       </div>
       <div className="tkt-side" onClick={(e) => e.stopPropagation()}>
         <button className="icon-btn danger tkt-del" title="Delete this video" onClick={() => onDelete(t)}>🗑</button>
@@ -445,11 +349,8 @@ function VideoCard({ t, gate, advanced, recent, onOpen, onDelete }: {
  *         has to be the one holding an API key for this.
  */
 function CreateHero({ presets, firstRun, onCreated }: { presets: Presets | null; firstRun?: boolean; onCreated: (tid: number) => void }) {
-  const advanced = useAdvanced();
-  const [brand, setBrand] = useState(ACTIVE_BRAND);
   const [angle, setAngle] = useState("");
   const [script, setScript] = useState("");
-  const [autopilot, setAutopilot] = useState(advanced);   // never runs itself when its controls are hidden
   const [autoVoice, setAutoVoice] = useState(true);
   const [busy, setBusy] = useState(false);
   const [helper, setHelper] = useState(false);            // the "no script yet" questions
@@ -463,8 +364,8 @@ function CreateHero({ presets, firstRun, onCreated }: { presets: Presets | null;
     setBusy(true);
     try {
       const res = await api.createTicketFromScript({
-        brand, angle, format: "reel", capture_mode: capture, script,
-        autopilot, auto_voiceover: autoVoice,
+        brand: BRAND, angle, format: "reel", capture_mode: capture, script,
+        auto_voiceover: autoVoice,
       });
       toast(`Made ${res.beats.length} scene${res.beats.length === 1 ? "" : "s"} — add your clips`, "ok");
       onCreated(res.ticket.id);
@@ -508,23 +409,12 @@ function CreateHero({ presets, firstRun, onCreated }: { presets: Presets | null;
         <label className="field grow"><span className="field-lab">Call it…</span>
           <input value={angle} placeholder="e.g. hidden sugar in sauces" onChange={(e) => setAngle(e.target.value)} />
         </label>
-        {advanced && (
-          <label className="field"><span className="field-lab">Brand</span>
-            <select value={brand} onChange={(e) => setBrand(e.target.value)}>{BRANDS.map((b) => <option key={b} value={b}>{b}</option>)}</select>
-          </label>
-        )}
       </div>
 
       <label className="nt-toggle" title="Reads the whole script in your AI voice as ONE continuous voiceover over all your clips — for silent B-roll">
         <input type="checkbox" checked={autoVoice} onChange={(e) => setAutoVoice(e.target.checked)} />
         <span>🎙 AI voiceover (one read over the whole video)</span>
       </label>
-      {advanced && (
-        <label className="nt-toggle" title="Autopilot voices the scenes, builds the video, writes captions & tags, and queues the post — pausing for your OK">
-          <input type="checkbox" checked={autopilot} onChange={(e) => setAutopilot(e.target.checked)} />
-          <span>🤖 Run on autopilot (build &amp; prep the post once clips are in)</span>
-        </label>
-      )}
 
       {/* The one obvious button on the page, centred under the box the way the old Create
           tab's empty state did it — the "no script" way in stays a quiet line below it. */}
@@ -618,12 +508,10 @@ async function copyText(text: string): Promise<boolean> {
 }
 
 /* ------------------------- Video workspace ------------------------------ */
-// Full-page home for one video (replaces the old cramped TicketDetail drawer):
-// header band (hook + angle + brand + stage stepper), scenes in the main column,
-// AI actions + "make it" in a sticky right rail.
+// Full-page home for one video: header band (hook + angle), scenes in the main column,
+// and "make it" plus the AI draft in a sticky right rail.
 function VideoWorkspace({ tid, presets, onBack, onOpenEditor }: { tid: number; presets: Presets | null; onBack: () => void; onOpenEditor: (pid: number, cid: number) => void }) {
   const [data, setData] = useState<{ ticket: Ticket; beats: Beat[] } | null>(null);
-  const advanced = useAdvanced();
   const toast = useToast();
   const confirm = useConfirm();
   const load = () => api.getTicket(tid).then(setData).catch(() => {});
@@ -634,11 +522,6 @@ function VideoWorkspace({ tid, presets, onBack, onOpenEditor }: { tid: number; p
   const ttsMissing = presets?.tts_available === false;
 
   const patchT = async (body: Partial<Ticket>) => { await api.patchTicket(tid, body); load(); };
-  const setPhase = async (j: number) => {
-    if (!data || j === phaseOf(data.ticket.stage)) return;
-    try { await patchT({ stage: PHASES[j].stages[0] }); }
-    catch (e: any) { toast(`Couldn't move it: ${e?.message || e}`, "err"); }
-  };
   const addBeat = async () => { await api.addBeat(tid); load(); };
   const reorder = async (b: Beat, dir: 1 | -1) => {
     if (!data) return;
@@ -694,9 +577,7 @@ function VideoWorkspace({ tid, presets, onBack, onOpenEditor }: { tid: number; p
     } catch (e: any) { toast(`Assemble failed: ${e?.message || e}`, "err"); }
   };
 
-  const modes = presets?.capture_modes ?? ["longform-clip", "native-short", "repurpose"];
-
-  const apAct = async (fn: () => Promise<unknown>, ok: string) => {
+  const act = async (fn: () => Promise<unknown>, ok: string) => {
     try { await fn(); toast(ok, "ok"); load(); }
     catch (e: any) { toast(`Failed: ${e?.message || e}`, "err"); }
   };
@@ -706,7 +587,6 @@ function VideoWorkspace({ tid, presets, onBack, onOpenEditor }: { tid: number; p
       {!data ? <div className="muted">Loading…</div> : (() => {
         const { ticket, beats } = data;
         const proofGaps = beats.filter((b) => b.is_proof_beat && !b.clip_path).length;
-        const phase = phaseOf(ticket.stage);
         return (
           <>
             <div className="vw-head">
@@ -719,61 +599,17 @@ function VideoWorkspace({ tid, presets, onBack, onOpenEditor }: { tid: number; p
                   onBlur={(e) => e.target.value !== ticket.angle && patchT({ angle: e.target.value })} />
               </div>
               <div className="vw-meta">
-                {/* Only worth a chip when it isn't the one live cartridge everything defaults to. */}
-                {ticket.brand && (advanced || ticket.brand !== ACTIVE_BRAND) && <span className="vw-brand-chip">{ticket.brand}</span>}
-                <select value={ticket.capture_mode} title="How you'll make it"
-                  onChange={(e) => patchT({ capture_mode: e.target.value })}>
-                  {modes.map((m) => <option key={m} value={m}>{modeLabel(m)}</option>)}
-                </select>
-                <button className={"vw-ap-toggle" + (ticket.auto_voiceover ? " on" : "")}
+                <button className={"vw-voice-toggle" + (ticket.auto_voiceover ? " on" : "")}
                   title={ticket.auto_voiceover ? "AI voiceover ON — your whole script is read as ONE continuous voiceover over all clips when the video is built" : "Turn on to read the whole script in your AI voice as one continuous voiceover over all your clips (for silent B-roll)"}
-                  onClick={() => apAct(() => api.patchTicket(tid, { auto_voiceover: !ticket.auto_voiceover } as Partial<Ticket>),
+                  onClick={() => act(() => api.patchTicket(tid, { auto_voiceover: !ticket.auto_voiceover } as Partial<Ticket>),
                     ticket.auto_voiceover ? "AI voiceover off" : "AI voiceover on — one read over the whole video when it's built")}>
                   🎙 {ticket.auto_voiceover ? "AI voice on" : "AI voice"}
                 </button>
-                {advanced && (
-                  <button className={"vw-ap-toggle" + (ticket.autopilot ? " on" : "")}
-                    title={ticket.autopilot ? GATE_POINTS : "Let Autopilot draft, assemble, and queue this video — pausing for your OK at each step"}
-                    onClick={() => apAct(() => api.autopilotToggle(tid, !ticket.autopilot),
-                      ticket.autopilot ? "Autopilot off for this video" : "On autopilot — it'll pause here for your approval at each step")}>
-                    🤖 {ticket.autopilot ? "On autopilot" : "Autopilot"}
-                  </button>
-                )}
               </div>
             </div>
 
-            {advanced && ticket.autopilot && !isGated(ticket) && (
-              <div className="vw-ap-hint">🤖 {GATE_POINTS}</div>
-            )}
-            {advanced && isGated(ticket) && (
-              <div className="vw-gate">
-                <div className="vw-gate-msg">⏸ <b>{GATE_LABEL[ticket.gate || "awaiting_approval"]}</b>{ticket.gate_reason ? ` — ${ticket.gate_reason}` : ""}</div>
-                <div className="vw-gate-actions">
-                  {ticket.gate === "awaiting_footage"
-                    ? <span className="muted" style={{ fontSize: 12.5 }}>Add footage to the scenes below — it continues on its own once every proof scene has a clip.</span>
-                    : <button className="primary" onClick={() => apAct(() => api.autopilotApprove(tid), "Approved — it'll continue on the next tick")}>Approve</button>}
-                  <button onClick={() => apAct(() => api.autopilotRegenerate(tid), "Regenerating this step")}>Regenerate</button>
-                  <button className="danger" onClick={() => apAct(() => api.autopilotReject(tid), "Autopilot turned off — you're driving")}>Kill autopilot</button>
-                </div>
-              </div>
-            )}
-
-            {/* The pipeline stage is bookkeeping, not something you should have to drive:
-                Create shows what each video needs next, and Schedule picks up anything
-                that's been made. Advanced mode still gets the stepper to move it by hand. */}
-            {advanced && (
-            <div className="vw-stepper">
-              {PHASES.map((p, j) => (
-                <button key={p.key} className={"vw-step" + (j === phase ? " cur" : j < phase ? " done" : "")}
-                  onClick={() => setPhase(j)} title={PHASE_HINT[p.key]}>
-                  {j < phase ? "✓ " : ""}{p.label}
-                </button>
-              ))}
-            </div>
-            )}
-
-            {/* One line, always answering "so what do I do now?" — the same rule the board
-                groups Make It by, worded as an instruction. */}
+            {/* One line, always answering "so what do I do now?" — the same rule the video
+                cards label themselves with, worded as an instruction. */}
             <div className="vw-next"><span className="vw-next-k">Next</span>{NEXT_STEP_HINT[nextStepFor(ticket, beats)]}</div>
 
             <div className="vw-grid">
@@ -812,8 +648,8 @@ function VideoWorkspace({ tid, presets, onBack, onOpenEditor }: { tid: number; p
                 )}
               </div>
 
-              {/* Rail order = the order you use it: build the video, write the post copy,
-                  and only then the AI draft, which is the fallback for a blank day. */}
+              {/* Rail order = the order you use it: build the video, and only then the AI
+                  draft, which is the fallback for a blank day. */}
               <div className="vw-rail">
                 <div className="vw-card">
                   <h4>🎬 Make the video</h4>
@@ -860,7 +696,6 @@ function VideoWorkspace({ tid, presets, onBack, onOpenEditor }: { tid: number; p
                   )}
                 </div>
 
-                <PostCopyCard ticket={ticket} onChanged={load} toast={toast} />
 
                 <details className="vw-card vw-aside" open={beats.length === 0}>
                   <summary>✨ AI draft <span className="muted">— no script yet?</span></summary>
@@ -969,62 +804,6 @@ function BeatRow({ b, first, last, onChanged, onReorder, toast }: {
         </label>
         <button className="icon-btn danger" title="Delete beat" onClick={del}>🗑</button>
       </div>
-    </div>
-  );
-}
-
-/* Publish copy (Ticket.post_meta): captions/hashtags/title written from the
-   video's own script — kills the "find the script and ask Claude" step. */
-function PostCopyCard({ ticket, onChanged, toast }: { ticket: Ticket; onChanged: () => void; toast: Notify }) {
-  const [busy, setBusy] = useState(false);
-  const pm = ticket.post_meta;
-  const gen = async () => {
-    setBusy(true);
-    try { await api.generatePostCopy(ticket.id); toast("Post copy ready", "ok"); onChanged(); }
-    catch (e: any) { toast(`Failed: ${e?.message || e}`, "err"); } finally { setBusy(false); }
-  };
-  const save = async (next: PostMeta) => {
-    try { await api.patchTicket(ticket.id, { post_meta: next }); onChanged(); }
-    catch (e: any) { toast(`Save failed: ${e?.message || e}`, "err"); }
-  };
-  const key = (s: string) => s + (pm ? JSON.stringify(pm).length : 0); // remount on regenerate
-  return (
-    <div className="vw-card">
-      <h4>📣 Post copy</h4>
-      {!pm ? (
-        <>
-          <div className="muted" style={{ fontSize: 12.5, marginBottom: 8 }}>
-            Captions, hashtags & YouTube title — written from this video's own script.
-          </div>
-          {/* Secondary on purpose: the rail has exactly one primary ("Open in editor"), and
-              post copy is a step you take after the video exists. */}
-          <button onClick={gen} disabled={busy}>{busy ? "Writing…" : "🪄 Write my post copy"}</button>
-        </>
-      ) : (
-        <div className="postcopy">
-          <label className="pc-lab">TikTok
-            <textarea rows={2} key={key("ttc")} defaultValue={pm.tt.caption} placeholder="caption"
-              onBlur={(e) => e.target.value !== pm.tt.caption && save({ ...pm, tt: { ...pm.tt, caption: e.target.value } })} />
-            <input key={key("tth")} defaultValue={pm.tt.hashtags} placeholder="#hashtags"
-              onBlur={(e) => e.target.value !== pm.tt.hashtags && save({ ...pm, tt: { ...pm.tt, hashtags: e.target.value } })} />
-          </label>
-          <label className="pc-lab">Instagram
-            <textarea rows={2} key={key("igc")} defaultValue={pm.ig.caption} placeholder="caption"
-              onBlur={(e) => e.target.value !== pm.ig.caption && save({ ...pm, ig: { ...pm.ig, caption: e.target.value } })} />
-            <input key={key("igh")} defaultValue={pm.ig.hashtags} placeholder="#hashtags"
-              onBlur={(e) => e.target.value !== pm.ig.hashtags && save({ ...pm, ig: { ...pm.ig, hashtags: e.target.value } })} />
-          </label>
-          <label className="pc-lab">YouTube
-            <input key={key("ytt")} defaultValue={pm.yt.title} placeholder="title"
-              onBlur={(e) => e.target.value !== pm.yt.title && save({ ...pm, yt: { ...pm.yt, title: e.target.value } })} />
-            <textarea rows={2} key={key("ytd")} defaultValue={pm.yt.description} placeholder="description"
-              onBlur={(e) => e.target.value !== pm.yt.description && save({ ...pm, yt: { ...pm.yt, description: e.target.value } })} />
-            <input key={key("ytg")} defaultValue={pm.yt.tags} placeholder="tags (comma-separated)"
-              onBlur={(e) => e.target.value !== pm.yt.tags && save({ ...pm, yt: { ...pm.yt, tags: e.target.value } })} />
-          </label>
-          <button onClick={gen} disabled={busy} style={{ alignSelf: "flex-start" }}>{busy ? "Writing…" : "↻ Rewrite it"}</button>
-        </div>
-      )}
     </div>
   );
 }
@@ -1234,7 +1013,11 @@ function Library() {
 
   return (
     <div className="page">
-      <div className="page-head"><h2>Downloads</h2><span className="muted">{items.length} finished video{items.length === 1 ? "" : "s"} · drag a video to move it between folders</span></div>
+      <div className="page-head"><h2>Downloads</h2>
+        <span className="muted">
+          {items.length === 0 ? "Every video you export lands here" : `${items.length} finished video${items.length === 1 ? "" : "s"} · drag a video to move it between folders`}
+        </span>
+      </div>
       {items.length === 0 ? (
         <div className="empty">
           <div className="big" style={{ fontSize: 28 }}>⬇</div>
@@ -1342,455 +1125,6 @@ function NewFolderDrop({ onMove }: { onMove: (kind: string, id: number, folder: 
     <div className={"dl-newfolder" + (over ? " drop-over" : "")}
          onDragOver={(e) => { e.preventDefault(); setOver(true); }} onDragLeave={() => setOver(false)} onDrop={onDrop}>
       ＋ Drop a video here to make a new folder
-    </div>
-  );
-}
-
-/* -------------------------- Schedule & Results -------------------------- */
-/* One page for the back half of the loop: queue a video up top, then see how the ones you
-   already posted did. They were two sidebar stops for what is a single question — "what did
-   I post, and did it work?" */
-function SchedulePage() {
-  return (
-    <>
-      <Queue />
-      <Insights />
-    </>
-  );
-}
-
-/* ------------------------------- Queue --------------------------------- */
-const PLATFORM_LABELS: Record<string, string> = { tt: "TikTok", ig: "Instagram", yt: "YouTube" };
-const platLabel = (p: string) => PLATFORM_LABELS[p] ?? p.toUpperCase();
-
-function defaultWhen(): string {
-  // Tomorrow 9:00, formatted for <input type="datetime-local"> (YYYY-MM-DDTHH:MM).
-  const d = new Date(); d.setDate(d.getDate() + 1); d.setHours(9, 0, 0, 0);
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
-}
-function fmtWhen(iso?: string | null): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  if (isNaN(d.getTime())) return iso;
-  return d.toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
-}
-
-function Queue() {
-  const [data, setData] = useState<QueueData | null>(null);
-  const refresh = () => api.getQueue().then(setData).catch(() => {});
-  useEffect(() => { refresh(); }, []);
-
-  return (
-    <div className="page">
-      <div className="page-head">
-        <h2>Schedule</h2>
-        <span className="muted">Queue your videos and post them to TikTok, Instagram &amp; YouTube</span>
-      </div>
-      {data && data.dry_run && (
-        <div className="dry-banner">🧪 <b>Practice mode</b> — posting is simulated, nothing is sent. Add <code>UPLOAD_POST_API_KEY</code> + <code>UPLOAD_POST_USER</code> to <code>backend/.env</code> to post for real.</div>
-      )}
-      {data && !data.dry_run && !data.config.user_set && (
-        <div className="dry-banner warn">⚠ <b>Almost live</b> — your API key is set, but <code>UPLOAD_POST_USER</code> isn't. Set it to your Upload-Post profile name (with TikTok/Instagram/YouTube connected on the Upload-Post dashboard) in <code>backend/.env</code>.</div>
-      )}
-      {data && !data.dry_run && data.config.user_set && (
-        <div className="dry-banner live">🟢 <b>Live</b> — posting as <b>{data.config.user}</b> via Upload-Post.</div>
-      )}
-
-      <h3 className="ins-h">Ready to schedule</h3>
-      {!data ? <div className="muted">Loading…</div>
-        : data.ready.length === 0 ? <div className="muted">Nothing ready yet — make a video first; it shows up here once it's assembled.</div>
-        : <div className="q-grid">{data.ready.map((t) => <ScheduleCard key={t.id} t={t} platforms={data.platforms} onDone={refresh} />)}</div>}
-
-      <h3 className="ins-h" style={{ marginTop: 28 }}>In the queue ({data?.scheduled.length ?? 0})</h3>
-      {!data || data.scheduled.length === 0 ? <div className="muted">Nothing queued.</div>
-        : <div className="q-list">{data.scheduled.map((t) => <QueuedRow key={t.id} t={t} dryRun={data.dry_run} onDone={refresh} />)}</div>}
-
-      {data && data.posted.length > 0 && (
-        <>
-          <h3 className="ins-h" style={{ marginTop: 28 }}>Recently posted</h3>
-          <div className="q-list">{data.posted.map((t) => <PostedRow key={t.id} t={t} />)}</div>
-        </>
-      )}
-    </div>
-  );
-}
-
-function ScheduleCard({ t, platforms, onDone }: { t: QueueTicket; platforms: string[]; onDone: () => void }) {
-  const [when, setWhen] = useState(defaultWhen());
-  const [picked, setPicked] = useState<string[]>(t.platforms?.length ? t.platforms : platforms);
-  const [busy, setBusy] = useState("");
-  const [showCopy, setShowCopy] = useState(false);
-  const toast = useToast();
-  const title = t.hook_text || t.angle || `Video ${t.id}`;
-  const hasCopy = !!t.post_meta;
-  const toggle = (p: string) => setPicked((cur) => cur.includes(p) ? cur.filter((x) => x !== p) : [...cur, p]);
-
-  const schedule = async () => {
-    if (picked.length === 0) { toast("Pick at least one platform", "err"); return; }
-    setBusy("sch");
-    try { const r = await api.postTicket(t.id, { platforms: picked, scheduled_at: when }); toast(r.message, "ok"); onDone(); }
-    catch (e: any) { toast(`Failed: ${e?.message || e}`, "err"); } finally { setBusy(""); }
-  };
-  const postNow = async () => {
-    if (picked.length === 0) { toast("Pick at least one platform", "err"); return; }
-    setBusy("post");
-    try { const r = await api.postTicket(t.id, { platforms: picked }); toast(r.message, "ok"); onDone(); }
-    catch (e: any) { toast(`Failed: ${e?.message || e}`, "err"); } finally { setBusy(""); }
-  };
-
-  return (
-    <div className="q-card">
-      <div className="q-thumb">{t.has_video ? <img src={api.ticketThumbUrl(t.id)} alt="" /> : <div className="q-noimg">No preview</div>}</div>
-      <div className="q-body">
-        <div className="q-title">{title}</div>
-        <div className="q-sub muted">{t.brand} · {t.format}</div>
-        <label className="q-when">When<input type="datetime-local" value={when} onChange={(e) => setWhen(e.target.value)} /></label>
-        <div className="q-plats">{platforms.map((p) => (
-          <button key={p} type="button" className={"q-chip" + (picked.includes(p) ? " on" : "")} onClick={() => toggle(p)}>{platLabel(p)}</button>
-        ))}</div>
-        <div className="q-actions">
-          <button className="ghost" onClick={schedule} disabled={!!busy}>{busy === "sch" ? "…" : "Schedule"}</button>
-          <button className="primary" onClick={postNow} disabled={!!busy}>{busy === "post" ? "…" : "Post now"}</button>
-          <button className={"link-btn" + (hasCopy ? "" : " attn")} onClick={() => setShowCopy((v) => !v)}
-            title="Captions, hashtags & YouTube title/description/tags that get posted with the video">
-            {showCopy ? "Hide copy" : hasCopy ? "📣 Descriptions & tags" : "📣 Add descriptions & tags"}
-          </button>
-        </div>
-        {showCopy && <PostCopyCard ticket={t} onChanged={onDone} toast={toast} />}
-      </div>
-    </div>
-  );
-}
-
-function QueuedRow({ t, dryRun, onDone }: { t: QueueTicket; dryRun: boolean; onDone: () => void }) {
-  const [busy, setBusy] = useState("");
-  const toast = useToast();
-  const title = t.hook_text || t.angle || `Video ${t.id}`;
-  const unsched = async () => { setBusy("un"); try { await api.scheduleTicket(t.id, { scheduled_at: null }); toast("Removed from the queue", "ok"); onDone(); } catch (e: any) { toast(`Failed: ${e?.message || e}`, "err"); } finally { setBusy(""); } };
-  return (
-    <div className="q-row">
-      <div className="q-row-main">
-        <div className="q-title">{title}</div>
-        <div className="q-sub muted">{dryRun ? "🗓 queued (practice)" : "🟢 queued on Upload-Post"} for {fmtWhen(t.scheduled_at)} · {(t.platforms || []).map(platLabel).join(", ") || "no platforms"}</div>
-      </div>
-      <div className="q-actions">
-        <button className="ghost" onClick={unsched} disabled={!!busy}>{busy === "un" ? "…" : "Remove from list"}</button>
-      </div>
-    </div>
-  );
-}
-
-function PostedRow({ t }: { t: QueueTicket }) {
-  const title = t.hook_text || t.angle || `Video ${t.id}`;
-  return (
-    <div className="q-row done">
-      <div className="q-row-main">
-        <div className="q-title">{title}</div>
-        <div className="q-sub muted">✅ Posted {fmtWhen(t.posted_at)} · {(t.platforms || []).map(platLabel).join(", ")}</div>
-      </div>
-    </div>
-  );
-}
-
-/* ------------------------------ Insights ------------------------------- */
-// Push all performance to the Google Sheet (the bridge to the cowork content engine).
-function SyncSheetButton() {
-  const [busy, setBusy] = useState(false);
-  const toast = useToast();
-  const sync = async () => {
-    setBusy(true);
-    try { const r = await api.syncSheet(); toast(`Synced ${r.pushed} video${r.pushed === 1 ? "" : "s"} to your Google Sheet 📊`, "ok"); }
-    catch (e: any) { toast(`${e?.message || e}`, "err"); } finally { setBusy(false); }
-  };
-  return (
-    <button className="sm" onClick={sync} disabled={busy}
-      title="Push all performance data to your Google Sheet (feeds your cowork content engine)">
-      {busy ? "Syncing…" : "📊 Sync to Google Sheet"}
-    </button>
-  );
-}
-
-function Insights() {
-  const [data, setData] = useState<InsightsData | null>(null);
-  const refresh = () => api.getInsights().then(setData).catch(() => {});
-  useEffect(() => { refresh(); }, []);
-
-  const k = data?.kpis;
-  const kpi = (label: string, val: number, accent = false) => (
-    <div className={"kpi" + (accent ? " kpi-accent" : "")}><div className="kpi-val">{val}</div><div className="kpi-label">{label}</div></div>
-  );
-  return (
-    <div className="page">
-      <div className="page-head">
-        <h2>Results</h2>
-        <div className="row" style={{ gap: 12 }}>
-          <span className="muted">What's working — ranked by saves + follows</span>
-          <SyncSheetButton />
-        </div>
-      </div>
-      <div className="kpi-row">
-        {kpi("Videos", k?.tickets ?? 0)}{kpi("Posted", k?.posted ?? 0)}
-        {kpi("Follows", k?.follows ?? 0, true)}{kpi("Saves", k?.saves ?? 0, true)}
-        {kpi("Views", k?.views ?? 0)}{kpi("Shares", k?.sends ?? 0)}
-      </div>
-
-      {data && data.trend.length > 0 && <TrendChart trend={data.trend} />}
-
-      <VideoTracker videos={data?.videos ?? []} onLogged={refresh} />
-
-      {data && data.by_platform.length > 0 && (
-        <div style={{ marginTop: 8 }}>
-          <h3 className="ins-h">By platform <span className="muted">(where it's landing)</span></h3>
-          <table className="ins-table plat-table">
-            <thead><tr><th>Platform</th><th>Posts</th><th>Views</th><th>Follows</th><th>Saves</th><th>Shares</th><th>Score</th></tr></thead>
-            <tbody>{data.by_platform.map((p) => (
-              <tr key={p.platform}><td>{platLabel(p.platform)}</td><td>{p.posts}</td><td>{p.views}</td><td>{p.follows}</td><td>{p.saves}</td><td>{p.sends}</td><td><b>{p.score}</b></td></tr>
-            ))}</tbody>
-          </table>
-        </div>
-      )}
-
-      {data && data.angles.length > 0 && (
-        <div style={{ marginTop: 8 }}>
-          <h3 className="ins-h">Best ideas <span className="muted">(by saves + follows)</span></h3>
-          <table className="ins-table"><thead><tr><th>Idea</th><th>Posts</th><th>Avg score</th></tr></thead>
-            <tbody>{data.angles.map((a) => <tr key={a.angle}><td>{a.angle}</td><td>{a.posts_count}</td><td><b>{a.avg_score}</b></td></tr>)}</tbody>
-          </table>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function TrendChart({ trend }: { trend: InsightsData["trend"] }) {
-  const max = Math.max(1, ...trend.map((p) => p.score));
-  return (
-    <div className="trend">
-      <h3 className="ins-h">Momentum <span className="muted">(saves + follows per day)</span></h3>
-      <div className="trend-bars">
-        {trend.map((p) => (
-          <div key={p.date} className="trend-col" title={`${p.date}: ${p.score} (saves+follows)`}>
-            <div className="trend-bar" style={{ height: `${Math.round((p.score / max) * 100)}%` }} />
-            <div className="trend-x">{p.date.length >= 10 ? p.date.slice(5) : p.date}</div>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-/* Fast bulk logger: pick ONE platform, then every video is a row with its four
-   number fields right there — tab through them all and hit Save once. No opening
-   each video, no 12-field panels. This is the everyday "log the numbers" screen. */
-const BULK_PLATS: ["tt" | "ig" | "yt", string][] = [["tt", "🎵 TikTok"], ["ig", "📸 Instagram"], ["yt", "▶ YouTube"]];
-type Nums = { views: number; follows: number; saves: number; sends: number };
-const ZERO_NUMS: Nums = { views: 0, follows: 0, saves: 0, sends: 0 };
-
-function BulkLogger({ videos, onLogged }: { videos: VideoPerf[]; onLogged: () => void }) {
-  const [pf, setPf] = useState<"tt" | "ig" | "yt">("tt");
-  const [q, setQ] = useState("");
-  const [edits, setEdits] = useState<Record<string, Nums>>({});
-  const [busy, setBusy] = useState(false);
-  const toast = useToast();
-
-  const keyOf = (v: VideoPerf) => `${v.video_kind}:${v.video_id}`;
-  // Switching platform clears in-progress edits so the grid shows that platform's saved numbers.
-  useEffect(() => { setEdits({}); }, [pf]);
-  const valOf = (v: VideoPerf): Nums => edits[keyOf(v)] ?? v.platforms[pf] ?? ZERO_NUMS;
-  const setField = (v: VideoPerf, field: keyof Nums, num: number) =>
-    setEdits((prev) => ({ ...prev, [keyOf(v)]: { ...valOf(v), [field]: num } }));
-
-  const shown = q.trim() ? videos.filter((v) => v.title.toLowerCase().includes(q.trim().toLowerCase())) : videos;
-  const changedCount = videos.filter((v) => edits[keyOf(v)]).length;
-
-  const saveAll = async () => {
-    const changed = videos.filter((v) => edits[keyOf(v)]);
-    if (!changed.length) { toast("Type some numbers first", "err"); return; }
-    setBusy(true);
-    try {
-      // Numbers only — brand is omitted so an already-set brand is never overwritten.
-      for (const v of changed) {
-        const d = valOf(v);
-        await api.logPerf({ video_kind: v.video_kind, video_id: v.video_id, platform: pf, ...d });
-      }
-      toast(`Saved ${changed.length} video${changed.length > 1 ? "s" : ""} 📈`, "ok");
-      setEdits({}); onLogged();
-    } catch (e: any) { toast(`Failed: ${e?.message || e}`, "err"); } finally { setBusy(false); }
-  };
-
-  return (
-    <div className="bulk-log">
-      <div className="bulk-bar">
-        <div className="bulk-tabs">
-          {BULK_PLATS.map(([id, label]) => (
-            <button key={id} className={"bulk-tab" + (pf === id ? " on" : "")} onClick={() => setPf(id)}>{label}</button>
-          ))}
-        </div>
-        {videos.length > 6 && <input className="vid-search" placeholder="Search…" value={q} onChange={(e) => setQ(e.target.value)} />}
-        <button className="primary" onClick={saveAll} disabled={busy || !changedCount}>
-          {busy ? "Saving…" : changedCount ? `Save ${changedCount}` : "Save"}
-        </button>
-      </div>
-      <div className="muted" style={{ fontSize: 12.5, margin: "2px 0 8px" }}>
-        Open your {BULK_PLATS.find(([id]) => id === pf)![1]} analytics, then type each video's numbers straight down the columns. Switch platforms up top; Save when done.
-      </div>
-      {videos.length === 0 ? (
-        <div className="muted">No posted videos yet.</div>
-      ) : (
-        <table className="ins-table bulk-grid">
-          <thead><tr><th>Video</th><th>Views</th><th>Follows</th><th>Saves</th><th>Shares</th></tr></thead>
-          <tbody>{shown.map((v) => {
-            const d = valOf(v);
-            const dirty = !!edits[keyOf(v)];
-            return (
-              <tr key={keyOf(v)} className={dirty ? "dirty" : ""}>
-                <td className="bulk-title">
-                  <span className={"exp-kind-tag " + (v.is_reel ? "reel" : "clip")}>{v.is_reel ? "reel" : "clip"}</span> {v.title}
-                </td>
-                {(["views", "follows", "saves", "sends"] as const).map((f) => (
-                  <td key={f}>
-                    <input type="number" min="0" value={d[f] || ""} placeholder="0"
-                      onFocus={(e) => e.target.select()}
-                      onChange={(e) => setField(v, f, parseInt(e.target.value || "0", 10) || 0)} />
-                  </td>
-                ))}
-              </tr>
-            );
-          })}</tbody>
-        </table>
-      )}
-    </div>
-  );
-}
-
-/* Per-video, per-platform tracker: every reel/clip in one table with its TikTok /
-   Instagram / YouTube numbers; pick one to enter or update all three at once. */
-function VideoTracker({ videos, onLogged }: { videos: VideoPerf[]; onLogged: () => void }) {
-  const [mode, setMode] = useState<"bulk" | "track">("bulk");
-  const [sel, setSel] = useState<string>("");
-  const [q, setQ] = useState("");
-  const shown = q.trim()
-    ? videos.filter((v) => v.title.toLowerCase().includes(q.trim().toLowerCase()))
-    : videos;
-  const cell = (v: VideoPerf, pf: "tt" | "ig" | "yt") => {
-    const d = v.platforms[pf];
-    return d
-      ? <span title={`${d.views} views · ${d.follows} follows · ${d.saves} saves · ${d.sends} shares`}>{d.views}<span className="muted"> views</span> · {d.saves + d.follows}<span className="muted"> s+f</span></span>
-      : <span className="muted">—</span>;
-  };
-  return (
-    <div className="perf-log">
-      <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
-        <h3 className="ins-h" style={{ margin: 0 }}>Your videos <span className="muted">(log the numbers fast, or open one)</span></h3>
-        <div className="row" style={{ gap: 8 }}>
-          {mode === "track" && videos.length > 6 && <input className="vid-search" placeholder="Search…" value={q} onChange={(e) => setQ(e.target.value)} />}
-          <div className="log-toggle">
-            <button className={mode === "bulk" ? "on" : ""} onClick={() => setMode("bulk")}>📋 Log numbers</button>
-            <button className={mode === "track" ? "on" : ""} onClick={() => setMode("track")}>🔍 One at a time</button>
-          </div>
-        </div>
-      </div>
-      {mode === "bulk" ? (
-        <BulkLogger videos={videos} onLogged={onLogged} />
-      ) : videos.length === 0 ? (
-        <div className="muted">No reels or clips yet — make one, then track how it does on each platform here.</div>
-      ) : (
-        <table className="ins-table vid-table">
-          <thead><tr><th>Video</th><th>Brand</th><th>🎵 TikTok</th><th>📸 Instagram</th><th>▶ YouTube</th><th>Saves+Follows</th><th></th></tr></thead>
-          <tbody>{shown.flatMap((v) => {
-            const key = `${v.video_kind}:${v.video_id}`;
-            const open = sel === key;
-            const rows = [
-              <tr key={key} className={"vid-row" + (open ? " sel" : "")} onClick={() => setSel(open ? "" : key)}>
-                <td><span className={"exp-kind-tag " + (v.is_reel ? "reel" : "clip")}>{v.is_reel ? "reel" : "clip"}</span> {v.title}</td>
-                <td>{v.brand ? <span className="brand-tag">{v.brand}</span> : <span className="brand-tag none" title="No brand set — pick one so it logs correctly">— set —</span>}</td>
-                <td>{cell(v, "tt")}</td><td>{cell(v, "ig")}</td><td>{cell(v, "yt")}</td>
-                <td><b>{v.score}</b></td>
-                <td><button className="sm" onClick={(e) => { e.stopPropagation(); setSel(open ? "" : key); }}>{open ? "Close" : "Track"}</button></td>
-              </tr>,
-            ];
-            if (open) {
-              // The number inputs expand INLINE right under the row you clicked (not at the
-              // bottom of the table) so the panel is always in view.
-              rows.push(
-                <tr key={key + ":edit"} className="vid-edit-row">
-                  <td colSpan={7} style={{ padding: 0 }}>
-                    <PlatformEditor key={sel} video={v} onLogged={onLogged} />
-                  </td>
-                </tr>
-              );
-            }
-            return rows;
-          })}</tbody>
-        </table>
-      )}
-    </div>
-  );
-}
-
-function PlatformEditor({ video, onLogged }: { video: VideoPerf; onLogged: () => void }) {
-  const zero = { views: 0, follows: 0, saves: 0, sends: 0 };
-  const [m, setM] = useState({ tt: video.platforms.tt ?? zero, ig: video.platforms.ig ?? zero, yt: video.platforms.yt ?? zero });
-  // Pre-fill the brand ONLY if it resolved to a known brand; otherwise leave blank — never guess.
-  const [brand, setBrand] = useState(BRANDS.includes(video.brand) ? video.brand : "");
-  const advanced = useAdvanced();
-  // Only the live cartridge is offered unless you're in advanced mode — but an already-set
-  // dormant brand stays in the list so opening its row can't silently drop it.
-  const choices = useMemo(
-    () => Array.from(new Set([...brandChoices(advanced), ...(brand ? [brand] : [])])),
-    [advanced, brand]);
-  const [busy, setBusy] = useState(false);
-  const toast = useToast();
-  const set = (pf: "tt" | "ig" | "yt", k: keyof typeof zero, val: number) =>
-    setM((prev) => ({ ...prev, [pf]: { ...prev[pf], [k]: val } }));
-  // Brand saves the moment you pick it — no need to also enter numbers just to brand a reel.
-  const changeBrand = async (b: string) => {
-    setBrand(b);
-    try { await api.setVideoBrand(video.video_kind, video.video_id, b); toast(b ? `Brand set to ${b}` : "Brand cleared", "ok"); onLogged(); }
-    catch (e: any) { toast(`Couldn't set brand: ${e?.message || e}`, "err"); }
-  };
-  const save = async () => {
-    setBusy(true);
-    try {
-      const order: ("tt" | "ig" | "yt")[] = ["tt", "ig", "yt"];
-      let any = false;
-      for (const pf of order) {
-        const d = m[pf];
-        if (d.views || d.follows || d.saves || d.sends) {
-          // brand is always sent (the dropdown value, blank if unset) so column C is never a guess.
-          await api.logPerf({ video_kind: video.video_kind, video_id: video.video_id, platform: pf, brand, ...d });
-          any = true;
-        }
-      }
-      if (!any) { toast("Enter at least one number", "err"); setBusy(false); return; }
-      toast("Saved how it did 📈", "ok"); onLogged();
-    } catch (e: any) { toast(`Failed: ${e?.message || e}`, "err"); } finally { setBusy(false); }
-  };
-  const platRow = (pf: "tt" | "ig" | "yt", label: string) => (
-    <div className="plat-edit-row">
-      <div className="plat-edit-name">{label}</div>
-      {(["views", "follows", "saves", "sends"] as const).map((k) => (
-        <label key={k} className="plat-in">{k === "sends" ? "shares" : k}
-          <input type="number" value={m[pf][k]} onChange={(e) => set(pf, k, parseInt(e.target.value || "0", 10) || 0)} /></label>
-      ))}
-    </div>
-  );
-  return (
-    <div className="plat-editor">
-      <div className="muted" style={{ fontSize: 12.5, marginBottom: 8 }}>
-        Enter each platform's numbers for <b>“{video.title}”</b> — leave a platform at 0 if you didn't post there. Re-saving updates it.
-      </div>
-      <label className="plat-brand">Brand
-        <select value={brand} onChange={(e) => changeBrand(e.target.value)}>
-          <option value="">— select brand —</option>
-          {choices.map((b) => <option key={b} value={b}>{b}</option>)}
-        </select>
-      </label>
-      {platRow("tt", "🎵 TikTok")}
-      {platRow("ig", "📸 Instagram")}
-      {platRow("yt", "▶ YouTube")}
-      <button className="primary" onClick={save} disabled={busy} style={{ marginTop: 10 }}>{busy ? "Saving…" : "Save all platforms"}</button>
     </div>
   );
 }
@@ -2019,8 +1353,6 @@ function NewProject({ presets, onCreated }: { presets: Presets | null; onCreated
   // Caption style is chosen per clip in the editor; every new project starts on the default.
   const preset = "capcut";
   const [transcribe, setTranscribe] = useState("local");
-  const [brand, setBrand] = useState(ACTIVE_BRAND);
-  const advanced = useAdvanced();
   const [busy, setBusy] = useState(false); const toast = useToast();
   // Default the transcription + brain picks to the backend defaults (CVIDEO_DEFAULT_TRANSCRIBE /
   // CVIDEO_DEFAULT_BRAIN). Fires once when presets load; the stable dep never clobbers a later pick.
@@ -2031,8 +1363,8 @@ function NewProject({ presets, onCreated }: { presets: Presets | null; onCreated
     if (!name.trim()) { toast("Give your project a name", "err"); return; }
     setBusy(true);
     try {
-      // Brand only applies to a reel (caption mode) — moments projects aren't brand-owned.
-      const reelBrand = genMode === "caption" ? brand : "";
+      // Reels are filed under the one brand name; moments projects aren't brand-owned.
+      const reelBrand = genMode === "caption" ? BRAND : "";
       if (mode === "url") {
         if (!url.trim()) { toast("Paste a YouTube URL", "err"); return; }
         await api.createFromUrl({ name, source_url: url, brain, transcribe_backend: transcribe, aspect, caption_preset: preset, mode: genMode, brand: reelBrand });
@@ -2048,7 +1380,7 @@ function NewProject({ presets, onCreated }: { presets: Presets | null; onCreated
     } finally { setBusy(false); }
   };
 
-  const summary = optionsSummary({ genMode, brain, transcribe, aspect, advanced, brand });
+  const summary = optionsSummary({ genMode, brain, transcribe, aspect });
 
   return (
     <div className="card">
@@ -2085,7 +1417,6 @@ function NewProject({ presets, onCreated }: { presets: Presets | null; onCreated
       <details className="np-more">
         <summary>Options <span className="muted">· {summary}</span></summary>
         <div className="row" style={{ marginTop: 12 }}>
-          {genMode === "caption" && advanced && <label className="field"><span className="field-lab">Brand</span><select value={brand} onChange={(e) => setBrand(e.target.value)}>{BRANDS.map((b) => <option key={b} value={b}>{b}</option>)}</select></label>}
           {genMode === "moments" && <label className="field"><span className="field-lab">Brain</span><select value={brain} onChange={(e) => setBrain(e.target.value)}>{(presets?.brains ?? ["ollama"]).map((b) => <option key={b} value={b}>{brainLabel(b)}</option>)}</select></label>}
           <label className="field"><span className="field-lab">Transcription</span><select value={transcribe} onChange={(e) => setTranscribe(e.target.value)}>{(presets?.transcribe ?? ["local"]).map((t) => <option key={t} value={t}>{t === "local" ? "Local (free)" : "ElevenLabs"}</option>)}</select></label>
           <label className="field"><span className="field-lab">Shape</span><select value={aspect} onChange={(e) => setAspect(e.target.value)}>{(presets?.aspects ?? ["9:16"]).map((a) => <option key={a}>{a}</option>)}</select></label>
@@ -2109,9 +1440,8 @@ const BRAIN_LABELS: Record<string, string> = {
 export const brainLabel = (b: string) => BRAIN_LABELS[b] ?? "Basic (no AI)";
 
 /** The folded-away Options summary — so a non-default pick is still visible at a glance. */
-export const optionsSummary = (o: { genMode: string; brain: string; transcribe: string; aspect: string; advanced?: boolean; brand?: string }) =>
+export const optionsSummary = (o: { genMode: string; brain: string; transcribe: string; aspect: string }) =>
   [o.genMode === "moments" ? brainLabel(o.brain) : null,
-   o.genMode === "caption" && o.advanced && o.brand && o.brand !== ACTIVE_BRAND ? o.brand : null,
    o.transcribe === "local" ? "local transcription" : "ElevenLabs",
    o.aspect].filter(Boolean).join(" · ");
 
