@@ -70,7 +70,12 @@ def test_missing_engine_is_not_a_device_failure():
         raise transcribe.TranscriptionUnavailable(transcribe.NO_ENGINE_MSG)
 
     orig = transcribe._get_model
+    orig_dl = transcribe.ensure_model_downloaded
+    # The download step reports the missing engine too, and on a venv without
+    # faster-whisper it gets there first — stub it out so this test always exercises the
+    # path it is about: _get_model raising, and _transcribe_local not retrying past it.
     transcribe._get_model = boom
+    transcribe.ensure_model_downloaded = lambda *a, **k: None
     try:
         try:
             transcribe._transcribe_local(Path("x.wav"))
@@ -79,6 +84,7 @@ def test_missing_engine_is_not_a_device_failure():
             err = e
     finally:
         transcribe._get_model = orig
+        transcribe.ensure_model_downloaded = orig_dl
 
     check("raises TranscriptionUnavailable",
           isinstance(err, transcribe.TranscriptionUnavailable), type(err).__name__)
