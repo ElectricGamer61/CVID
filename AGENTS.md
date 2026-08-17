@@ -92,6 +92,17 @@ The app runs fine on Linux for verification, but nothing in-repo sets that up:
 - **Exercise the flow, don't trust the API.** Several problems here were only visible in the browser
   — a 500 whose toast had already faded, a raw C++ assertion rendered into the editor, a button
   whose only possible outcome was a 400. Drive the real UI when changing the creation path.
+- **The product is a local video editor, and the backend is much bigger than it.** The UI is four
+  stops — Clipping · Create · Editor · Downloads — and that is the whole app. A large second
+  product (autopilot, approval gates, multi-brand cartridges, scheduling/posting, performance
+  metrics, the shoot-drop bin) still lives in `backend/app/` and still answers on its routes, but
+  **nothing in `frontend/` calls it** and there is no flag or URL parameter that brings it back.
+  `CONTEXT.md` §5 lists the dormant routes and §6 lists what was removed. Two consequences:
+  (1) don't reason about a backend module's existence as evidence the feature ships — grep
+  `frontend/src` before assuming; (2) `App.test.ts` › *"the app is only an editor"* asserts the
+  removed vocabulary (autopilot, gate, schedule, post, brand picker, Advanced) never returns to
+  the source, so re-adding any of it fails `npm test` on purpose. Deleting the dormant backend is
+  a follow-up that needs the `backend/test_*.py` suites which want a running server + real media.
 
 ## Maintaining this file
 

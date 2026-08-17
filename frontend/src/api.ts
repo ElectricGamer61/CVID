@@ -78,46 +78,26 @@ export interface Presets {
   tts_available?: boolean;       // is ELEVENLABS_API_KEY set? (no round trip to ElevenLabs)
 }
 
-export interface PostMeta {
-  tt: { caption: string; hashtags: string };
-  ig: { caption: string; hashtags: string };
-  yt: { title: string; description: string; tags: string };
-}
-
+/** One video you're making from a script: its scenes, and the reel they assemble into.
+ *  (The backend row is still called a ticket; nothing user-facing is.) */
 export interface Ticket {
   id: number;
   brand: string;
   stage: string;
   angle: string;
-  outlier_id?: number | null;
   format: string;
   capture_mode: string;
   project_id?: number | null;
   source_ref: string;
   hook_text: string;
   clip_url?: string | null;
-  captions?: Record<string, string> | null;
-  post_meta?: PostMeta | null;
-  platforms: string[];
-  scheduled_at?: string | null;
-  posted_at?: string | null;
   created_at: string;
-  autopilot?: boolean;
   auto_voiceover?: boolean;
-  gate?: string | null;
-  gate_reason?: string | null;
-  queue_kind?: string;
-  // Scene progress summary (only on the /api/tickets list) — drives the board's
+  // Scene progress summary (only on the /api/tickets list) — drives each video card's
   // "where did I leave off" chips.
   n_beats?: number;
   n_clips?: number;
   n_vo?: number;
-}
-
-export interface AutopilotState {
-  running: boolean;
-  interval: number;
-  queue: Ticket[];
 }
 
 export interface ZoomKey { t: number; scale: number; duration: number }
@@ -154,85 +134,7 @@ export interface NewTicketBody {
   capture_mode: string;
   hook_text?: string;
   script?: string;
-  autopilot?: boolean;
   auto_voiceover?: boolean;
-}
-
-export interface Outlier {
-  id: number;
-  url: string;
-  hook: string;
-  structure: string;
-  why_popped: string;
-  caption: string;
-  angle: string;
-  power_phrases: string[];
-  created_at: string;
-}
-
-export interface PlatformStat {
-  platform: string; views: number; follows: number; saves: number; sends: number; posts: number; score: number;
-}
-export interface TrendPoint {
-  date: string; views: number; follows: number; saves: number; sends: number; score: number;
-}
-export interface TopVideo {
-  video_kind: "clip" | "reel"; video_id: number; title: string; hook: string; score: number;
-}
-export interface PlatMetrics { views: number; follows: number; saves: number; sends: number }
-export interface VideoPerf {
-  video_kind: "clip" | "reel"; video_id: number; is_reel: boolean;
-  title: string; hook: string; brand: string;
-  platforms: Partial<Record<"tt" | "ig" | "yt", PlatMetrics>>;
-  totals: PlatMetrics; score: number;
-}
-export interface InsightsData {
-  kpis: { tickets: number; posted: number; views: number; follows: number; saves: number; sends: number };
-  top: TopVideo[];
-  videos: VideoPerf[];
-  angles: { angle: string; outlier_id: number | null; posts_count: number; avg_score: number }[];
-  by_platform: PlatformStat[];
-  trend: TrendPoint[];
-}
-
-export interface QueueTicket extends Ticket {
-  has_video: boolean;
-}
-export interface QueueData {
-  dry_run: boolean;
-  platforms: string[];
-  config: { live: boolean; user_set: boolean; user: string };
-  ready: QueueTicket[];
-  scheduled: QueueTicket[];
-  posted: QueueTicket[];
-}
-export interface PostResult {
-  dry_run: boolean; action: string; platforms: string[];
-  results: Record<string, string>; message: string;
-}
-
-// --- Shoot drop (batch raw-footage intake) ---
-export interface IngestClipInfo {
-  id: number;
-  batch_id: string;
-  filename: string;
-  path: string;
-  transcript: string;
-  status: string;      // pending|transcribing|matched|unmatched|assigned|error
-  ticket_id?: number | null;
-  beat_id?: number | null;
-  confidence: number;  // matcher score 0..1 (0 = manual / new ticket)
-  error?: string | null;
-  ticket_label?: string;
-  scene_index?: number | null;
-}
-export interface OpenScene {
-  beat_id: number; ticket_id: number; order_index: number; line: string; ticket_label: string;
-}
-export interface ShootdropData {
-  clips: IngestClipInfo[];
-  watch_dir: string;
-  open_scenes: OpenScene[];
 }
 
 export interface ExportItem {
@@ -340,8 +242,6 @@ export const api = {
   // --- Tickets / pipeline ---
   listTickets: (): Promise<Ticket[]> => req("/api/tickets"),
   getTicket: (tid: number): Promise<TicketWithBeats> => req(`/api/tickets/${tid}`),
-  createTicket: (body: NewTicketBody): Promise<TicketWithBeats> =>
-    req("/api/tickets", jsonInit("POST", body)),
   createTicketFromScript: (body: NewTicketBody): Promise<TicketWithBeats> =>
     req("/api/tickets/from-script", jsonInit("POST", body)),
   importScript: (tid: number, script: string): Promise<TicketWithBeats> =>
@@ -371,8 +271,6 @@ export const api = {
     req(`/api/tickets/${tid}/assemble`, { method: "POST" }),
   assembleStatus: (tid: number): Promise<{ state: string; stage: string; error: string | null }> =>
     req(`/api/tickets/${tid}/assemble-status`),
-  useClip: (tid: number, cid: number): Promise<Ticket> =>
-    req(`/api/tickets/${tid}/use-clip/${cid}`, { method: "POST" }),
   ticketDownloadUrl: (tid: number) => `/api/tickets/${tid}/download`,
   ticketThumbUrl: (tid: number) => `/api/tickets/${tid}/thumb`,
   buildEdit: (tid: number): Promise<{ pid: number; cid: number; reused_edits?: boolean; wiped_edits?: boolean }> =>
@@ -405,18 +303,6 @@ export const api = {
   sceneTtsVoiceover: (cid: number, idx: number, voice_id?: string, text?: string): Promise<{ voiceover_path: string; scene_vos: (string | null)[] }> =>
     req(`/api/clips/${cid}/scene-tts/${idx}`, jsonInit("POST", { voice_id, text })),
 
-  // --- Autopilot (the autonomous orchestrator) ---
-  autopilotState: (): Promise<AutopilotState> => req("/api/autopilot"),
-  autopilotStart: (): Promise<AutopilotState> => req("/api/autopilot/start", { method: "POST" }),
-  autopilotStop: (): Promise<AutopilotState> => req("/api/autopilot/stop", { method: "POST" }),
-  autopilotTick: (): Promise<{ result: Record<string, string> }> => req("/api/autopilot/tick", { method: "POST" }),
-  autopilotToggle: (tid: number, on: boolean): Promise<Ticket> =>
-    req(`/api/autopilot/tickets/${tid}/toggle`, jsonInit("POST", { on })),
-  autopilotApprove: (tid: number): Promise<Ticket> => req(`/api/autopilot/tickets/${tid}/approve`, { method: "POST" }),
-  autopilotReject: (tid: number): Promise<Ticket> => req(`/api/autopilot/tickets/${tid}/reject`, { method: "POST" }),
-  autopilotRegenerate: (tid: number, note = ""): Promise<Ticket> =>
-    req(`/api/autopilot/tickets/${tid}/regenerate`, jsonInit("POST", { note })),
-
   aiEffects: (cid: number, opts: { emphasis: boolean; zoom: boolean; sfx: boolean }): Promise<{
     clip: Clip; words: Word[]; effects: ClipEffects; counts: Record<string, number>;
   }> => req(`/api/clips/${cid}/ai-effects`, jsonInit("POST", opts)),
@@ -425,51 +311,10 @@ export const api = {
     req(`/api/tickets/${tid}/script-factory`, jsonInit("POST", { brief })),
   hookForge: (tid: number, brief = ""): Promise<{ hooks: string[] }> =>
     req(`/api/tickets/${tid}/hook-forge`, jsonInit("POST", { brief })),
-  generatePostCopy: (tid: number): Promise<{ ticket: Ticket; post_meta: PostMeta }> =>
-    req(`/api/tickets/${tid}/post-copy`, { method: "POST" }),
-
-  // --- Shoot drop (batch raw-footage intake) ---
-  shootdropUpload: (files: File[]): Promise<{ batch_id: string; count: number }> => {
-    const fd = new FormData();
-    files.forEach((f) => fd.append("files", f));
-    return req("/api/shootdrop", { method: "POST", body: fd });
-  },
-  shootdropStatus: (): Promise<ShootdropData> => req("/api/shootdrop"),
-  shootdropClipUrl: (icid: number) => `/api/shootdrop/clips/${icid}/file`,
-  shootdropClipThumbUrl: (icid: number) => `/api/shootdrop/clips/${icid}/thumb`,
-  shootdropAssign: (icid: number, body: { beat_id?: number; new_ticket?: boolean }): Promise<IngestClipInfo> =>
-    req(`/api/shootdrop/clips/${icid}/assign`, jsonInit("POST", body)),
-  shootdropDiscard: (icid: number): Promise<{ discarded: number }> =>
-    req(`/api/shootdrop/clips/${icid}`, { method: "DELETE" }),
-
-  // --- Outliers (swipe file) ---
-  listOutliers: (): Promise<Outlier[]> => req("/api/outliers"),
-  createOutlier: (body: Partial<Outlier>): Promise<Outlier> =>
-    req("/api/outliers", jsonInit("POST", body)),
-  deleteOutlier: (oid: number): Promise<{ deleted: number }> =>
-    req(`/api/outliers/${oid}`, { method: "DELETE" }),
-  ticketFromOutlier: (oid: number): Promise<TicketWithBeats> =>
-    req(`/api/tickets/from-outlier/${oid}`, { method: "POST" }),
 
   listExports: (): Promise<ExportItem[]> => req("/api/exports"),
   setExportFolder: (kind: "clip" | "reel", id: number, folder: string): Promise<{ ok: boolean; folder: string | null }> =>
     req(`/api/exports/${kind}/${id}/folder`, jsonInit("PATCH", { folder })),
-
-  // --- Insights (Signal Reader) ---
-  getInsights: (): Promise<InsightsData> => req("/api/insights"),
-  logPerf: (body: { video_kind: "clip" | "reel"; video_id: number; platform: string; brand?: string; views: number; follows: number; saves: number; sends: number }): Promise<{ ok: boolean }> =>
-    req("/api/perf", jsonInit("POST", body)),
-  setVideoBrand: (kind: "clip" | "reel", id: number, brand: string): Promise<{ ok: boolean; brand: string }> =>
-    req(`/api/videos/${kind}/${id}/brand`, jsonInit("POST", { brand })),
-  syncSheet: (): Promise<{ ok: boolean; pushed: number }> =>
-    req("/api/perf/sync-sheet", { method: "POST" }),
-
-  // --- Scheduling / posting (P6) ---
-  getQueue: (): Promise<QueueData> => req("/api/queue"),
-  scheduleTicket: (tid: number, body: { scheduled_at: string | null; platforms?: string[]; captions?: Record<string, string> }): Promise<Ticket> =>
-    req(`/api/tickets/${tid}/schedule`, jsonInit("POST", body)),
-  postTicket: (tid: number, body: { platforms?: string[]; caption?: string; scheduled_at?: string } = {}): Promise<PostResult> =>
-    req(`/api/tickets/${tid}/post`, jsonInit("POST", body)),
 
   sourceUrl: (pid: number) => `/api/projects/${pid}/source`,
   previewUrl: (cid: number) => `/api/clips/${cid}/preview`,

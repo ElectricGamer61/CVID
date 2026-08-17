@@ -3,13 +3,13 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
 import appSource from "./App.tsx?raw";
+import sidebarSource from "./Sidebar.tsx?raw";
 
 import {
   beatHasCustomDetails, brainLabel, clearLastEdit, editorRouteFor, MAKE_STEPS, makeStepOf,
   makeStepOfBeats, nextStepFor, NEXT_STEP_HINT, optionsSummary, readLastEdit, SECTION_LABELS,
   sidebarViewFor,
 } from "./App";
-import { ACTIVE_BRAND } from "./advanced";
 import type { Ticket } from "./api";
 
 const ticket = (over: Partial<Ticket> = {}): Ticket => ({
@@ -20,7 +20,7 @@ const ticket = (over: Partial<Ticket> = {}): Ticket => ({
 
 describe("sidebarViewFor", () => {
   it("lights up the section you're in", () => {
-    for (const name of ["home", "board", "queue", "library"]) {
+    for (const name of ["home", "board", "library"]) {
       expect(sidebarViewFor({ name } as any)).toBe(name);
     }
   });
@@ -45,16 +45,16 @@ describe("sidebarViewFor", () => {
   });
 
   it("names every section it can return", () => {
-    const routes = [{ name: "home" }, { name: "board" }, { name: "queue" },
+    const routes = [{ name: "home" }, { name: "board" },
       { name: "library" }, { name: "video", tid: 1 },
       { name: "project", pid: 1 }, { name: "editor", pid: 1, cid: 1 }] as any[];
     for (const r of routes) expect(SECTION_LABELS[sidebarViewFor(r)]).toBeTruthy();
   });
 
-  it("has one sidebar section per label, and no folded-away ones left", () => {
-    // Ideas folded into Create, Results into Schedule. A leftover label here would
-    // mean a route still points at a section the sidebar no longer shows.
-    expect(Object.keys(SECTION_LABELS).sort()).toEqual(["board", "editor", "home", "library", "queue"]);
+  it("has one sidebar section per label, and nothing beyond the editor's four", () => {
+    // The whole product is: get footage in, edit it, take the file away. A fifth label
+    // here would mean a route still points at a section the sidebar no longer shows.
+    expect(Object.keys(SECTION_LABELS).sort()).toEqual(["board", "editor", "home", "library"]);
     expect(SECTION_LABELS.home).toBe("Clipping");
   });
 });
@@ -88,10 +88,10 @@ describe("makeStepOf", () => {
     }
   });
 
-  it("has a Make It lane heading for every step it can return", () => {
+  it("has a card label for every step it can return", () => {
     const lanes = new Set(MAKE_STEPS.map((s) => s.key));
     for (const step of ["script", "clips", "voice", "build", "footage"]) {
-      expect(lanes.has(step)).toBe(true);   // a step with no lane drops its cards silently
+      expect(lanes.has(step)).toBe(true);   // a step with no label leaves a card blank
     }
   });
 });
@@ -106,7 +106,7 @@ describe("nextStepFor", () => {
     expect(nextStepFor(ticket({ auto_voiceover: true }), beats)).toBe("build");
   });
 
-  it("switches to posting once the reel exists", () => {
+  it("switches to \"it's made\" once the reel exists", () => {
     expect(nextStepFor(ticket({ clip_url: "/reel.mp4", auto_voiceover: true }), beats)).toBe("done");
   });
 
@@ -119,9 +119,9 @@ describe("nextStepFor", () => {
     }
   });
 
-  it("agrees with the board's grouping for a footage-mode video", () => {
-    // One rule: a longform-clip filed under "Needs clips" on the board while its workspace
-    // said "ingest it on Clipping" is exactly the drift this shares makeStepOf to avoid.
+  it("agrees with the card's label for a footage-mode video", () => {
+    // One rule: a longform-clip whose card said "Needs clips" while its workspace said
+    // "ingest it on Clipping" is exactly the drift this shares makeStepOf to avoid.
     for (const capture_mode of ["longform-clip", "repurpose"]) {
       const t = ticket({ capture_mode, n_beats: 3, n_clips: 1, n_vo: 0 });
       expect(nextStepFor(t, beats)).toBe(makeStepOf(t));
@@ -202,15 +202,10 @@ describe("new-project options summary", () => {
       .toBe("ElevenLabs · 1:1");
   });
 
-  it("shows a non-default brand only in advanced mode", () => {
+  it("never offers a brand to pick — there is only one, and it isn't a decision", () => {
     const base = { genMode: "caption", brain: "ollama", transcribe: "local", aspect: "9:16" };
-    expect(optionsSummary({ ...base, advanced: true, brand: "SemSeo" }))
-      .toBe("SemSeo · local transcription · 9:16");
-    expect(optionsSummary({ ...base, advanced: false, brand: "SemSeo" }))
-      .toBe("local transcription · 9:16");
-    expect(optionsSummary({ ...base, advanced: true, brand: ACTIVE_BRAND }))
-      .toBe("local transcription · 9:16");
-    expect(optionsSummary({ ...base, genMode: "moments", advanced: true, brand: "SemSeo" }))
+    expect(optionsSummary(base)).toBe("local transcription · 9:16");
+    expect(optionsSummary({ ...base, genMode: "moments" }))
       .toBe("Local (free) · local transcription · 9:16");
   });
 });
@@ -369,5 +364,54 @@ describe("last-edited clip", () => {
     clearLastEdit();
     expect(readLastEdit()).toBeNull();
     expect(editorRouteFor(readLastEdit())).toEqual({ name: "editorStart" });
+  });
+});
+
+/* The declutter guards. CVideo is a local video editor: footage in, edit, export. Every
+   assertion here is a surface that was on screen and shouldn't come back by accident —
+   an autonomous operator, its approval gates, a posting queue, a performance database and
+   a multi-brand picker, plus the "Advanced" button that revealed them. */
+describe("the app is only an editor", () => {
+  const src = appSource + sidebarSource;
+
+  it("has exactly four sidebar stops", () => {
+    const labels = ["Clipping", "Create", "Editor", "Downloads"];
+    for (const l of labels) expect(sidebarSource).toContain(`"${l}"`);
+    expect(sidebarSource.match(/^\s*\{item\(/gm)?.length).toBe(labels.length);
+  });
+
+  it("has no Advanced toggle — there is no second mode to reveal", () => {
+    expect(src).not.toMatch(/useAdvanced|setAdvanced|advanced=1/);
+    expect(src).not.toContain("Advanced on");
+  });
+
+  it("has no autopilot, gates or approval queue", () => {
+    for (const gone of [/[Aa]utopilot/, /awaiting_approval/, /Needs your OK/, /Kill autopilot/,
+      /Run once/, /Needs you \(/]) {
+      expect(src).not.toMatch(gone);
+    }
+  });
+
+  it("has no scheduling, posting or results screens", () => {
+    for (const gone of [/function SchedulePage\(/, /function Queue\(/, /function Insights\(/,
+      /function BulkLogger\(/, /function PlatformEditor\(/, /function PostCopyCard\(/,
+      /Post now/, /Practice mode/, /Sync to Google Sheet/, /Upload-Post/]) {
+      expect(src).not.toMatch(gone);
+    }
+  });
+
+  it("has no brand picker — one name, set in code, never asked about", () => {
+    expect(src).not.toMatch(/field-lab">Brand/);
+    expect(src).not.toMatch(/BRANDS\.map/);
+    expect(src).not.toMatch(/api\.setVideoBrand/);
+  });
+
+  it("keeps the editor product itself intact", () => {
+    // The point of the cull was to leave these standing, so pin them.
+    for (const kept of [/function EditorStart\(/, /function ClipEditor\(/, /function LookPanel\(/,
+      /function BigTitlePanel\(/, /function Library\(/, /function NewProject\(/,
+      /field-lab">Transcription/]) {
+      expect(appSource).toMatch(kept);
+    }
   });
 });
