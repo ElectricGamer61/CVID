@@ -4,9 +4,11 @@
 # Run:  powershell -ExecutionPolicy Bypass -File scripts\setup-laptop.ps1
 #
 # What it does: checks Python 3.11 / ffmpeg / Node, builds the venv with the BARE-BONES
-# deps (no CUDA, no local Whisper, no local LLM - ElevenLabs + cloud Gemini), seeds
+# deps (no CUDA, no local LLM - CPU Whisper for transcription + a cloud brain), seeds
 # backend\.env from the template, and builds the UI. After it finishes: paste your keys
 # into backend\.env, then run serve.cmd.
+# NOTE: the bare deps DO include faster-whisper. It is what makes transcription work on a
+# machine with no GPU and no API keys; dropping it leaves uploads with nowhere to go.
 
 $ErrorActionPreference = "Stop"
 $root = Split-Path $PSScriptRoot -Parent
@@ -43,7 +45,7 @@ if (-not (Test-Path ".venv")) {
   Write-Host "Creating Python 3.11 venv..." -ForegroundColor Cyan
   & py -3.11 -m venv .venv
 }
-Write-Host "Installing backend deps (bare-bones - no CUDA, no Whisper, no local LLM)..." -ForegroundColor Cyan
+Write-Host "Installing backend deps (bare-bones - CPU only, no CUDA, no local LLM)..." -ForegroundColor Cyan
 & .\.venv\Scripts\python.exe -m pip install --upgrade pip
 & .\.venv\Scripts\python.exe -m pip install -r requirements-bare.txt
 if ($LASTEXITCODE -ne 0) { Write-Host "pip install failed - see errors above." -ForegroundColor Red; exit 1 }
@@ -69,6 +71,7 @@ if ($LASTEXITCODE -ne 0) { Write-Host "UI build failed - see errors above." -For
 # --- Done -------------------------------------------------------------------
 Write-Host ""
 Write-Host "=== Setup complete ===" -ForegroundColor Green
-Write-Host "1. Open  backend\.env  and paste your ELEVENLABS_API_KEY (and Upload-Post keys if posting)." -ForegroundColor White
+Write-Host "1. Optional: open  backend\.env  and paste keys (ELEVENLABS_API_KEY for AI voice, Upload-Post for posting)." -ForegroundColor White
+Write-Host "   Transcription already works offline on the CPU - no key needed." -ForegroundColor White
 Write-Host "2. Double-click  serve.cmd  (or run scripts\serve.ps1) to start." -ForegroundColor White
 Write-Host "3. Open the URL it prints (e.g. http://127.0.0.1:8000)." -ForegroundColor White

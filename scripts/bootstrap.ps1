@@ -95,7 +95,7 @@ if ($LASTEXITCODE -ne 0) { Write-Host "Build failed - see errors above." -Foregr
 # --- 4. API keys ------------------------------------------------------------
 Write-Host "4. Your API keys (press Enter to skip any - you can paste them into backend\.env later)" -ForegroundColor White
 $envFile = Join-Path $root "backend\.env"
-$el = Read-Host "  ElevenLabs API key (voice + transcription)"
+$el = Read-Host "  ElevenLabs API key (AI voiceover - optional, transcription works offline without it)"
 $oa = Read-Host "  OpenAI API key (the writing brain)"
 Set-EnvKey $envFile "ELEVENLABS_API_KEY" $el.Trim()
 Set-EnvKey $envFile "OPENAI_API_KEY"     $oa.Trim()

@@ -9,13 +9,19 @@ and marks the job errored, and the API stays up.
 
 Usage:  python -m app.pipeline.transcribe_worker <audio_path> <out_json> <backend>
 Writes the transcription result dict to <out_json>. Emits progress as stdout lines
-"PROGRESS <pct> <msg>" so the parent can relay them onto the Project row.
+"PROGRESS <pct> <msg>" so the parent can relay them onto the Project row, and — when it
+fails in Python — exactly one "ERROR <reason>" line the parent shows to the user verbatim.
+Without that line an ordinary config failure reached the user as "exit 1", which the
+parent then guessed was a GPU fault.
 """
 from __future__ import annotations
 
 import json
 import sys
+import traceback
 from pathlib import Path
+
+ERROR_PREFIX = "ERROR "
 
 
 def main() -> int:
@@ -23,13 +29,19 @@ def main() -> int:
         print("usage: transcribe_worker <audio> <out_json> <backend>", file=sys.stderr)
         return 2
     audio, out_json, backend = sys.argv[1], sys.argv[2], sys.argv[3]
-    from app.pipeline import transcribe
 
     def progress(pct: int, msg: str) -> None:
         print(f"PROGRESS {int(pct)} {msg}", flush=True)
 
-    result = transcribe.transcribe(Path(audio), backend=backend, progress=progress)
-    Path(out_json).write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
+    try:
+        from app.pipeline import transcribe
+        result = transcribe.transcribe(Path(audio), backend=backend, progress=progress)
+        Path(out_json).write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
+    except Exception as e:  # noqa: BLE001 - the reason is the whole point of this process
+        traceback.print_exc(file=sys.stderr)
+        # One line, no newlines, so the parent can lift it straight onto the Project row.
+        print(ERROR_PREFIX + (" ".join(str(e).split()) or type(e).__name__), flush=True)
+        return 1
     return 0
 
 

@@ -1,9 +1,8 @@
-# Cvideo backend deps - BARE BONES (laptop, ElevenLabs + cloud OpenAI brain).
-# The smallest working install: no local Whisper (transcribe via ElevenLabs), no local
-# LLM (write via cloud OpenAI/GPT). Drops faster-whisper (the ~big ML download + the 3 GB
-# Whisper model it pulls) and the ollama/anthropic/gemini client packages, which this
-# build never calls. Everything here is imported lazily except opencv/numpy, which the
-# reel assembler and 9:16 reframe need at import time — so they STAY.
+# Cvideo backend deps - BARE BONES (laptop, no GPU, cloud OpenAI brain).
+# The smallest install that can still do the whole job. Drops the ollama/anthropic/gemini
+# clients and the CUDA accel libs, which this build never calls. Everything here is
+# imported lazily except opencv/numpy, which the reel assembler and 9:16 reframe need at
+# import time — so they STAY.
 #
 # Install inside the venv (Python 3.11):  pip install -r requirements-bare.txt
 fastapi==0.115.6
@@ -12,6 +11,11 @@ sqlmodel==0.0.22
 python-multipart==0.0.20
 python-dotenv==1.0.1
 yt-dlp==2025.6.9
+# Offline transcription on the CPU (CTranslate2, no PyTorch, no CUDA). NOT optional:
+# without it a laptop install whose owner skipped the ElevenLabs prompt has no
+# transcription backend at all, and every upload dies. Defaults to the `small` model on
+# CPU (settings.WHISPER_MODEL_CPU), downloaded on first use - not the 3 GB large-v3.
+faster-whisper==1.1.1
 # opencv-contrib (not plain opencv-python) - includes the YuNet DNN face detector
 # used for speaker-tracked reframe; also provides crop/probe helpers the assembler
 # imports at module load. Required.

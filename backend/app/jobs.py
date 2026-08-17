@@ -17,8 +17,30 @@ from typing import Callable
 import settings
 from .db import Clip, Project, get_session
 from .pipeline import brain, ingest
+from .pipeline.transcribe_worker import ERROR_PREFIX as _ERROR_PREFIX
 
 _executor = ThreadPoolExecutor(max_workers=1)
+
+
+# A worker that fails in Python exits 1 after printing its reason. A *native* crash never
+# reaches Python, so it exits via a signal (negative on POSIX) or an NTSTATUS code on
+# Windows (0xC0000005 access violation and friends). Only the latter is a GPU suspect —
+# blaming CUDA for every non-zero exit is what sent a missing pip package to the user as
+# "likely a GPU fault".
+_NATIVE_EXIT_FLOOR = 0xC0000000
+
+
+def worker_failure_message(code: int, reason: str, tail: list[str]) -> str:
+    """User-facing text for a transcription worker that exited non-zero."""
+    if reason:
+        return reason
+    if code < 0 or code >= _NATIVE_EXIT_FLOOR:
+        return (f"transcription crashed inside the GPU runtime (exit {code}). Set "
+                f"CVIDEO_WHISPER_DEVICE=cpu in backend/.env to skip the GPU entirely. "
+                f"The backend stayed up.")
+    detail = " / ".join(t for t in tail[-3:] if t)
+    return (f"transcription failed (exit {code})" + (f": {detail}" if detail else "")
+            + ". See data/backend.log for the full traceback. The backend stayed up.")
 
 
 def transcribe_subprocess(audio: Path, out_json: Path, backend: str,
@@ -26,8 +48,9 @@ def transcribe_subprocess(audio: Path, out_json: Path, backend: str,
     """Transcribe in a child process so a native GPU crash can't kill the API.
 
     Streams the worker's "PROGRESS <pct> <msg>" lines to `progress` and reads the
-    result JSON back. A crash/segfault surfaces here as a non-zero exit code, which
-    the caller turns into a job-level error instead of a dead backend."""
+    result JSON back. A failure surfaces here as a non-zero exit code, which the caller
+    turns into a job-level error instead of a dead backend — carrying the worker's own
+    "ERROR <reason>" line through when it managed to print one."""
     cmd = [sys.executable, "-m", "app.pipeline.transcribe_worker",
            str(audio), str(out_json), backend]
     proc = subprocess.Popen(
@@ -35,6 +58,8 @@ def transcribe_subprocess(audio: Path, out_json: Path, backend: str,
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
     )
     assert proc.stdout is not None
+    reason = ""
+    tail: list[str] = []
     for line in proc.stdout:
         line = line.rstrip()
         if line.startswith("PROGRESS "):
@@ -45,15 +70,24 @@ def transcribe_subprocess(audio: Path, out_json: Path, backend: str,
             except ValueError:
                 pass
         elif line:
+            if line.startswith(_ERROR_PREFIX):
+                reason = line[len(_ERROR_PREFIX):].strip()
+            else:
+                tail = (tail + [line])[-5:]
             print(f"[transcribe_worker] {line}")
     code = proc.wait()
     if code != 0:
-        raise RuntimeError(
-            f"transcription worker crashed (exit {code}) — likely a GPU/CUDA fault; "
-            f"the backend stayed up")
+        raise RuntimeError(worker_failure_message(code, reason, tail))
     result = json.loads(out_json.read_text(encoding="utf-8"))
     out_json.unlink(missing_ok=True)
     return result
+
+
+def _job_error_text(e: BaseException) -> str:
+    msg = " ".join(str(e).split())
+    if isinstance(e, RuntimeError) and msg:
+        return msg
+    return f"{type(e).__name__}: {msg}" if msg else type(e).__name__
 
 
 def _set(project_id: int, **fields):
@@ -156,8 +190,10 @@ def _analyze(project_id: int, upload_path: str | None):
                              daemon=True).start()
     except Exception as e:  # noqa: BLE001
         traceback.print_exc()
-        _set(project_id, status="error", stage="Failed",
-             error=f"{type(e).__name__}: {e}")
+        # RuntimeError here is always a message we wrote for the user (transcription,
+        # ingest); the class name in front of it is noise. Keep it for everything else,
+        # where the type is the only clue about what broke.
+        _set(project_id, status="error", stage="Failed", error=_job_error_text(e))
 
 
 def _prefetch_full(project_id: int, source_url: str) -> None:
