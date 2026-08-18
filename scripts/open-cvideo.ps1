@@ -14,6 +14,13 @@ New-Item -ItemType Directory -Force -Path "$root\data" | Out-Null
 # Refresh PATH so ffmpeg / npm / python are visible (winget updates the registry, not this shell).
 $env:Path = [System.Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [System.Environment]::GetEnvironmentVariable('Path','User')
 
+# Resolve the YouTube browser-cookie fallback (registry + backend\.env, not just $env:, which
+# is stale for anything set after this Explorer session started) and pass it to the backend.
+. "$PSScriptRoot\cvideo-env.ps1"
+$cookies = Initialize-CvideoBackendEnv -Root $root
+$cookieLine = Get-CvideoCookieSummary $cookies
+$backendEnv = Get-CvideoBackendEnvPrefix
+
 function Test-Up {
   try { return (Invoke-WebRequest -UseBasicParsing -TimeoutSec 2 "$url/api/health").StatusCode -eq 200 }
   catch { return $false }
@@ -26,12 +33,17 @@ if (-not (Test-Up)) {
     Push-Location "$root\frontend"; npm run build; Pop-Location
   }
   Write-Host "Starting Cvideo..." -ForegroundColor Cyan
+  # Logged here, not above: when the app was already running we did not start a backend,
+  # and a line in backend.log claiming otherwise would misdate the setting it reports.
+  Write-Host $cookieLine -ForegroundColor DarkGray
+  Add-Content $log $cookieLine
   # Backend serves the UI on one port; supervised loop self-heals a crash; log is tee'd.
   # Window is Minimized to dodge the QuickEdit freeze trap. Local-only (127.0.0.1) so no
   # firewall prompt -- use serve.cmd instead when you want other devices to reach it.
   # cmd does the stderr merge (see serve.ps1): uvicorn logs to stderr, and PowerShell's own
   # "2>&1" would tee a NativeCommandError block into backend.log for every ordinary INFO line.
   $backendCmd = "`$env:Path=[System.Environment]::GetEnvironmentVariable('Path','Machine')+';'+[System.Environment]::GetEnvironmentVariable('Path','User'); " +
+    $backendEnv +
     "Set-Location '$root\backend'; while (`$true) { " +
     "cmd /c '.\.venv\Scripts\python.exe -m uvicorn app.main:app --port 8000 2>&1' | Tee-Object -FilePath '$log' -Append; " +
     "Start-Sleep -Seconds 2 }"

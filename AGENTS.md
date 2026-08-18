@@ -89,6 +89,21 @@ The app runs fine on Linux for verification, but nothing in-repo sets that up:
   user can hit needs a visible way forward — here `POST /api/projects/{pid}/retry` plus a ↻ Retry
   on the card, because the media is still on disk and deleting the project to re-upload was the
   only previous escape.
+- **A Windows launcher must hand the backend its config, not hope it inherits it.** A user
+  had `CVIDEO_YOUTUBE_COOKIE_BROWSERS` set in the Windows *user* environment and the backend
+  still reported "No browser-cookie fallback is enabled": `HKCU\Environment` (what `setx` and
+  the System Properties dialog write) does not reach a process whose ancestor started before
+  the value was set, and the launchers only ever forwarded that stale block. `scripts/cvideo-env.ps1`
+  now resolves such settings from the registry + `backend\.env`, sets them in the launcher's own
+  process, injects them into the child window's `-Command` string, and logs the decision to
+  `data\backend.log`; `backend/test_launcher_env.py` pins both the source wiring and - on any
+  machine where a real PowerShell is reachable, WSL included - the registry-to-child-process
+  chain. Same shape for anything else the backend reads from the environment.
+- **The signed-in-browser path can only be checked so far from here.** A bot-challenge recovery
+  is testable end to end with stubs (`backend/test_ingest_auth.py`,
+  `backend/test_youtube_job_recovery.py`) and the launcher chain is testable on real PowerShell,
+  but a *live* YouTube challenge answered by a real signed-in Chrome/Edge/Firefox profile needs
+  the Windows machine. Say which half you actually exercised; never claim "YouTube works now".
 - **Exercise the flow, don't trust the API.** Several problems here were only visible in the browser
   — a 500 whose toast had already faded, a raw C++ assertion rendered into the editor, a button
   whose only possible outcome was a 400. Drive the real UI when changing the creation path.

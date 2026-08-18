@@ -15,6 +15,15 @@ New-Item -ItemType Directory -Force -Path "$root\data" | Out-Null
 # Refresh PATH so ffmpeg / ollama / npm are visible (winget updates the registry, not this shell).
 $env:Path = [System.Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [System.Environment]::GetEnvironmentVariable('Path','User')
 
+# Resolve the YouTube browser-cookie fallback and put it in THIS process's environment, so
+# the backend below inherits it. Reading the registry (not just $env:) is the point: a value
+# set with setx / the System Properties dialog never reaches an already-running shell.
+. "$PSScriptRoot\cvideo-env.ps1"
+$cookies = Initialize-CvideoBackendEnv -Root $root
+$cookieLine = Get-CvideoCookieSummary $cookies
+Write-Host $cookieLine -ForegroundColor DarkGray
+Add-Content $log $cookieLine
+
 # Build the UI only if it hasn't been built yet (fast startup / boot-time autostart).
 # Force a rebuild after a UI change by deleting frontend\dist first, or run npm run build.
 if (-not (Test-Path "$root\frontend\dist\index.html")) {
