@@ -1,8 +1,7 @@
 # Cvideo
 
-Your own free, local clone of wayinvideo / OpusClip. Turns long-form YouTube videos
-into vertical shorts: auto-transcribe → AI picks the best moments → 9:16 reframe →
-TikTok-style captions → editor → export. Runs entirely on your PC.
+Your own free video editor. Turn long-form videos into vertical shorts: transcribe → find
+strong moments → reframe to 9:16 → add captions → edit → export. Runs on your PC.
 
 ## 🚀 Dead-simple install (Windows laptop)
 
@@ -21,14 +20,14 @@ git clone https://github.com/ElectricGamer61/CVID.git
 ```
 
 **3.** Open the new `CVID` folder and double-click **`install.cmd`**. It installs everything
-else (Python, Node, ffmpeg), builds the app, asks for your **ElevenLabs** and **OpenAI** API
-keys (press Enter to add them later in `backend\.env`), and launches it.
+else (Python, Node, ffmpeg), builds the app, and optionally asks for your **ElevenLabs** and
+**cloud categorizer** API keys (press Enter to add them later in `backend\.env`). It then launches it.
 
 The installer also drops a **`Cvideo` icon on your Desktop** — after that, opening the app is
 one double-click (it starts the local server if it isn't already running and opens Cvideo in
 its own window). Missing or moved? Double-click **`install-shortcut.cmd`** to put it back, or
-run **`serve.cmd`** to start the server by hand. This is the **bare-bones** build: ElevenLabs
-for voice/transcription + OpenAI for writing — no local AI models, ~1 GB total, no GPU needed.
+run **`serve.cmd`** to start the server by hand. The default install supports local CPU
+transcription and local clip finding; cloud services are optional. No GPU is required.
 
 <sub>If you ever make this repo public, `scripts/bootstrap.ps1` can also run as a single
 `iwr -useb <raw-url> | iex` one-liner that does steps 1–3 for you in one shot.</sub>
@@ -49,8 +48,9 @@ for voice/transcription + OpenAI for writing — no local AI models, ~1 GB total
 - **ffmpeg** (on PATH) — `ffmpeg -version`
 - **Python 3.11**
 - **Node 18+**
-- **Ollama** (for the local brain) — `ollama pull qwen2.5:7b`
-- (optional) **GEMINI_API_KEY** in `backend/.env` for the cloud brain
+- **Ollama** (optional, for local clip finding) — `ollama pull qwen2.5:7b`
+- (optional) **GEMINI_API_KEY** in `backend/.env` for Gemini clip finding
+- (optional) **OPENAI_API_KEY** in `backend/.env` for the Cloud categorizer
 
 > RTX 5070 note: the MVP uses **faster-whisper (CTranslate2)**, which needs no PyTorch,
 > so the Blackwell/`sm_120` PyTorch issue does not block transcription. It uses the GPU
@@ -96,7 +96,7 @@ Open http://localhost:3000. The Vite dev server proxies `/api` to the backend on
 - `CVIDEO_WHISPER_MODEL` (default `large-v3`) · `CVIDEO_WHISPER_DEVICE` (`auto`/`cuda`/`cpu`)
 - `CVIDEO_OLLAMA_MODEL` (default `qwen2.5:7b`) · `OLLAMA_HOST`
 - `GEMINI_API_KEY` · `CVIDEO_GEMINI_MODEL` (default `gemini-1.5-flash`)
-- `CVIDEO_DEFAULT_BRAIN` (`ollama`/`gemini`/`heuristic`)
+- `CVIDEO_DEFAULT_BRAIN` (`openai`/`claude`/`ollama`/`gemini`/`heuristic`); `openai` is retained as the backend compatibility id for Cloud categorizer
 - `CVIDEO_TARGET_CLIPS`, `CVIDEO_MIN_CLIP`, `CVIDEO_MAX_CLIP`
 
 ## Caption presets

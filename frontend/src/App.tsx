@@ -1325,9 +1325,9 @@ function ProjectCard({ p, onOpen, onDelete, onRename, onRetry }: { p: Project; o
         ) : (
           <div className="name" title="Double-click to rename" onDoubleClick={(e) => { e.stopPropagation(); setNm(p.name); setEditing(true); }}>{p.name}</div>
         )}
-        <div className="proj-tags"><span className="tag">{p.brain}</span><span className="tag">{p.aspect}</span><span className="tag">{p.caption_preset}</span></div>
+        <div className="proj-tags"><span className="tag">Clip finder: {brainLabel(p.brain)}</span><span className="tag">{p.aspect}</span><span className="tag">{p.caption_preset}</span></div>
         {!ready && !failed && (
-          <div><div className="muted" style={{ marginBottom: 5, fontSize: 12.5 }}>{p.stage || p.status}…</div>
+          <div><div className="muted" style={{ marginBottom: 5, fontSize: 12.5 }}>{stageLabel(p.stage || p.status)}…</div>
             <div className="progress"><div style={{ width: `${p.progress}%` }} /></div></div>
         )}
         <div className="proj-foot">
@@ -1419,7 +1419,7 @@ function NewProject({ presets, onCreated }: { presets: Presets | null; onCreated
       <details className="np-more">
         <summary>Options <span className="muted">· {summary}</span></summary>
         <div className="row" style={{ marginTop: 12 }}>
-          {genMode === "moments" && <label className="field"><span className="field-lab">Brain</span><select value={brain} onChange={(e) => setBrain(e.target.value)}>{(presets?.brains ?? ["ollama"]).map((b) => <option key={b} value={b}>{brainLabel(b)}</option>)}</select></label>}
+          {genMode === "moments" && <label className="field"><span className="field-lab">Clip finder</span><select value={brain} onChange={(e) => setBrain(e.target.value)}>{(presets?.brains ?? ["ollama"]).map((b) => <option key={b} value={b}>{brainLabel(b)}</option>)}</select></label>}
           <label className="field"><span className="field-lab">Transcription</span><select value={transcribe} onChange={(e) => setTranscribe(e.target.value)}>{(presets?.transcribe ?? ["local"]).map((t) => <option key={t} value={t}>{t === "local" ? "Local (free)" : "ElevenLabs"}</option>)}</select></label>
           <label className="field"><span className="field-lab">Shape</span><select value={aspect} onChange={(e) => setAspect(e.target.value)}>{(presets?.aspects ?? ["9:16"]).map((a) => <option key={a}>{a}</option>)}</select></label>
         </div>
@@ -1436,14 +1436,19 @@ function NewProject({ presets, onCreated }: { presets: Presets | null; onCreated
 }
 
 const BRAIN_LABELS: Record<string, string> = {
-  claude: "Claude (smartest)", ollama: "Local (free)", gemini: "Gemini",
+  openai: "Cloud categorizer",
+  claude: "Claude categorizer",
+  ollama: "Local categorizer",
+  gemini: "Gemini categorizer",
+  heuristic: "Basic moment finder",
 };
-/** Anything the backend offers that we have no friendly name for is the heuristic scorer. */
-export const brainLabel = (b: string) => BRAIN_LABELS[b] ?? "Basic (no AI)";
+/** Friendly task-oriented names; backend ids stay private compatibility details. */
+export const brainLabel = (b: string) => BRAIN_LABELS[b] ?? "Moment finder";
+export const stageLabel = (stage: string) => stage.replace(/Finding moments \(([^)]+)\)/, (_, brain) => `Finding clips with ${brainLabel(brain)}`);
 
 /** The folded-away Options summary — so a non-default pick is still visible at a glance. */
 export const optionsSummary = (o: { genMode: string; brain: string; transcribe: string; aspect: string }) =>
-  [o.genMode === "moments" ? brainLabel(o.brain) : null,
+  [o.genMode === "moments" ? `Find clips with: ${brainLabel(o.brain)}` : null,
    o.transcribe === "local" ? "local transcription" : "ElevenLabs",
    o.aspect].filter(Boolean).join(" · ");
 

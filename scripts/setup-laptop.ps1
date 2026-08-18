@@ -3,10 +3,9 @@
 #
 # Run:  powershell -ExecutionPolicy Bypass -File scripts\setup-laptop.ps1
 #
-# What it does: checks Python 3.11 / ffmpeg / Node, builds the venv with the BARE-BONES
-# deps (no CUDA, no local LLM - CPU Whisper for transcription + a cloud brain), seeds
-# backend\.env from the template, and builds the UI. After it finishes: paste your keys
-# into backend\.env, then run serve.cmd.
+# What it does: checks Python 3.11 / ffmpeg / Node, builds the venv with CPU-capable
+# dependencies, seeds backend\.env from the template, and builds the UI. After it finishes:
+# optionally paste service keys into backend\.env, then run serve.cmd.
 # NOTE: the bare deps DO include faster-whisper. It is what makes transcription work on a
 # machine with no GPU and no API keys; dropping it leaves uploads with nowhere to go.
 
@@ -45,7 +44,7 @@ if (-not (Test-Path ".venv")) {
   Write-Host "Creating Python 3.11 venv..." -ForegroundColor Cyan
   & py -3.11 -m venv .venv
 }
-Write-Host "Installing backend deps (bare-bones - CPU only, no CUDA, no local LLM)..." -ForegroundColor Cyan
+Write-Host "Installing backend deps (CPU-capable local setup)..." -ForegroundColor Cyan
 & .\.venv\Scripts\python.exe -m pip install --upgrade pip
 & .\.venv\Scripts\python.exe -m pip install -r requirements-bare.txt
 if ($LASTEXITCODE -ne 0) { Write-Host "pip install failed - see errors above." -ForegroundColor Red; exit 1 }
