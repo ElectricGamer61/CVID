@@ -98,6 +98,24 @@ Open http://localhost:3000. The Vite dev server proxies `/api` to the backend on
 - `GEMINI_API_KEY` · `CVIDEO_GEMINI_MODEL` (default `gemini-1.5-flash`)
 - `CVIDEO_DEFAULT_BRAIN` (`ollama`/`gemini`/`heuristic`)
 - `CVIDEO_TARGET_CLIPS`, `CVIDEO_MIN_CLIP`, `CVIDEO_MAX_CLIP`
+- `CVIDEO_YOUTUBE_COOKIE_BROWSERS` (optional, comma-separated browser order: `chrome,edge,firefox`)
+
+### YouTube bot/sign-in challenges (optional recovery)
+
+Cvideo first downloads YouTube URLs anonymously. If YouTube responds with “Sign in to
+confirm you're not a bot”, you can opt in to a local browser-cookie fallback:
+
+1. Sign in to YouTube in Chrome, Edge, or Firefox on this Windows PC.
+2. Close that browser (yt-dlp may be unable to read a profile while it is open).
+3. Add, for example, `CVIDEO_YOUTUBE_COOKIE_BROWSERS=chrome,edge,firefox` to
+   `backend\\.env`, in the order you want tried, then restart Cvideo.
+4. Retry the project; the original URL and project are preserved.
+
+This is opt-in and user-controlled. Cvideo asks yt-dlp to read the selected browser's local
+cookie store only for the requested YouTube download; it does not collect passwords, upload
+cookies to Cvideo, or use them for local-file uploads. If no configured browser session works,
+the project remains available and the error explains what to fix. Keep yt-dlp updated with
+`pip install -U yt-dlp` when YouTube changes its checks.
 
 ## Caption presets
 `capcut` (classic TikTok), `hormozi` (uppercase pop), `beasty` (big centered),

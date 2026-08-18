@@ -26,13 +26,38 @@ _TRANSIENT = ("403", "forbidden", "timed out", "timeout",
               "connection reset", "unable to download video data")
 _MAX_TRIES = 4
 
+# Keep this intentionally specific: an ordinary 403/timeout should retain the existing
+# transient retry behavior, while a bot challenge is the one case where a local browser
+# session can legitimately help.
+_BOT_CHALLENGE_MARKERS = (
+    "sign in to confirm you're not a bot",
+    "sign in to confirm you’re not a bot",
+    "confirm you're not a bot",
+    "confirm you’re not a bot",
+    "not a bot",
+    "confirm you are not a bot",
+)
 
-def _ydl(opts: dict, url: str, ranges=None) -> dict:
+
+def is_bot_challenge(error: object) -> bool:
+    """Return whether yt-dlp reported YouTube's interactive bot/sign-in challenge."""
+    text = str(error).lower()
+    return any(marker in text for marker in _BOT_CHALLENGE_MARKERS)
+
+
+def _browser_order() -> tuple[str, ...]:
+    # Imported at call time so tests and long-running local installs can configure this
+    # without making local-file ingestion depend on browser state.
+    from settings import YOUTUBE_COOKIE_BROWSERS
+    allowed = {"chrome", "edge", "firefox"}
+    return tuple(browser for browser in YOUTUBE_COOKIE_BROWSERS if browser in allowed)
+
+
+def _ydl_attempt(opts: dict, url: str, ranges=None, browser: str | None = None) -> dict:
     import yt_dlp
-    from yt_dlp.utils import DownloadError
-
     if ranges is not None:
         from yt_dlp.utils import download_range_func
+        opts = dict(opts)
         opts["download_ranges"] = download_range_func(None, ranges)
         opts["force_keyframes_at_cuts"] = True
     base = {
@@ -40,20 +65,53 @@ def _ydl(opts: dict, url: str, ranges=None) -> dict:
         # yt-dlp's own per-fragment/HTTP retries (handles brief blips in-place).
         "retries": 10, "fragment_retries": 10, "extractor_retries": 3,
     }
+    if browser:
+        # yt-dlp reads the browser cookie database locally. No password scraping or
+        # cookie upload is performed by Cvideo.
+        base["cookiesfrombrowser"] = (browser,)
     base.update(opts)
+    with yt_dlp.YoutubeDL(base) as ydl:
+        return ydl.extract_info(url, download=True)
+
+
+def _ydl(opts: dict, url: str, ranges=None) -> dict:
+    from yt_dlp.utils import DownloadError
 
     last_err: Exception | None = None
-    for attempt in range(1, _MAX_TRIES + 1):
-        try:
-            with yt_dlp.YoutubeDL(base) as ydl:
-                return ydl.extract_info(url, download=True)
-        except DownloadError as e:  # noqa: PERF203
-            last_err = e
-            msg = str(e).lower()
-            if attempt == _MAX_TRIES or not any(t in msg for t in _TRANSIENT):
-                raise
-            # Re-extract from scratch with fresh URLs after a short backoff.
-            time.sleep(2 * attempt)
+    try:
+        for attempt in range(1, _MAX_TRIES + 1):
+            try:
+                return _ydl_attempt(opts, url, ranges)
+            except DownloadError as e:  # noqa: PERF203
+                last_err = e
+                msg = str(e).lower()
+                if attempt == _MAX_TRIES or not any(t in msg for t in _TRANSIENT):
+                    raise
+                # Re-extract from scratch with fresh URLs after a short backoff.
+                time.sleep(2 * attempt)
+    except DownloadError as anonymous_error:
+        if not is_bot_challenge(anonymous_error):
+            raise
+        browsers = _browser_order()
+        if not browsers:
+            raise RuntimeError(
+                "YouTube asked you to sign in because it detected automated traffic. "
+                "No browser-cookie fallback is enabled. Set "
+                "CVIDEO_YOUTUBE_COOKIE_BROWSERS=chrome,edge,firefox in backend/.env "
+                "and retry, with YouTube already signed in to one of those browsers."
+            ) from anonymous_error
+        browser_errors = []
+        for browser in browsers:
+            try:
+                return _ydl_attempt(opts, url, ranges, browser)
+            except DownloadError as e:  # noqa: PERF203
+                browser_errors.append(f"{browser}: {e}")
+        raise RuntimeError(
+            "YouTube rejected the request even with the configured browser sessions "
+            f"({', '.join(browsers)}). Sign in to YouTube in one configured browser, "
+            "close it, then retry; otherwise try again later. "
+            f"Details: {'; '.join(browser_errors)}"
+        ) from anonymous_error
     raise last_err  # pragma: no cover - loop always returns or raises above
 
 
