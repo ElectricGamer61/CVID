@@ -7,7 +7,7 @@ import sidebarSource from "./Sidebar.tsx?raw";
 
 import {
   beatHasCustomDetails, brainLabel, clearLastEdit, editorRouteFor, MAKE_STEPS, makeStepOf,
-  makeStepOfBeats, nextStepFor, NEXT_STEP_HINT, optionsSummary, readLastEdit, SECTION_LABELS,
+  makeStepOfBeats, nextStepFor, NEXT_STEP_HINT, optionsSummary, readLastEdit, SECTION_LABELS, stageLabel,
   sidebarViewFor,
 } from "./App";
 import type { Ticket } from "./api";
@@ -188,15 +188,18 @@ describe("beatHasCustomDetails", () => {
 
 describe("new-project options summary", () => {
   it("names the brains the backend offers", () => {
-    expect(brainLabel("claude")).toBe("Claude (smartest)");
-    expect(brainLabel("ollama")).toBe("Local (free)");
-    expect(brainLabel("gemini")).toBe("Gemini");
-    expect(brainLabel("heuristic")).toBe("Basic (no AI)");
+    expect(brainLabel("openai")).toBe("Cloud categorizer");
+    expect(brainLabel("claude")).toBe("Claude categorizer");
+    expect(brainLabel("ollama")).toBe("Local categorizer");
+    expect(brainLabel("gemini")).toBe("Gemini categorizer");
+    expect(brainLabel("heuristic")).toBe("Basic moment finder");
+    expect(brainLabel("future-provider")).toBe("Moment finder");
+    expect(stageLabel("Finding moments (openai)")).toBe("Finding clips with Cloud categorizer");
   });
 
   it("summarises the folded-away picks", () => {
     expect(optionsSummary({ genMode: "moments", brain: "ollama", transcribe: "local", aspect: "9:16" }))
-      .toBe("Local (free) · local transcription · 9:16");
+      .toBe("Find clips with: Local categorizer · local transcription · 9:16");
   });
 
   it("drops the brain when there are no moments to score", () => {
@@ -208,7 +211,7 @@ describe("new-project options summary", () => {
     const base = { genMode: "caption", brain: "ollama", transcribe: "local", aspect: "9:16" };
     expect(optionsSummary(base)).toBe("local transcription · 9:16");
     expect(optionsSummary({ ...base, genMode: "moments" }))
-      .toBe("Local (free) · local transcription · 9:16");
+      .toBe("Find clips with: Local categorizer · local transcription · 9:16");
   });
 });
 

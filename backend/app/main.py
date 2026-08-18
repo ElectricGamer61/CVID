@@ -2210,7 +2210,7 @@ def list_presets():
     return {"captions": list(caps.PRESETS.keys()),
             "caption_styles": {k: asdict(v) for k, v in caps.PRESETS.items()},
             "aspects": list(reframe.ASPECTS.keys()),
-            "brains": ["claude", "ollama", "gemini", "heuristic"],
+            "brains": ["openai", "claude", "ollama", "gemini", "heuristic"],
             "brains_default": settings.DEFAULT_BRAIN,
             "transcribe": ["local", "elevenlabs"],
             "transcribe_default": settings.DEFAULT_TRANSCRIBE,
