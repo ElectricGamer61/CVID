@@ -92,6 +92,14 @@ _DEFAULT_TRANSCRIBE = os.getenv("CVIDEO_DEFAULT_TRANSCRIBE", "local").strip().lo
 DEFAULT_TRANSCRIBE = ("local" if _DEFAULT_TRANSCRIBE == "elevenlabs" and not ELEVENLABS_API_KEY
                       else _DEFAULT_TRANSCRIBE)
 
+# YouTube browser cookies are deliberately opt-in. yt-dlp reads the selected browser's
+# local cookie store; it does not upload it anywhere except the requested YouTube URL.
+# Keep this empty by default, and let users choose an order appropriate to their machine.
+YOUTUBE_COOKIE_BROWSERS = tuple(
+    item.strip().lower() for item in os.getenv("CVIDEO_YOUTUBE_COOKIE_BROWSERS", "").split(",")
+    if item.strip()
+)
+
 # --- Shoot Drop (batch raw-footage intake) ------------------------------------
 # Watched folder: copy raw phone clips here and the backend auto-ingests them
 # (transcribe -> match to open video scripts -> attach). Empty = watcher off;
