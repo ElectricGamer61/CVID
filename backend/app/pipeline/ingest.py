@@ -45,6 +45,39 @@ def is_bot_challenge(error: object) -> bool:
     return any(marker in text for marker in _BOT_CHALLENGE_MARKERS)
 
 
+def is_format_unavailable(error: object) -> bool:
+    """Return whether yt-dlp rejected only the requested format selector."""
+    text = str(error).lower()
+    return any(marker in text for marker in (
+        "requested format is not available",
+        "requested format not available",
+        "format is not available",
+    ))
+
+
+def _format_candidates(opts: dict) -> tuple[dict, ...]:
+    """Return preferred options followed by selectors accepted by more videos.
+
+    Keep this here, rather than weakening the primary selectors, so good sources
+    still get the requested proxy/full quality while odd YouTube manifests can
+    degrade to a playable download.
+    """
+    selected = opts.get("format")
+    if not selected:
+        return (opts,)
+    if "audio" in selected.lower() and selected == "bestaudio/best":
+        formats = (selected, "bestaudio", "best")
+    else:
+        formats = (selected, "bestvideo+bestaudio", "best", "bv*+ba/b")
+    candidates = []
+    for fmt in formats:
+        if fmt not in {item.get("format") for item in candidates}:
+            candidate = dict(opts)
+            candidate["format"] = fmt
+            candidates.append(candidate)
+    return tuple(candidates)
+
+
 def _browser_order() -> tuple[str, ...]:
     # Imported at call time so tests and long-running local installs can configure this
     # without making local-file ingestion depend on browser state.
@@ -74,21 +107,38 @@ def _ydl_attempt(opts: dict, url: str, ranges=None, browser: str | None = None) 
         return ydl.extract_info(url, download=True)
 
 
-def _ydl(opts: dict, url: str, ranges=None) -> dict:
+def _ydl(_opts: dict, url: str, ranges=None) -> dict:
     from yt_dlp.utils import DownloadError
 
-    last_err: Exception | None = None
-    try:
-        for attempt in range(1, _MAX_TRIES + 1):
+    candidates = _format_candidates(_opts)
+    format_errors: list[str] = []
+
+    def attempt(opts: dict, browser: str | None = None):
+        for retry in range(1, _MAX_TRIES + 1):
             try:
-                return _ydl_attempt(opts, url, ranges)
-            except DownloadError as e:  # noqa: PERF203
-                last_err = e
-                msg = str(e).lower()
-                if attempt == _MAX_TRIES or not any(t in msg for t in _TRANSIENT):
+                return _ydl_attempt(opts, url, ranges, browser)
+            except DownloadError as error:  # noqa: PERF203
+                if is_format_unavailable(error):
+                    format_errors.append(str(error))
                     raise
-                # Re-extract from scratch with fresh URLs after a short backoff.
-                time.sleep(2 * attempt)
+                msg = str(error).lower()
+                if retry == _MAX_TRIES or not any(t in msg for t in _TRANSIENT):
+                    raise
+                time.sleep(2 * retry)
+
+    def try_all(browser: str | None = None):
+        for opts in candidates:
+            try:
+                return attempt(opts, browser)
+            except DownloadError as error:
+                if not is_format_unavailable(error):
+                    raise
+        return None
+
+    try:
+        result = try_all()
+        if result is not None:
+            return result
     except DownloadError as anonymous_error:
         if not is_bot_challenge(anonymous_error):
             raise
@@ -103,16 +153,26 @@ def _ydl(opts: dict, url: str, ranges=None) -> dict:
         browser_errors = []
         for browser in browsers:
             try:
-                return _ydl_attempt(opts, url, ranges, browser)
-            except DownloadError as e:  # noqa: PERF203
-                browser_errors.append(f"{browser}: {e}")
+                result = try_all(browser)
+                if result is not None:
+                    return result
+            except DownloadError as error:
+                browser_errors.append(f"{browser}: {error}")
+        if browser_errors and not all(is_format_unavailable(e) for e in browser_errors):
+            raise RuntimeError(
+                "YouTube rejected the request even with the configured browser sessions "
+                f"({', '.join(browsers)}). Sign in to YouTube in one configured browser, "
+                "close it, then retry; otherwise try again later. "
+                f"Details: {'; '.join(browser_errors)}"
+            ) from anonymous_error
+
+    if format_errors:
         raise RuntimeError(
-            "YouTube rejected the request even with the configured browser sessions "
-            f"({', '.join(browsers)}). Sign in to YouTube in one configured browser, "
-            "close it, then retry; otherwise try again later. "
-            f"Details: {'; '.join(browser_errors)}"
-        ) from anonymous_error
-    raise last_err  # pragma: no cover - loop always returns or raises above
+            "YouTube has no compatible downloadable format for this video. "
+            "Update yt-dlp in the backend environment and retry, or use a local video file. "
+            f"Details: {format_errors[-1]}"
+        )
+    raise RuntimeError("YouTube download failed; retry the project.")
 
 
 def _finalize(out_path: Path) -> Path:
