@@ -6,11 +6,11 @@ import appSource from "./App.tsx?raw";
 import sidebarSource from "./Sidebar.tsx?raw";
 
 import {
-  beatHasCustomDetails, brainLabel, clearLastEdit, editorRouteFor, MAKE_STEPS, makeStepOf,
+  beatHasCustomDetails, brainLabel, clearLastEdit, editorPickups, MAKE_STEPS, makeStepOf,
   makeStepOfBeats, nextStepFor, NEXT_STEP_HINT, optionsSummary, readLastEdit, SECTION_LABELS, stageLabel,
   sidebarViewFor,
 } from "./App";
-import type { Ticket } from "./api";
+import type { Project, Ticket } from "./api";
 import { DEFAULT_PRESET, FALLBACK_PRESETS, isBigSubtitleStyle } from "./captionStyles";
 import { TITLE_PLACES } from "./looks";
 
@@ -382,17 +382,41 @@ describe("the Create and Editor screens", () => {
   });
 });
 
-describe("editorRouteFor", () => {
-  it("reopens the clip you had open last", () => {
-    expect(editorRouteFor({ pid: 3, cid: 9 })).toEqual({ name: "editor", pid: 3, cid: 9 });
-    expect(editorRouteFor({ pid: 3, cid: 9, from: "video", tid: 4 }))
-      .toEqual({ name: "editor", pid: 3, cid: 9, from: "video", tid: 4 });
+describe("opening the Editor", () => {
+  const proj = (over: Partial<Project> = {}): Project =>
+    ({ id: 1, name: "A", status: "ready", ...over } as Project);
+
+  it("lands on the start screen, never on a video", () => {
+    // The whole point: the editor opens empty. Reopening the edit you finished last week
+    // because the app remembered it is a surprise, and there was no way back out of it.
+    expect(appSource).toContain('const goEditor = () => setRoute({ name: "editorStart" });');
+    expect(appSource).not.toContain("editorRouteFor");
+    expect(sidebarViewFor({ name: "editorStart" })).toBe("editor");
   });
 
-  it("opens the editor's own drop-footage start screen when nothing is remembered", () => {
-    // Not Clipping, not Create: the button says Editor, so it lands on the editor.
-    expect(editorRouteFor(null)).toEqual({ name: "editorStart" });
-    expect(sidebarViewFor(editorRouteFor(null))).toBe("editor");
+  it("still offers every finished video, so nothing gets locked away", () => {
+    const projects = [proj({ id: 1 }), proj({ id: 2 }), proj({ id: 3, status: "error" })];
+    expect(editorPickups(projects, null).map((p) => p.project.id)).toEqual([1, 2]);
+  });
+
+  it("floats the clip you had open last to the top, with its own clip id", () => {
+    const projects = [proj({ id: 1 }), proj({ id: 2 })];
+    expect(editorPickups(projects, { pid: 2, cid: 7 })).toEqual([
+      { project: projects[1], cid: 7, last: true },
+      { project: projects[0], last: false },
+    ]);
+  });
+
+  it("keeps the remembered project in the list even when its clip id is stale-looking", () => {
+    // A project that isn't remembered opens its first clip; only the remembered one
+    // carries a clip id. Either way it takes a click.
+    const projects = [proj({ id: 5 })];
+    expect(editorPickups(projects, { pid: 9, cid: 1 })).toEqual([{ project: projects[0], last: false }]);
+  });
+
+  it("caps the list so the rail can't grow past the drop zone", () => {
+    const many = Array.from({ length: 12 }, (_, i) => proj({ id: i + 1 }));
+    expect(editorPickups(many, null)).toHaveLength(8);
   });
 });
 
@@ -414,7 +438,6 @@ describe("last-edited clip", () => {
     for (const bad of ["", "not json", "{}", '{"pid":1}', '{"pid":"1","cid":2}', "null"]) {
       store["cv.lastEdit"] = bad;
       expect(readLastEdit()).toBeNull();
-      expect(editorRouteFor(readLastEdit())).toEqual({ name: "editorStart" });
     }
   });
 
@@ -423,11 +446,10 @@ describe("last-edited clip", () => {
     expect(readLastEdit()).toEqual({ pid: 2, cid: 5, from: "home" });
   });
 
-  it("forgets a clip that's gone, so the next Editor click starts clean", () => {
+  it("forgets a clip that's gone, so the start screen stops offering it", () => {
     store["cv.lastEdit"] = JSON.stringify({ pid: 2, cid: 5 });
     clearLastEdit();
     expect(readLastEdit()).toBeNull();
-    expect(editorRouteFor(readLastEdit())).toEqual({ name: "editorStart" });
   });
 });
 

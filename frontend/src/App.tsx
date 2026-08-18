@@ -38,8 +38,11 @@ export const SECTION_LABELS: Record<string, string> = {
   home: "Clipping", board: "Create", editor: "Editor", library: "Downloads",
 };
 
-/* The editor is where the actual work happens, so the sidebar links straight at it: remember
-   the last clip you had open and reopen exactly that one. */
+/* The editor remembers the last clip you had open — but only to *offer* it. Opening the
+   Editor never loads a video on its own: a finished edit reappearing on the timeline
+   because you once worked on it is a surprise, not a convenience. The memory is what makes
+   the start screen's "pick up where you left off" land on the exact clip instead of the
+   project's first one. */
 const LAST_EDIT_KEY = "cv.lastEdit";
 export type LastEdit = { pid: number; cid: number; from?: "board" | "project" | "home" | "video"; tid?: number };
 export const readLastEdit = (): LastEdit | null => {
@@ -56,14 +59,20 @@ export const clearLastEdit = () => {
   try { localStorage.removeItem(LAST_EDIT_KEY); } catch { /* private mode */ }
 };
 
-/** Where the sidebar's Editor button goes.
+/** What the editor's start screen offers you to open, in the order it shows them.
  *
- *  Back into the clip you had open last, or — with nothing remembered — the editor's own
- *  start screen, where you drop footage in. Never another section: the button says Editor,
- *  so it lands on the editor either way. If the remembered clip turns out to be gone, the
- *  editor forgets it and falls back here (see `EditorPage`'s `onMissing`). */
-export const editorRouteFor = (last: LastEdit | null): Route =>
-  last ? { name: "editor", ...last } : { name: "editorStart" };
+ *  Everything that's finished importing, with the clip you had open last floated to the
+ *  top and carrying its own clip id, so one click puts you back exactly where you were —
+ *  a choice you make, not a video the app decided to reopen for you. */
+export type EditorPickup = { project: Project; cid?: number; last: boolean };
+export const editorPickups = (projects: Project[], last: LastEdit | null, limit = 8): EditorPickup[] =>
+  projects
+    .filter((p) => p.status === "ready")
+    .map((p) => (last && last.pid === p.id
+      ? { project: p, cid: last.cid, last: true }
+      : { project: p, last: false }))
+    .sort((a, b) => Number(b.last) - Number(a.last))
+    .slice(0, limit);
 
 /** Which sidebar item lights up for a route.
  *
@@ -98,7 +107,9 @@ export default function App() {
   const goHome = () => setRoute({ name: "home" });
   const goBoard = () => setRoute({ name: "board" });
   const goLibrary = () => setRoute({ name: "library" });
-  const goEditor = () => setRoute(editorRouteFor(readLastEdit()));
+  // Always the editor's own start screen: an empty stage you can drop footage on, with
+  // your past videos listed beside it. Nothing opens until you pick it.
+  const goEditor = () => setRoute({ name: "editorStart" });
   // The remembered clip can be deleted from under us (or belong to a database that's since
   // been replaced). Then the editor has nothing to draw and used to sit on its loading
   // skeleton forever — the Editor button looked broken. Forget it and show the real start
@@ -145,7 +156,7 @@ export default function App() {
         {route.name === "board" && <CreatePage presets={presets} onOpenTicket={(tid) => setRoute({ name: "video", tid })} />}
         {route.name === "editorStart" && (
           <EditorStart presets={presets}
-            onOpenClip={(pid, cid) => setRoute({ name: "editor", pid, cid, from: "home" })}
+            onOpenClip={(pid, cid, from, tid) => setRoute({ name: "editor", pid, cid, from: from ?? "home", tid })}
             onGoCreate={goBoard} />
         )}
         {route.name === "video" && (
@@ -832,7 +843,8 @@ function ReimportBox({ tid, onDone, empty }: { tid: number; onDone: () => void; 
 }
 
 /* ---------------------------- Editor start ----------------------------- */
-/* The Editor with nothing open yet — a real editor screen, not a dead end.
+/* The Editor with nothing open yet — a real editor screen, not a dead end, and where the
+ * Editor button always lands.
  *
  * The preview pane IS the drop target: drag footage onto it and that footage becomes an
  * editable video (transcribed, captioned) that opens in the editor when it's ready. Beside
@@ -840,9 +852,14 @@ function ReimportBox({ tid, onDone, empty }: { tid: number; onDone: () => void; 
  * a script rather than footage. Nothing is auto-placed anywhere — you drop it, you edit it.
  */
 function EditorStart({ presets, onOpenClip, onGoCreate }: {
-  presets: Presets | null; onOpenClip: (pid: number, cid: number) => void; onGoCreate: () => void;
+  presets: Presets | null;
+  onOpenClip: (pid: number, cid: number, from?: LastEdit["from"], tid?: number) => void;
+  onGoCreate: () => void;
 }) {
   const [projects, setProjects] = useState<Project[] | null>(null);
+  // Read once, on the way in: the offer shouldn't shuffle under the cursor while the
+  // project list re-polls.
+  const [lastEdit] = useState(readLastEdit);
   const [dragOver, setDragOver] = useState(false);
   const [pending, setPending] = useState<{ pid: number; name: string } | null>(null);
   const [uploading, setUploading] = useState(false);
@@ -907,7 +924,7 @@ function EditorStart({ presets, onOpenClip, onGoCreate }: {
     } catch (e: any) { toast(`Couldn't open it: ${e?.message || e}`, "err"); }
   };
 
-  const ready = (projects ?? []).filter((p) => p.status === "ready").slice(0, 8);
+  const pickups = editorPickups(projects ?? [], lastEdit);
 
   return (
     <div className="page editor-start">
@@ -955,14 +972,16 @@ function EditorStart({ presets, onOpenClip, onGoCreate }: {
         <div className="es-rail">
           <div className="es-rail-h">Pick up where you left off</div>
           {projects == null ? <div className="muted">Loading…</div>
-            : ready.length === 0 ? <div className="muted es-none">Nothing edited yet — drop a video on the left to start.</div>
+            : pickups.length === 0 ? <div className="muted es-none">Nothing edited yet — drop a video on the left to start.</div>
               : (
                 <div className="es-list">
-                  {ready.map((p) => (
-                    <button className="es-item" key={p.id} onClick={() => open(p)} title="Open in the editor">
+                  {pickups.map(({ project: p, cid, last }) => (
+                    <button className="es-item" key={p.id} title="Open in the editor"
+                      onClick={() => (cid == null ? open(p) : onOpenClip(p.id, cid, lastEdit?.from, lastEdit?.tid))}>
                       <img src={api.projectThumbUrl(p.id)} alt="" loading="lazy"
                         onError={(e) => ((e.currentTarget as HTMLImageElement).style.visibility = "hidden")} />
                       <span className="es-item-name">{p.name}</span>
+                      {last && <span className="es-item-tag">Last edited</span>}
                     </button>
                   ))}
                 </div>
