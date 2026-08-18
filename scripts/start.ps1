@@ -12,6 +12,16 @@ New-Item -ItemType Directory -Force -Path "$root\data" | Out-Null
 # Refresh PATH so ffmpeg / ollama are visible (winget updates the registry, not this shell).
 $refresh = "`$env:Path=[System.Environment]::GetEnvironmentVariable('Path','Machine')+';'+[System.Environment]::GetEnvironmentVariable('Path','User')"
 
+# Resolve the YouTube browser-cookie fallback here and hand it to the backend window
+# explicitly ($backendEnv below). A setx / System-Properties value never reaches an
+# already-running shell, so the backend used to start with the setting missing.
+. "$PSScriptRoot\cvideo-env.ps1"
+$cookies = Initialize-CvideoBackendEnv -Root $root
+$cookieLine = Get-CvideoCookieSummary $cookies
+Write-Host $cookieLine -ForegroundColor DarkGray
+Add-Content $log $cookieLine
+$backendEnv = Get-CvideoBackendEnvPrefix
+
 Write-Host "Starting Cvideo backend (http://127.0.0.1:8000)..." -ForegroundColor Cyan
 # Supervised loop: if uvicorn dies (e.g. a native GPU crash slips past the worker isolation),
 # it self-heals in ~2s. All output is tee'd to data\backend.log so a crash leaves evidence.
@@ -19,7 +29,7 @@ Write-Host "Starting Cvideo backend (http://127.0.0.1:8000)..." -ForegroundColor
 # and freezes the server until a key is pressed).
 # cmd does the stderr merge (see serve.ps1): uvicorn logs to stderr, and PowerShell's own "2>&1"
 # would tee a NativeCommandError block into backend.log for every ordinary INFO line.
-$backendCmd = "$refresh; Set-Location '$root\backend'; " +
+$backendCmd = "$refresh; $backendEnv" + "Set-Location '$root\backend'; " +
   "while (`$true) { " +
   "cmd /c '.\.venv\Scripts\python.exe -m uvicorn app.main:app --port 8000 2>&1' | Tee-Object -FilePath '$log' -Append; " +
   # Single quotes for the child's own string: `\"` is not an escape in PowerShell, it just ends

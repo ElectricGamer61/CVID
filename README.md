@@ -98,23 +98,37 @@ Open http://localhost:3000. The Vite dev server proxies `/api` to the backend on
 - `GEMINI_API_KEY` · `CVIDEO_GEMINI_MODEL` (default `gemini-1.5-flash`)
 - `CVIDEO_DEFAULT_BRAIN` (`openai`/`claude`/`ollama`/`gemini`/`heuristic`); `openai` is retained as the backend compatibility id for Cloud categorizer
 - `CVIDEO_TARGET_CLIPS`, `CVIDEO_MIN_CLIP`, `CVIDEO_MAX_CLIP`
-- `CVIDEO_YOUTUBE_COOKIE_BROWSERS` (optional, comma-separated browser order: `chrome,edge,firefox`)
+- `CVIDEO_YOUTUBE_COOKIE_BROWSERS` (browser order for the YouTube sign-in fallback; on Windows it defaults to `chrome,edge,firefox`, set `off` to disable)
 
-### YouTube bot/sign-in challenges (optional recovery)
+### YouTube bot/sign-in challenges
 
-Cvideo first downloads YouTube URLs anonymously. If YouTube responds with “Sign in to
-confirm you're not a bot”, you can opt in to a local browser-cookie fallback:
+Cvideo always downloads YouTube URLs **anonymously first**. If YouTube answers with “Sign in
+to confirm you're not a bot”, the Windows launchers retry through the cookies of a browser you
+are already signed in to on this PC — Chrome, then Edge, then Firefox. Nothing to configure:
+just be signed in to YouTube in one of them (and ideally close it, since yt-dlp may not be
+able to read a profile that is running). If one browser cannot be read, the next is tried; if
+none works, the project stays put with an error explaining what to fix, and ↻ Retry re-runs it.
 
-1. Sign in to YouTube in Chrome, Edge, or Firefox on this Windows PC.
-2. Close that browser (yt-dlp may be unable to read a profile while it is open).
-3. Add, for example, `CVIDEO_YOUTUBE_COOKIE_BROWSERS=chrome,edge,firefox` to
-   `backend\\.env`, in the order you want tried, then restart Cvideo.
-4. Retry the project; the original URL and project are preserved.
+To change the order, or to turn the fallback off entirely, set the variable in `backend\\.env`
+(or in your Windows user environment):
 
-This is opt-in and user-controlled. Cvideo asks yt-dlp to read the selected browser's local
-cookie store only for the requested YouTube download; it does not collect passwords, upload
-cookies to Cvideo, or use them for local-file uploads. If no configured browser session works,
-the project remains available and the error explains what to fix. Keep yt-dlp updated with
+```
+CVIDEO_YOUTUBE_COOKIE_BROWSERS=firefox,chrome   # your own order
+CVIDEO_YOUTUBE_COOKIE_BROWSERS=off              # never touch a browser profile
+```
+
+The launcher resolves this itself — this window's environment, then your Windows user/system
+environment (read from the registry, so a value set with `setx` or the System Properties
+dialog applies without logging out), then `backend\\.env`, then the default — and passes the
+answer to the backend process explicitly. It prints the decision and writes it to
+`data\\backend.log`, e.g.
+`YouTube browser-cookie fallback: chrome, edge, firefox (from Windows user environment).`
+Non-Windows installs stay opt-in; use `=auto` there to get the same order.
+
+**What this does and does not do.** yt-dlp reads the selected browser's cookie database on
+this machine and sends those cookies only to the YouTube request Cvideo is already making.
+Cvideo never copies them into a project, writes them to a log, or sends them anywhere else,
+and local-file uploads never touch this path at all. Keep yt-dlp updated with
 `pip install -U yt-dlp` when YouTube changes its checks.
 
 ## Caption presets

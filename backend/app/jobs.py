@@ -174,9 +174,18 @@ def _analyze(project_id: int, upload_path: str | None):
                 # rather than losing the ingest to one yt-dlp selector.
                 print(f"[ingest] audio-only download failed: {first}; trying video proxy")
                 proxy = pdir / "proxy.mp4"
-                ingest.download_proxy(source_url, proxy)
-                ingest.extract_audio(proxy, audio)
-                duration = ingest.probe_duration(proxy)
+                try:
+                    ingest.download_proxy(source_url, proxy)
+                    ingest.extract_audio(proxy, audio)
+                    duration = ingest.probe_duration(proxy)
+                except Exception as second:
+                    # Report the FIRST failure too. It is the one that carries the
+                    # instructions (a sign-in challenge, a missing format); a bare second
+                    # message sent people to debug the proxy step instead of the cause.
+                    first_text, second_text = _job_error_text(first), _job_error_text(second)
+                    detail = (first_text if first_text == second_text
+                              else f"{first_text} Video proxy also failed: {second_text}")
+                    raise RuntimeError(detail) from second
             _set(project_id, duration=duration)
         elif upload_path or not audio.exists():
             current_stage = "File ingest"

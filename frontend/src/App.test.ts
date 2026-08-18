@@ -376,7 +376,9 @@ describe("the Create and Editor screens", () => {
   });
 
   it("shows the error text on the card, not just an error badge", () => {
-    expect(src).toMatch(/\{p\.error && <div className="err">\{p\.error\}<\/div>\}/);
+    // Clamped to a few lines in CSS so one long, actionable message can't stretch its card
+    // past the rest of the grid; `title` keeps the whole reason reachable on hover.
+    expect(src).toMatch(/\{p\.error && <div className="err" title=\{p\.error\}>\{p\.error\}<\/div>\}/);
   });
 });
 

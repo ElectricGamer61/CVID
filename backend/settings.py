@@ -92,13 +92,52 @@ _DEFAULT_TRANSCRIBE = os.getenv("CVIDEO_DEFAULT_TRANSCRIBE", "local").strip().lo
 DEFAULT_TRANSCRIBE = ("local" if _DEFAULT_TRANSCRIBE == "elevenlabs" and not ELEVENLABS_API_KEY
                       else _DEFAULT_TRANSCRIBE)
 
-# YouTube browser cookies are deliberately opt-in. yt-dlp reads the selected browser's
-# local cookie store; it does not upload it anywhere except the requested YouTube URL.
-# Keep this empty by default, and let users choose an order appropriate to their machine.
-YOUTUBE_COOKIE_BROWSERS = tuple(
-    item.strip().lower() for item in os.getenv("CVIDEO_YOUTUBE_COOKIE_BROWSERS", "").split(",")
-    if item.strip()
-)
+# --- YouTube browser-cookie fallback -----------------------------------------
+# When YouTube answers an anonymous download with "Sign in to confirm you're not a bot",
+# Cvideo can retry through the cookie store of a browser you are already signed in to on
+# THIS machine. yt-dlp reads that local database and sends the cookies only to the YouTube
+# request it is already making: nothing is copied into the project, logged, or uploaded to
+# Cvideo, and local-file projects never reach this code at all.
+#
+# On Windows this is ON by default (chrome, then edge, then firefox) because a desktop
+# install is a single signed-in user's own machine and the alternative is a dead end they
+# have to read a log to diagnose. Turn it off with CVIDEO_YOUTUBE_COOKIE_BROWSERS=off.
+# Elsewhere (servers, CI, shared boxes) it stays opt-in; `=auto` enables the same order.
+SUPPORTED_COOKIE_BROWSERS = ("brave", "chrome", "chromium", "edge", "firefox",
+                             "opera", "safari", "vivaldi", "whale")
+DEFAULT_COOKIE_BROWSERS = ("chrome", "edge", "firefox")
+_COOKIE_BROWSERS_OFF = ("off", "none", "no", "0", "false", "disabled")
+_COOKIE_BROWSERS_AUTO = ("auto", "default", "on", "yes", "1", "true")
+
+
+def resolve_cookie_browsers(raw: str | None, *, windows: bool | None = None) -> tuple[str, ...]:
+    """Browsers to try after an anonymous YouTube download hits a bot challenge.
+
+    `raw` is the CVIDEO_YOUTUBE_COOKIE_BROWSERS value: None = never configured (the
+    platform default applies), "" or an off-word = explicitly disabled, anything else =
+    an ordered list. Unsupported names are dropped rather than passed to yt-dlp, which
+    would fail the retry with a confusing "unsupported browser" error instead of the
+    YouTube problem the user actually has."""
+    if windows is None:
+        windows = os.name == "nt"
+    if raw is None:
+        return DEFAULT_COOKIE_BROWSERS if windows else ()
+    text = raw.strip().lower()
+    if not text or text in _COOKIE_BROWSERS_OFF:
+        return ()
+    if text in _COOKIE_BROWSERS_AUTO:
+        return DEFAULT_COOKIE_BROWSERS
+    seen: list[str] = []
+    for item in (part.strip() for part in text.split(",")):
+        if item in SUPPORTED_COOKIE_BROWSERS and item not in seen:
+            seen.append(item)
+    return tuple(seen)
+
+
+# Kept for diagnostics: the ingest error tells the user what their setting actually said
+# when it resolves to "no browsers", which is otherwise indistinguishable from "off".
+YOUTUBE_COOKIE_BROWSERS_RAW = os.getenv("CVIDEO_YOUTUBE_COOKIE_BROWSERS")
+YOUTUBE_COOKIE_BROWSERS = resolve_cookie_browsers(YOUTUBE_COOKIE_BROWSERS_RAW)
 
 # --- Shoot Drop (batch raw-footage intake) ------------------------------------
 # Watched folder: copy raw phone clips here and the backend auto-ingests them

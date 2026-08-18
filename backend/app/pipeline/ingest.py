@@ -27,8 +27,9 @@ _TRANSIENT = ("403", "forbidden", "timed out", "timeout",
 _MAX_TRIES = 4
 
 # Keep this intentionally specific: an ordinary 403/timeout should retain the existing
-# transient retry behavior, while a bot challenge is the one case where a local browser
-# session can legitimately help.
+# transient retry behavior, while a sign-in challenge is the one case where a local browser
+# session can legitimately help. yt-dlp words it several ways (and points at
+# --cookies-from-browser itself), so match the phrasings rather than one exact sentence.
 _BOT_CHALLENGE_MARKERS = (
     "sign in to confirm you're not a bot",
     "sign in to confirm you’re not a bot",
@@ -36,6 +37,11 @@ _BOT_CHALLENGE_MARKERS = (
     "confirm you’re not a bot",
     "not a bot",
     "confirm you are not a bot",
+    "sign in to confirm",
+    "cookies-from-browser",
+    "use --cookies",
+    "please sign in",
+    "login required",
 )
 
 
@@ -80,10 +86,31 @@ def _format_candidates(opts: dict) -> tuple[dict, ...]:
 
 def _browser_order() -> tuple[str, ...]:
     # Imported at call time so tests and long-running local installs can configure this
-    # without making local-file ingestion depend on browser state.
+    # without making local-file ingestion depend on browser state. settings has already
+    # applied the platform default and dropped unsupported names.
     from settings import YOUTUBE_COOKIE_BROWSERS
-    allowed = {"chrome", "edge", "firefox"}
-    return tuple(browser for browser in YOUTUBE_COOKIE_BROWSERS if browser in allowed)
+    return tuple(YOUTUBE_COOKIE_BROWSERS)
+
+
+def _no_fallback_message() -> str:
+    """Explain the *specific* reason no browser session was tried, and how to fix it."""
+    import settings
+    raw = getattr(settings, "YOUTUBE_COOKIE_BROWSERS_RAW", None)
+    if raw is None:
+        why = ("The browser-cookie fallback is not enabled on this platform "
+               "(it is on by default only on Windows).")
+    elif not raw.strip() or raw.strip().lower() in ("off", "none", "no", "0", "false", "disabled"):
+        why = f"The browser-cookie fallback is turned off (CVIDEO_YOUTUBE_COOKIE_BROWSERS={raw!r})."
+    else:
+        supported = ", ".join(settings.SUPPORTED_COOKIE_BROWSERS)
+        why = (f"CVIDEO_YOUTUBE_COOKIE_BROWSERS={raw!r} names no browser Cvideo can read "
+               f"cookies from (supported: {supported}).")
+    return (
+        "YouTube asked you to sign in because it detected automated traffic. " + why +
+        " Set CVIDEO_YOUTUBE_COOKIE_BROWSERS=chrome,edge,firefox in backend/.env, sign in "
+        "to YouTube in one of those browsers, restart Cvideo, and retry the project. "
+        "The cookies are read locally and sent only to YouTube."
+    )
 
 
 def _ydl_attempt(opts: dict, url: str, ranges=None, browser: str | None = None) -> dict:
@@ -139,25 +166,33 @@ def _ydl(_opts: dict, url: str, ranges=None) -> dict:
         result = try_all()
         if result is not None:
             return result
-    except DownloadError as anonymous_error:
+    except Exception as anonymous_error:  # noqa: BLE001 - re-raised unless it is a challenge
+        # Broader than DownloadError on purpose: yt-dlp surfaces the challenge as an
+        # ExtractorError from some code paths, and everything else is re-raised untouched.
         if not is_bot_challenge(anonymous_error):
             raise
         browsers = _browser_order()
         if not browsers:
-            raise RuntimeError(
-                "YouTube asked you to sign in because it detected automated traffic. "
-                "No browser-cookie fallback is enabled. Set "
-                "CVIDEO_YOUTUBE_COOKIE_BROWSERS=chrome,edge,firefox in backend/.env "
-                "and retry, with YouTube already signed in to one of those browsers."
-            ) from anonymous_error
+            raise RuntimeError(_no_fallback_message()) from anonymous_error
+        print("[ingest] YouTube asked for sign-in; retrying with local browser cookies: "
+              + ", ".join(browsers))
         browser_errors = []
         for browser in browsers:
             try:
                 result = try_all(browser)
                 if result is not None:
+                    print(f"[ingest] recovered using {browser} cookies")
                     return result
             except DownloadError as error:
                 browser_errors.append(f"{browser}: {error}")
+            except Exception as error:  # noqa: BLE001
+                # A browser that is running, absent, or whose cookie store cannot be
+                # decrypted raises something other than DownloadError (OSError, PermissionError,
+                # yt-dlp's own ValueError). That is a reason to try the NEXT browser, never a
+                # reason to take the job - or the backend - down.
+                browser_errors.append(
+                    f"{browser}: cookies unavailable ({type(error).__name__}: {error})")
+                print(f"[ingest] {browser} cookies unavailable: {error}")
         if browser_errors and not all(is_format_unavailable(e) for e in browser_errors):
             raise RuntimeError(
                 "YouTube rejected the request even with the configured browser sessions "

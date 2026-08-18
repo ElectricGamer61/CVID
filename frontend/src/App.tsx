@@ -1339,7 +1339,9 @@ function ProjectCard({ p, onOpen, onDelete, onRename, onRetry }: { p: Project; o
             <button className="sm danger" title="Delete" onClick={() => onDelete(p)}>🗑</button>
           </div>
         </div>
-        {p.error && <div className="err">{p.error}</div>}
+        {/* Clamped: an actionable ingest error is a paragraph, and one card must not
+            grow taller than the rest of the grid. Hover, or open the project, for all of it. */}
+        {p.error && <div className="err" title={p.error}>{p.error}</div>}
       </div>
     </div>
   );
