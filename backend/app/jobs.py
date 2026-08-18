@@ -61,7 +61,8 @@ def worker_failure_message(code: int, reason: str, tail: list[str]) -> str:
 
 
 def transcribe_subprocess(audio: Path, out_json: Path, backend: str,
-                          progress: Callable[[int, str], None] | None = None) -> dict:
+                          progress: Callable[[int, str], None] | None = None,
+                          force_cpu: bool = False) -> dict:
     """Transcribe in a child process so a native GPU crash can't kill the API.
 
     Streams the worker's "PROGRESS <pct> <msg>" lines to `progress` and reads the
@@ -74,8 +75,12 @@ def transcribe_subprocess(audio: Path, out_json: Path, backend: str,
     job sat on "Transcribing" forever and the only way out was killing the backend."""
     cmd = [sys.executable, "-m", "app.pipeline.transcribe_worker",
            str(audio), str(out_json), backend]
+    child_env = None
+    if force_cpu:
+        child_env = dict(os.environ)
+        child_env["CVIDEO_WHISPER_DEVICE"] = "cpu"
     proc = subprocess.Popen(
-        cmd, cwd=str(settings.BACKEND_DIR),
+        cmd, cwd=str(settings.BACKEND_DIR), env=child_env,
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
     )
     assert proc.stdout is not None
@@ -148,6 +153,7 @@ def _analyze(project_id: int, upload_path: str | None):
     pdir = settings.project_dir(project_id)
     source = pdir / "source.mp4"
     audio = pdir / "audio.wav"
+    current_stage = "Starting"
     try:
         with get_session() as s:
             proj = s.get(Project, project_id)
@@ -158,28 +164,75 @@ def _analyze(project_id: int, upload_path: str | None):
 
         # 1. Ingest — efficient: audio only for analysis; full video never pulled up front
         if source_type == "url":
+            current_stage = "URL ingest"
             _set(project_id, status="ingesting", stage="Downloading audio", progress=5)
-            _, duration = ingest.download_audio(source_url, audio)
+            try:
+                _, duration = ingest.download_audio(source_url, audio)
+            except Exception as first:
+                # Some supported URLs expose a video format more reliably than their
+                # audio-only stream. Keep the URL/project and recover through a proxy,
+                # rather than losing the ingest to one yt-dlp selector.
+                print(f"[ingest] audio-only download failed: {first}; trying video proxy")
+                proxy = pdir / "proxy.mp4"
+                ingest.download_proxy(source_url, proxy)
+                ingest.extract_audio(proxy, audio)
+                duration = ingest.probe_duration(proxy)
             _set(project_id, duration=duration)
         elif upload_path or not audio.exists():
+            current_stage = "File ingest"
             _set(project_id, status="ingesting", stage="Reading upload", progress=5)
             if upload_path:
+                # This is deliberately the first ingest operation: every later fallback
+                # reuses source.mp4 and never asks the browser to upload again.
                 ingest.save_upload(Path(upload_path), source)
             elif not source.exists():
                 raise RuntimeError(
                     "the uploaded file is no longer on disk - upload the clip again.")
             _set(project_id, stage="Extracting audio", progress=15)
-            ingest.extract_audio(source, audio)
+            try:
+                ingest.extract_audio(source, audio)
+            except Exception as e:
+                # Caption mode can edit silent footage; moments mode cannot select spoken
+                # moments without a transcript, so report that stage precisely.
+                if mode != "caption":
+                    raise RuntimeError(f"audio extraction failed: {e}") from e
+                print(f"[ingest] no audio track; continuing caption mode: {e}")
             _set(project_id, duration=ingest.probe_duration(source))
 
+        # A silent clip is still a valid caption-mode editing source. There is no speech
+        # to transcribe, so create its one clip without invoking a transcription provider.
+        if mode == "caption" and not audio.exists():
+            with get_session() as s:
+                proj = s.get(Project, project_id)
+                s.add(Clip(project_id=project_id, idx=0, start=0.0, end=proj.duration,
+                           title=proj.name, score=0.0, reason="Whole clip (caption mode)",
+                           aspect=proj.aspect, caption_preset=proj.caption_preset))
+                s.commit()
+            _set(project_id, status="ready", stage="Ready to caption (silent source)", progress=100)
+            return
+
         # 2. Transcribe — in a subprocess so a native GPU/CUDA crash can't take the API down.
+        current_stage = "Transcription"
         _set(project_id, status="transcribing", stage="Transcribing", progress=20)
 
         def _tp(pct, msg):
             _set(project_id, stage=msg, progress=20 + int(pct * 0.5))
 
-        result = transcribe_subprocess(
-            audio, pdir / "words.tmp.json", tx_backend, _tp)
+        try:
+            result = transcribe_subprocess(
+                audio, pdir / "words.tmp.json", tx_backend, _tp)
+        except RuntimeError as first_error:
+            # A native GPU crash or a wedged worker cannot execute its own CPU fallback.
+            # Reuse the same audio/source once in a clean CPU child; config errors are not
+            # retried pointlessly and retain their actionable final message.
+            msg = str(first_error).lower()
+            recoverable = any(token in msg for token in ("crashed inside", "stopped responding"))
+            if tx_backend == "local" and recoverable:
+                print(f"[transcribe] local worker failed; retrying on CPU: {first_error}")
+                result = transcribe_subprocess(
+                    audio, pdir / "words.tmp.json", "local", _tp, force_cpu=True)
+            else:
+                raise
         (pdir / "words.json").write_text(
             json.dumps(result, ensure_ascii=False), encoding="utf-8"
         )
@@ -197,6 +250,7 @@ def _analyze(project_id: int, upload_path: str | None):
                 s.commit()
             moments = [None]  # for the final status count
         else:
+            current_stage = "Moment analysis"
             _set(project_id, status="analyzing",
                  stage=f"Finding moments ({chosen_brain})", progress=75)
             moments = brain.find_moments(result["words"], chosen_brain)
@@ -240,7 +294,7 @@ def _analyze(project_id: int, upload_path: str | None):
         # RuntimeError here is always a message we wrote for the user (transcription,
         # ingest); the class name in front of it is noise. Keep it for everything else,
         # where the type is the only clue about what broke.
-        _set(project_id, status="error", stage="Failed", error=_job_error_text(e))
+        _set(project_id, status="error", stage=f"Failed: {current_stage}", error=_job_error_text(e))
 
 
 def _prefetch_full(project_id: int, source_url: str) -> None:
