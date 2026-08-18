@@ -287,9 +287,11 @@ Sections were folded away or removed rather than kept as their own stops: the ol
 is now the "no script yet" questions inside **Create** (there is no saved-ideas list in the UI any
 more), raw **footage** is dropped in the **Editor** where you edit it, and the whole
 **Schedule / Results / posting** half of the old product is gone from the UI (see below).
-**Editor** reopens the clip you last had open (`localStorage["cv.lastEdit"]`); with nothing to
-reopen it shows its own **start screen** (route `editorStart`) — a drop target for footage plus the
-projects you can pick back up — instead of bouncing you elsewhere.
+**Editor** always lands on its own **start screen** (route `editorStart`) — a drop target for
+footage plus the projects you can pick back up — and never opens a video on its own. The clip you
+had open last (`localStorage["cv.lastEdit"]`) is remembered only to float that project to the top
+of "pick up where you left off", tagged *Last edited*, where one click reopens that exact clip;
+`editorPickups()` builds that list.
 Plain-language UI: a ticket = "video", a beat = "scene".
 `sidebarViewFor(route)` maps a route to the lit sidebar item — a video stays under **Create**, a
 project's moments grid under **Clipping**, and the editor lights **Editor** however you got there.
