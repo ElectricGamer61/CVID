@@ -50,6 +50,44 @@ def test_browser_fallback_order():
     check("returns successful browser extraction", result == {"id": "ok"})
 
 
+def test_format_fallback_order():
+    old_attempt = ingest._ydl_attempt
+    calls = []
+    def fake(opts, url, ranges=None, browser=None):
+        calls.append(opts.get("format"))
+        if opts.get("format") != "best":
+            raise DownloadError("Requested format is not available")
+        return {"id": "fallback"}
+    ingest._ydl_attempt = fake
+    try:
+        result = ingest._ydl({"format": ingest._FMT_FULL}, "https://youtube.example/video")
+    finally:
+        ingest._ydl_attempt = old_attempt
+    check("tries preferred selector before simpler fallbacks", calls == [
+        ingest._FMT_FULL, "bestvideo+bestaudio", "best"
+    ])
+    check("returns the first compatible fallback", result == {"id": "fallback"})
+
+
+def test_format_fallback_final_error_is_actionable():
+    old_attempt = ingest._ydl_attempt
+    ingest._ydl_attempt = lambda *args, **kwargs: (_ for _ in ()).throw(
+        DownloadError("Requested format is not available"))
+    try:
+        try:
+            ingest._ydl({"format": ingest._FMT_PROXY}, "https://youtube.example/video")
+        except RuntimeError as error:
+            message = str(error)
+        else:
+            message = ""
+    finally:
+        ingest._ydl_attempt = old_attempt
+    check("format exhaustion explains how to recover",
+          "no compatible downloadable format" in message.lower()
+          and "update yt-dlp" in message.lower()
+          and "local video" in message.lower())
+
+
 def test_no_cookie_error_and_local_path():
     old_order, old_attempt = settings.YOUTUBE_COOKIE_BROWSERS, ingest._ydl_attempt
     settings.YOUTUBE_COOKIE_BROWSERS = ()
@@ -74,6 +112,8 @@ def test_no_cookie_error_and_local_path():
 
 
 if __name__ == "__main__":
-    test_challenge_detection(); test_browser_fallback_order(); test_no_cookie_error_and_local_path()
+    test_challenge_detection(); test_browser_fallback_order()
+    test_format_fallback_order(); test_format_fallback_final_error_is_actionable()
+    test_no_cookie_error_and_local_path()
     print("\n" + ("ALL PASSED" if not failed else f"{len(failed)} FAILED: {failed}"))
     raise SystemExit(bool(failed))
