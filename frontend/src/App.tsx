@@ -1377,6 +1377,8 @@ function NewProject({ presets, onCreated }: { presets: Presets | null; onCreated
       setName(""); setUrl(""); setFile(null);
       toast(genMode === "caption" ? "Captioning your clip…" : "Project started — finding clips…", "ok");
       onCreated();
+    } catch (e: any) {
+      toast(`Could not start ingest: ${e?.message || e}`, "err");
     } finally { setBusy(false); }
   };
 
@@ -1480,7 +1482,14 @@ function MomentsGrid({ pid, onName, onEdit, onEditReel, onBack }: {
           <h2 style={{ marginTop: 4 }}>{project?.name}</h2></div>
         <span className="muted">{clips.length} moments · sorted by viral score</span>
       </div>
-      {!project ? <div className="skeleton" style={{ height: 300 }} /> : (
+      {!project ? <div className="skeleton" style={{ height: 300 }} /> : project.status === "error" ? (
+        <div className="card error-card">
+          <h3>Ingest stopped at {project.stage || "an unknown stage"}</h3>
+          <p className="err">{project.error || "The video could not be analyzed."}</p>
+          <p className="muted">Your source is still saved. Retry to run the supported fallback chain again.</p>
+          <button className="primary" onClick={async () => { try { await api.retryProject(pid); toast("Retrying ingest…", "ok"); refresh(); } catch (e: any) { toast(`Retry failed: ${e?.message || e}`, "err"); } }}>↻ Retry</button>
+        </div>
+      ) : (
         <div className="moments-grid">
           {sorted.map((c) => (
             <MomentCard key={c.id} clip={c} onEdit={() => onEdit(c.id)}

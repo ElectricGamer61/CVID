@@ -349,19 +349,48 @@ def _chunk_words(words: list[dict], chunk_sec: float = 1200, overlap_sec: float 
     return chunks
 
 
+def fallback_order(requested: str) -> list[str]:
+    """Return the local-first brain chain, without duplicate attempts.
+
+    A configured cloud/LLM brain is an optimisation, not a prerequisite for ingest.  Keep
+    heuristic last: it is deterministic and requires neither a service nor a key.  The
+    order is public so the fallback contract can be regression-tested independently of
+    network/model availability.
+    """
+    preferred = {
+        "claude": ["claude", "ollama", "heuristic"],
+        "openai": ["openai", "ollama", "heuristic"],
+        "gemini": ["gemini", "ollama", "heuristic"],
+        "ollama": ["ollama", "heuristic"],
+        "heuristic": ["heuristic"],
+    }.get(requested, ["ollama", "heuristic"])
+    return list(dict.fromkeys(preferred))
+
+
 def find_moments(words: list[dict], brain: str, n: Optional[int] = None) -> list[dict]:
-    """Run the chosen brain over (chunked) transcript; on any failure fall back to the
-    heuristic so the pipeline always returns clips."""
+    """Try the requested brain, then supported fallbacks, without touching source media.
+
+    A backend can fail at import, initialisation, timeout, or malformed output.  Each
+    attempt is isolated and the same transcript is reused; a failed scorer never mutates
+    project state or discards the uploaded source.
+    """
     n = n or settings.TARGET_CLIP_COUNT
-    try:
-        backend = get_backend(brain)
-        chunks = _chunk_words(words)
-        all_clips: list[dict] = []
-        for ch in chunks:
-            all_clips.extend(backend.score(ch, n))
-        merged = _dedupe(all_clips)  # cross-chunk de-overlap, highest score wins
-        if merged:
-            return merged
-    except Exception as e:  # noqa: BLE001
-        print(f"[brain] {brain} failed: {e}; using heuristic fallback")
-    return HeuristicScorer().score(words, n)
+    failures: list[str] = []
+    for candidate in fallback_order(brain):
+        try:
+            backend = get_backend(candidate)
+            all_clips: list[dict] = []
+            for ch in _chunk_words(words):
+                all_clips.extend(backend.score(ch, n))
+            merged = _dedupe(all_clips)
+            if merged:
+                if candidate != brain:
+                    print(f"[brain] {brain} unavailable; recovered with {candidate}")
+                return merged
+            failures.append(f"{candidate}: returned no clips")
+        except Exception as e:  # noqa: BLE001 - provider failures are recoverable
+            failures.append(f"{candidate}: {type(e).__name__}: {e}")
+            print(f"[brain] {candidate} failed: {e}; trying next fallback")
+    raise RuntimeError("moment analysis failed at brain stage after trying "
+                       + ", ".join(fallback_order(brain)) + ". "
+                       + " | ".join(failures[-3:]))
