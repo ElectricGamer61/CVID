@@ -109,6 +109,23 @@ The app runs fine on Linux for verification, but nothing in-repo sets that up:
   `backend/test_youtube_job_recovery.py`) and the launcher chain is testable on real PowerShell,
   but a *live* YouTube challenge answered by a real signed-in Chrome/Edge/Firefox profile needs
   the Windows machine. Say which half you actually exercised; never claim "YouTube works now".
+- **A merged fix is not an installed fix.** A user kept hitting a YouTube failure hours after its
+  fix was merged because nothing on the normal path (Desktop icon -> `open-cvideo.ps1`) pulls
+  code or reinstalls dependencies — only `install.cmd` does, and that only ran once. Every
+  launcher now dot-sources `scripts/cvideo-update.ps1` and fast-forwards the checkout plus
+  re-syncs `backend/requirements-bare.txt` (via a SHA256 stamp, so it is a no-op once caught up)
+  before starting anything; `update.cmd` runs the same update by hand. Any future fix to this repo
+  is worthless on a laptop until that laptop's checkout and venv actually move — assume they
+  haven't and check, don't assume a merge is the end of the job.
+- **Windows browser cookies are a dead end more often than not, so don't lean on them as the only
+  fallback.** Chrome/Edge 127+ seal cookies with App-Bound Encryption yt-dlp cannot read
+  (yt-dlp#10927), and a running Chrome/Edge locks its cookie DB (yt-dlp#7271) — "sign in to a
+  browser and retry" can be structurally impossible on a given machine. `ingest.py` now sweeps
+  anonymous yt-dlp player clients (`android`, `tv_simply`, `web_embedded`, `mweb`, `ios`, `tv`)
+  first — that alone clears most `403`/format refusals with no cookies at all — then falls back to
+  a `cookies.txt` file (`CVIDEO_YOUTUBE_COOKIES_FILE`), then to browsers, and every failure names
+  the actual store-specific cause plus the installed yt-dlp version instead of one generic
+  "sign in" message.
 - **Exercise the flow, don't trust the API.** Several problems here were only visible in the browser
   — a 500 whose toast had already faded, a raw C++ assertion rendered into the editor, a button
   whose only possible outcome was a 400. Drive the real UI when changing the creation path.

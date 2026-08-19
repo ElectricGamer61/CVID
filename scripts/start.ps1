@@ -22,6 +22,15 @@ Write-Host $cookieLine -ForegroundColor DarkGray
 Add-Content $log $cookieLine
 $backendEnv = Get-CvideoBackendEnvPrefix
 
+# Pull any merged fix and re-sync the venv first; see scripts\cvideo-update.ps1 for why a
+# launcher has to do this at all. start.ps1 runs the Vite dev server, so no dist rebuild here.
+. "$PSScriptRoot\cvideo-update.ps1"
+$checkout = Update-CvideoCheckout -Root $root
+foreach ($line in @($checkout.Message, (Sync-CvideoBackendDeps -Root $root -Log $log))) {
+  Write-Host $line -ForegroundColor DarkGray
+  Add-Content $log $line
+}
+
 Write-Host "Starting Cvideo backend (http://127.0.0.1:8000)..." -ForegroundColor Cyan
 # Supervised loop: if uvicorn dies (e.g. a native GPU crash slips past the worker isolation),
 # it self-heals in ~2s. All output is tee'd to data\backend.log so a crash leaves evidence.
