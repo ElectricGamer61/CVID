@@ -36,9 +36,9 @@ def test_browser_fallback_order():
     old_order, old_attempt = settings.YOUTUBE_COOKIE_BROWSERS, ingest._ydl_attempt
     settings.YOUTUBE_COOKIE_BROWSERS = ("edge", "chrome", "firefox")
     calls = []
-    def fake(opts, url, ranges=None, browser=None):
-        calls.append(browser)
-        if browser is None or browser == "edge":
+    def fake(opts, url, ranges=None, browser=None, cookiefile=None, player_client=None):
+        calls.append(player_client or browser)
+        if player_client or browser is None or browser == "edge":
             raise DownloadError("Sign in to confirm you're not a bot")
         return {"id": "ok"}
     ingest._ydl_attempt = fake
@@ -46,14 +46,15 @@ def test_browser_fallback_order():
         result = ingest._ydl({}, "https://youtube.example/video")
     finally:
         settings.YOUTUBE_COOKIE_BROWSERS, ingest._ydl_attempt = old_order, old_attempt
-    check("tries configured browsers in order", calls == [None, "edge", "chrome"])
+    check("browsers are tried in order, and only after the anonymous players",
+          calls == [None, *ingest._known_player_clients(), "edge", "chrome"])
     check("returns successful browser extraction", result == {"id": "ok"})
 
 
 def test_format_fallback_order():
     old_attempt = ingest._ydl_attempt
     calls = []
-    def fake(opts, url, ranges=None, browser=None):
+    def fake(opts, url, ranges=None, browser=None, cookiefile=None, player_client=None):
         calls.append(opts.get("format"))
         if opts.get("format") != "best":
             raise DownloadError("Requested format is not available")
@@ -110,9 +111,9 @@ def test_windows_default_is_tried_after_a_challenge():
     old_order, old_attempt = settings.YOUTUBE_COOKIE_BROWSERS, ingest._ydl_attempt
     settings.YOUTUBE_COOKIE_BROWSERS = settings.resolve_cookie_browsers(None, windows=True)
     calls = []
-    def fake(opts, url, ranges=None, browser=None):
-        calls.append(browser)
-        if browser != "firefox":
+    def fake(opts, url, ranges=None, browser=None, cookiefile=None, player_client=None):
+        calls.append(player_client or browser)
+        if player_client or browser != "firefox":
             raise DownloadError("Sign in to confirm you're not a bot")
         return {"id": "signed-in"}
     ingest._ydl_attempt = fake
@@ -120,8 +121,8 @@ def test_windows_default_is_tried_after_a_challenge():
         result = ingest._ydl({}, "https://youtube.example/video")
     finally:
         settings.YOUTUBE_COOKIE_BROWSERS, ingest._ydl_attempt = old_order, old_attempt
-    check("anonymous first, then chrome, edge, firefox",
-          calls == [None, "chrome", "edge", "firefox"])
+    check("anonymous, then the other players, then chrome, edge, firefox",
+          calls == [None, *ingest._known_player_clients(), "chrome", "edge", "firefox"])
     check("a signed-in browser recovers the download", result == {"id": "signed-in"})
 
 
@@ -131,9 +132,9 @@ def test_unreadable_cookie_store_falls_through_to_the_next_browser():
     old_order, old_attempt = settings.YOUTUBE_COOKIE_BROWSERS, ingest._ydl_attempt
     settings.YOUTUBE_COOKIE_BROWSERS = ("chrome", "edge")
     calls = []
-    def fake(opts, url, ranges=None, browser=None):
-        calls.append(browser)
-        if browser is None:
+    def fake(opts, url, ranges=None, browser=None, cookiefile=None, player_client=None):
+        calls.append(player_client or browser)
+        if player_client or browser is None:
             raise DownloadError("Sign in to confirm you're not a bot")
         if browser == "chrome":
             raise PermissionError("Could not copy Chrome cookie database")
@@ -143,14 +144,15 @@ def test_unreadable_cookie_store_falls_through_to_the_next_browser():
         result = ingest._ydl({}, "https://youtube.example/video")
     finally:
         settings.YOUTUBE_COOKIE_BROWSERS, ingest._ydl_attempt = old_order, old_attempt
-    check("an unreadable cookie store does not abort the job", calls == [None, "chrome", "edge"])
+    check("an unreadable cookie store does not abort the job",
+          calls == [None, *ingest._known_player_clients(), "chrome", "edge"])
     check("the next browser still recovers the download", result == {"id": "edge-ok"})
 
 
 def test_every_browser_failing_is_still_an_ordinary_error():
     old_order, old_attempt = settings.YOUTUBE_COOKIE_BROWSERS, ingest._ydl_attempt
     settings.YOUTUBE_COOKIE_BROWSERS = ("chrome", "firefox")
-    def fake(opts, url, ranges=None, browser=None):
+    def fake(opts, url, ranges=None, browser=None, cookiefile=None, player_client=None):
         if browser == "firefox":
             raise OSError("could not find firefox cookies database")
         raise DownloadError("Sign in to confirm you're not a bot")
@@ -165,7 +167,7 @@ def test_every_browser_failing_is_still_an_ordinary_error():
     finally:
         settings.YOUTUBE_COOKIE_BROWSERS, ingest._ydl_attempt = old_order, old_attempt
     check("exhausting every browser is a reportable job error, not a raw crash",
-          message.startswith("YouTube rejected the request"))
+          message.startswith("YouTube asked Cvideo to sign in"))
     check("the error names the browsers tried and both reasons",
           "chrome" in message and "firefox" in message and "cookies database" in message)
 
@@ -216,6 +218,76 @@ def test_no_cookie_error_and_local_path():
         check("local upload does not invoke YouTube cookies", target.read_bytes() == b"local clip")
 
 
+def test_cookies_file_is_tried_before_any_browser():
+    """A cookies.txt is explicit intent AND the only source that works on Windows Chrome/Edge."""
+    import tempfile
+    old_order, old_attempt = settings.YOUTUBE_COOKIE_BROWSERS, ingest._ydl_attempt
+    old_file = settings.YOUTUBE_COOKIES_FILE
+    settings.YOUTUBE_COOKIE_BROWSERS = ("chrome", "firefox")
+    with tempfile.TemporaryDirectory() as directory:
+        jar = Path(directory) / "youtube-cookies.txt"
+        jar.write_text("# Netscape HTTP Cookie File\n", encoding="utf-8")
+        settings.YOUTUBE_COOKIES_FILE = jar
+        calls = []
+        def fake(opts, url, ranges=None, browser=None, cookiefile=None, player_client=None):
+            calls.append(player_client or cookiefile or browser)
+            if player_client or (cookiefile is None and browser is None):
+                raise DownloadError("Sign in to confirm you're not a bot")
+            return {"id": "ok"}
+        ingest._ydl_attempt = fake
+        try:
+            result = ingest._ydl({}, "https://youtube.example/video")
+        finally:
+            settings.YOUTUBE_COOKIE_BROWSERS = old_order
+            settings.YOUTUBE_COOKIES_FILE = old_file
+            ingest._ydl_attempt = old_attempt
+    check("the cookies.txt is used before any browser store",
+          calls == [None, *ingest._known_player_clients(), str(jar)])
+    check("a cookies.txt recovers the download", result == {"id": "ok"})
+
+
+def test_cookies_file_resolution():
+    import tempfile
+    with tempfile.TemporaryDirectory() as directory:
+        default = Path(directory) / "youtube-cookies.txt"
+        explicit = Path(directory) / "elsewhere.txt"
+        check("nothing configured and no file means no cookie file",
+              settings.resolve_cookies_file("", default) is None)
+        default.write_text("x", encoding="utf-8")
+        check("the default location is picked up just by dropping the file in",
+              settings.resolve_cookies_file("", default) == default)
+        check("a path that does not exist is not passed to yt-dlp",
+              settings.resolve_cookies_file(str(explicit), default) is None)
+        explicit.write_text("x", encoding="utf-8")
+        check("an explicit path wins over the default location",
+              settings.resolve_cookies_file(f'"{explicit}"', default) == explicit)
+
+
+def test_windows_cookie_store_failures_are_diagnosed():
+    """The laptop's three real errors, verbatim from data\\backend.log."""
+    abe = ("ERROR: ERROR: Failed to decrypt with DPAPI. See "
+           "https://github.com/yt-dlp/yt-dlp/issues/10927 for more info")
+    locked = ("ERROR: ERROR: Could not copy Chrome cookie database. See "
+              "https://github.com/yt-dlp/yt-dlp/issues/7271 for more info")
+    signed_out = ("ERROR: [youtube] TfoQmmubqro: Sign in to confirm you're not a bot. "
+                  "Use --cookies-from-browser or --cookies for the authentication.")
+    check("App-Bound Encryption is named as such, not as a sign-in problem",
+          "App-Bound Encryption" in (ingest.cookie_store_hint(abe) or ""))
+    check("a locked cookie database asks for the browser to be closed",
+          "close that browser" in (ingest.cookie_store_hint(locked) or ""))
+    check("a readable but signed-out store is told apart from an unreadable one",
+          "not signed in" in (ingest.cookie_store_hint(signed_out) or ""))
+    message = ingest._cookie_failure_message(
+        [("chrome", locked), ("edge", abe), ("firefox", signed_out)])
+    check("the failure message carries each source's own remedy",
+          "App-Bound Encryption" in message and "close that browser" in message)
+    check("the failure message names the installed yt-dlp",
+          f"yt-dlp {ingest.ytdlp_version()}" in message)
+    check("the failure message points at the update and the cookies.txt",
+          "update.cmd" in message and "cookies.txt" in message)
+    check("the raw yt-dlp text is kept for support", "10927" in message and "7271" in message)
+
+
 if __name__ == "__main__":
     test_challenge_detection(); test_browser_fallback_order()
     test_format_fallback_order(); test_format_fallback_final_error_is_actionable()
@@ -223,6 +295,8 @@ if __name__ == "__main__":
     test_unreadable_cookie_store_falls_through_to_the_next_browser()
     test_every_browser_failing_is_still_an_ordinary_error()
     test_disabled_fallback_explains_itself()
+    test_cookies_file_is_tried_before_any_browser(); test_cookies_file_resolution()
+    test_windows_cookie_store_failures_are_diagnosed()
     test_no_cookie_error_and_local_path()
     print("\n" + ("ALL PASSED" if not failed else f"{len(failed)} FAILED: {failed}"))
     raise SystemExit(bool(failed))

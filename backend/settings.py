@@ -139,6 +139,32 @@ def resolve_cookie_browsers(raw: str | None, *, windows: bool | None = None) -> 
 YOUTUBE_COOKIE_BROWSERS_RAW = os.getenv("CVIDEO_YOUTUBE_COOKIE_BROWSERS")
 YOUTUBE_COOKIE_BROWSERS = resolve_cookie_browsers(YOUTUBE_COOKIE_BROWSERS_RAW)
 
+# An exported cookies.txt file. This exists because reading a *browser* cookie store is not
+# actually possible for the two browsers Windows users have: since Chrome 127, Chrome and
+# Edge seal their cookies with App-Bound Encryption, and yt-dlp cannot decrypt them
+# (yt-dlp#10927 - the real error on the laptop was "Failed to decrypt with DPAPI"). A
+# cookies.txt exported from the signed-in browser works everywhere and is what yt-dlp's own
+# FAQ recommends. Default location: backend\youtube-cookies.txt, so dropping the file in
+# is the whole setup. It is read locally and sent only to YouTube, exactly like the
+# browser path.
+DEFAULT_COOKIES_FILE = BACKEND_DIR / "youtube-cookies.txt"
+YOUTUBE_COOKIES_FILE_RAW = os.getenv("CVIDEO_YOUTUBE_COOKIES_FILE", "")
+
+
+def resolve_cookies_file(raw: str | None, default_path: Path) -> Path | None:
+    """The cookies.txt to hand yt-dlp, or None.
+
+    An explicit setting wins even when the file is missing: `raw` is reported back in the
+    ingest error so a typo'd path reads as a typo instead of as "the fallback did nothing"."""
+    text = (raw or "").strip().strip('"').strip("'")
+    if text:
+        path = Path(text).expanduser()
+        return path if path.is_file() else None
+    return default_path if default_path.is_file() else None
+
+
+YOUTUBE_COOKIES_FILE = resolve_cookies_file(YOUTUBE_COOKIES_FILE_RAW, DEFAULT_COOKIES_FILE)
+
 # --- Shoot Drop (batch raw-footage intake) ------------------------------------
 # Watched folder: copy raw phone clips here and the backend auto-ingests them
 # (transcribe -> match to open video scripts -> attach). Empty = watcher off;

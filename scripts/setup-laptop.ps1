@@ -48,6 +48,10 @@ Write-Host "Installing backend deps (CPU-capable local setup)..." -ForegroundCol
 & .\.venv\Scripts\python.exe -m pip install --upgrade pip
 & .\.venv\Scripts\python.exe -m pip install -r requirements-bare.txt
 if ($LASTEXITCODE -ne 0) { Write-Host "pip install failed - see errors above." -ForegroundColor Red; exit 1 }
+# Record which requirements this venv now matches, so the launchers' re-sync stays a
+# millisecond hash comparison until the pins actually change.
+. "$PSScriptRoot\cvideo-update.ps1"
+Write-CvideoDepsStamp -Root $root
 
 # --- 2b. Pre-download the speech model --------------------------------------
 # faster-whisper fetches its weights on FIRST USE, inside the model constructor. Left to

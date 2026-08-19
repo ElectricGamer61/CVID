@@ -27,10 +27,14 @@ function Test-Up {
 }
 
 if (-not (Test-Up)) {
-  # First run (or after a UI change) needs the built UI; build it once if missing.
-  if (-not (Test-Path "$root\frontend\dist\index.html")) {
-    Write-Host "First run: building the app (one time)..." -ForegroundColor Cyan
-    Push-Location "$root\frontend"; npm run build; Pop-Location
+  # The app is not running yet, so this is the one safe moment to update it: pull any merged
+  # fix, re-sync backend\.venv to the pinned requirements, and rebuild the UI if it moved.
+  # Without this the Desktop icon runs whatever was installed the day install.cmd last ran -
+  # which is how the laptop kept hitting YouTube's bot check on a year-old yt-dlp.
+  . "$PSScriptRoot\cvideo-update.ps1"
+  foreach ($line in (Update-CvideoInstall -Root $root -Log $log)) {
+    Write-Host $line -ForegroundColor DarkGray
+    Add-Content $log $line
   }
   Write-Host "Starting Cvideo..." -ForegroundColor Cyan
   # Logged here, not above: when the app was already running we did not start a backend,

@@ -24,18 +24,20 @@ $cookieLine = Get-CvideoCookieSummary $cookies
 Write-Host $cookieLine -ForegroundColor DarkGray
 Add-Content $log $cookieLine
 
-# Build the UI only if it hasn't been built yet (fast startup / boot-time autostart).
-# Force a rebuild after a UI change by deleting frontend\dist first, or run npm run build.
+# Pull any merged fix and re-sync the venv BEFORE starting the backend. Nothing else on the
+# normal path ever updates this machine, which is how a laptop kept failing YouTube ingest
+# for hours after the fix was merged - on a yt-dlp a year old. See scripts\cvideo-update.ps1.
+. "$PSScriptRoot\cvideo-update.ps1"
+foreach ($line in (Update-CvideoInstall -Root $root -Log $log)) {
+  Write-Host $line -ForegroundColor DarkGray
+  Add-Content $log $line
+}
+
+# A first run with no built UI has nothing to serve; that one IS fatal.
 if (-not (Test-Path "$root\frontend\dist\index.html")) {
-  Write-Host "First run: building the UI (one time)..." -ForegroundColor Cyan
-  Set-Location "$root\frontend"
-  npm run build
-  # Prompt before exiting: a double-clicked serve.cmd would otherwise flash and close unexplained.
-  if ($LASTEXITCODE -ne 0) {
-    Write-Host "Frontend build failed - fix TS errors and retry." -ForegroundColor Red
-    Read-Host "Press Enter to close"
-    exit 1
-  }
+  Write-Host "The UI could not be built - fix the errors above and retry." -ForegroundColor Red
+  Read-Host "Press Enter to close"
+  exit 1
 }
 
 # Show the addresses this machine can be reached at (LAN + any Tailscale 100.x address).

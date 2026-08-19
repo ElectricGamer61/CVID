@@ -99,15 +99,41 @@ Open http://localhost:3000. The Vite dev server proxies `/api` to the backend on
 - `CVIDEO_DEFAULT_BRAIN` (`openai`/`claude`/`ollama`/`gemini`/`heuristic`); `openai` is retained as the backend compatibility id for Cloud categorizer
 - `CVIDEO_TARGET_CLIPS`, `CVIDEO_MIN_CLIP`, `CVIDEO_MAX_CLIP`
 - `CVIDEO_YOUTUBE_COOKIE_BROWSERS` (browser order for the YouTube sign-in fallback; on Windows it defaults to `chrome,edge,firefox`, set `off` to disable)
+- `CVIDEO_YOUTUBE_COOKIES_FILE` (path to an exported `cookies.txt`; defaults to `backend\\youtube-cookies.txt` if that file exists)
+- `CVIDEO_AUTO_UPDATE` (`off` stops the launchers fast-forwarding this checkout on start)
+
+## Keeping it up to date
+
+Double-click **`update.cmd`**. It pulls the newest version, updates the backend downloader
+(**yt-dlp**) and the other Python dependencies, and rebuilds the UI.
+
+The launchers also do this for you: `serve.cmd`, `start.cmd` and the Desktop icon fast-forward
+the checkout and re-sync `backend\\.venv` to the pinned requirements *before* starting the
+backend, and log what they did to `data\\backend.log`. A checkout with local changes, a
+missing git, or no network is left exactly as it is and the app starts anyway; set
+`CVIDEO_AUTO_UPDATE=off` to keep a machine pinned on purpose.
+
+This matters more than it sounds: **YouTube breaks yt-dlp every few weeks**. An install that
+never updates eventually gets a bot challenge or an `HTTP 403` on every YouTube URL, and that
+is a stale downloader, not a broken app.
 
 ### YouTube bot/sign-in challenges
 
-Cvideo always downloads YouTube URLs **anonymously first**. If YouTube answers with “Sign in
-to confirm you're not a bot”, the Windows launchers retry through the cookies of a browser you
-are already signed in to on this PC — Chrome, then Edge, then Firefox. Nothing to configure:
-just be signed in to YouTube in one of them (and ideally close it, since yt-dlp may not be
-able to read a profile that is running). If one browser cannot be read, the next is tried; if
-none works, the project stays put with an error explaining what to fix, and ↻ Retry re-runs it.
+Cvideo always downloads YouTube URLs **anonymously first**. If YouTube refuses — “Sign in to
+confirm you're not a bot”, an `HTTP 403` on the media, or no usable format — it retries the
+same download through YouTube's other player clients (`android`, `tv_simply`, `web_embedded`,
+`mweb`, `ios`, `tv`). That recovers most refusals on its own, with no cookies and nothing for
+you to do. Only if every one of those fails does it reach for local cookies: an exported
+`cookies.txt` first, then each configured browser. If none works, the project stays put with
+an error naming what was tried and why each failed, and ↻ Retry re-runs it.
+
+**Windows note:** since Chrome 127, Chrome and Edge seal their cookie store with App-Bound
+Encryption and yt-dlp *cannot* read it (`Failed to decrypt with DPAPI`, yt-dlp#10927) — a
+running browser also locks the database (yt-dlp#7271). So on Windows the browser route only
+really works with **Firefox**. The reliable route everywhere is a cookies.txt: export one from
+a browser signed in to YouTube (any "Get cookies.txt" extension) and save it as
+`backend\\youtube-cookies.txt`. Dropping the file in is the whole setup; it is read locally
+and sent only to YouTube.
 
 To change the order, or to turn the fallback off entirely, set the variable in `backend\\.env`
 (or in your Windows user environment):
@@ -128,8 +154,8 @@ Non-Windows installs stay opt-in; use `=auto` there to get the same order.
 **What this does and does not do.** yt-dlp reads the selected browser's cookie database on
 this machine and sends those cookies only to the YouTube request Cvideo is already making.
 Cvideo never copies them into a project, writes them to a log, or sends them anywhere else,
-and local-file uploads never touch this path at all. Keep yt-dlp updated with
-`pip install -U yt-dlp` when YouTube changes its checks.
+and local-file uploads never touch this path at all. The same is true of a `cookies.txt` you
+supply. Keeping yt-dlp current is handled by `update.cmd` and the launchers (see above).
 
 ## Caption presets
 `capcut` (classic TikTok), `hormozi` (uppercase pop), `beasty` (big centered),
