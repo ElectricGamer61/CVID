@@ -130,6 +130,55 @@ def _cookies_file() -> str | None:
     return str(path) if path else None
 
 
+def _js_runtimes() -> dict:
+    """The JavaScript runtimes yt-dlp may use to solve YouTube's player challenge.
+
+    Imported at call time for the same reason as _browser_order: a local-file ingest must
+    not depend on what is installed for YouTube."""
+    import settings
+    return dict(getattr(settings, "YOUTUBE_JS_RUNTIMES", None) or {})
+
+
+def has_js_runtime() -> bool:
+    """Whether ANY JavaScript runtime is available to answer YouTube's challenge."""
+    return bool(_js_runtimes())
+
+
+def has_ejs() -> bool:
+    """Whether yt-dlp's challenge-solver scripts (yt-dlp-ejs) are installed locally.
+
+    Without them yt-dlp has to fetch the solver at run time, which it refuses to do by
+    default - so a missing yt_dlp_ejs is just as fatal to a YouTube download as a missing
+    runtime, and just as invisible. It ships with the `yt-dlp[default]` extra."""
+    try:
+        import yt_dlp_ejs  # noqa: F401
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def js_challenge_note() -> str:
+    """The missing-prerequisite sentence to lead a YouTube failure with, or "".
+
+    This is deliberately first in every message: a machine with no JS runtime CANNOT
+    download from YouTube anonymously, and every other remedy (cookies, another player
+    client, retrying later) is wasted effort until it has one."""
+    missing = []
+    if not has_js_runtime():
+        missing.append("no JavaScript runtime (deno/node) could be found")
+    if not has_ejs():
+        missing.append("yt-dlp's challenge solver (yt-dlp-ejs) is not installed")
+    if not missing:
+        return ""
+    return (
+        "IMPORTANT: " + " and ".join(missing) + ". yt-dlp runs YouTube's own JavaScript "
+        "challenge in an external runtime, and without one YouTube answers every anonymous "
+        "download with this sign-in/bot message no matter what else is configured. Fix it "
+        "by reinstalling the backend dependencies (on Windows, double-click update.cmd), "
+        "which install yt-dlp[default,deno] - that is the whole fix and needs no sign-in. "
+    )
+
+
 def ytdlp_version() -> str:
     """The yt-dlp actually installed in this backend, for the failure message.
 
@@ -183,6 +232,7 @@ def _no_fallback_message() -> str:
         why = (f"CVIDEO_YOUTUBE_COOKIE_BROWSERS={raw!r} names no browser Cvideo can read "
                f"cookies from (supported: {supported}).")
     return (
+        js_challenge_note() +
         "YouTube asked you to sign in because it detected automated traffic. " + why +
         f" First update: yt-dlp {ytdlp_version()} is installed, and an out-of-date yt-dlp is "
         "the usual reason YouTube starts challenging downloads at all (double-click "
@@ -201,8 +251,38 @@ def _cookies_file_hint() -> str:
     return str(settings.DEFAULT_COOKIES_FILE)
 
 
+class _YdlLog:
+    """Route yt-dlp's own diagnostics into the backend log instead of dropping them.
+
+    debug() is where yt-dlp puts ordinary progress chatter, so it stays silent; warnings and
+    errors are what a support log needs and are printed with a prefix that makes their
+    origin unambiguous."""
+
+    def debug(self, msg: str) -> None:
+        pass
+
+    def info(self, msg: str) -> None:
+        pass
+
+    def warning(self, msg: str) -> None:
+        print(f"[yt-dlp] {msg}")
+
+    def error(self, msg: str) -> None:
+        print(f"[yt-dlp] {msg}")
+
+
+_YDL_LOG = _YdlLog()
+
+
 def _ydl_attempt(opts: dict, url: str, ranges=None, browser: str | None = None,
                  cookiefile: str | None = None, player_client: str | None = None) -> dict:
+    # Never import yt_dlp while the startup health check may still be replacing it on disk.
+    # In practice this returns immediately: nobody can submit a URL before the API is up.
+    try:
+        from app import ytdlp_health
+        ytdlp_health.wait_until_checked()
+    except Exception:  # noqa: BLE001 - tests import ingest without the app package
+        pass
     import yt_dlp
     if ranges is not None:
         from yt_dlp.utils import download_range_func
@@ -210,10 +290,21 @@ def _ydl_attempt(opts: dict, url: str, ranges=None, browser: str | None = None,
         opts["download_ranges"] = download_range_func(None, ranges)
         opts["force_keyframes_at_cuts"] = True
     base = {
-        "quiet": True, "no_warnings": True, "noprogress": True,
+        "quiet": True, "noprogress": True,
+        # NOT no_warnings. yt-dlp's warnings are the only place it says WHY YouTube is
+        # refusing - "No supported JavaScript runtime could be found" is a warning, not an
+        # error, and suppressing it is why a missing JS runtime looked like a cookie problem
+        # through three rounds of fixes. They go to the backend log via _YdlLog.
+        "no_warnings": False,
+        "logger": _YDL_LOG,
         # yt-dlp's own per-fragment/HTTP retries (handles brief blips in-place).
         "retries": 10, "fragment_retries": 10, "extractor_retries": 3,
     }
+    runtimes = _js_runtimes()
+    if runtimes:
+        # Without this yt-dlp only ever looks for `deno` on PATH - and the launchers run
+        # .venv\Scripts\python.exe directly, so the venv's own deno is not on PATH.
+        base["js_runtimes"] = runtimes
     if browser:
         # yt-dlp reads the browser cookie database locally. No password scraping or
         # cookie upload is performed by Cvideo.
@@ -345,12 +436,14 @@ def _ydl(_opts: dict, url: str, ranges=None) -> dict:
 
     if format_errors:
         raise RuntimeError(
+            js_challenge_note() +
             "YouTube has no compatible downloadable format for this video. "
             f"Update yt-dlp (yt-dlp {ytdlp_version()} is installed - on Windows, double-click "
             "update.cmd) and retry, or use a local video file." + _clients_note(client_errors) +
             f" Details: {format_errors[-1]}"
         )
     raise RuntimeError(
+        js_challenge_note() +
         "YouTube refused this download and none of the fallbacks got through. "
         f"Update yt-dlp (yt-dlp {ytdlp_version()} is installed - on Windows, double-click "
         "update.cmd) and retry the project." + _clients_note(client_errors) +
@@ -377,6 +470,7 @@ def _cookie_failure_message(source_errors: list[tuple[str, str]]) -> str:
         hint = cookie_store_hint(text)
         tried.append(f"{label} ({hint})" if hint else label)
     return (
+        js_challenge_note() +
         "YouTube asked Cvideo to sign in (bot check) and none of the local cookie sources "
         f"got through. Tried: {'; '.join(tried)}. "
         f"yt-dlp {ytdlp_version()} is installed - an out-of-date yt-dlp is the usual reason "

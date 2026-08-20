@@ -16,7 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 import settings
-from . import ai, autopilot, cartridge, intake, learn, sheets
+from . import ai, autopilot, cartridge, intake, learn, sheets, ytdlp_health
 from .db import (Angle, Beat, Clip, Folder, IngestClip, Outlier, Perf, Project,
                  Ticket, get_session, init_db)
 from .jobs import get_words, start_shootdrop_watcher, submit_analyze, submit_shootdrop
@@ -59,6 +59,9 @@ _assemble_status: dict[int, dict] = {}
 def _startup():
     init_db()
     start_shootdrop_watcher()
+    # Keep the YouTube downloader able to download. Runs off the startup path (see
+    # ytdlp_health) because a pip run is slower than the launcher's health-check window.
+    ytdlp_health.check_in_background()
 
 
 # --------------------------------------------------------------------------- #
@@ -2229,7 +2232,9 @@ def list_presets():
 
 @app.get("/api/health")
 def health():
-    return {"ok": True}
+    # youtube: whether yt-dlp can answer YouTube's JavaScript challenge at all - the thing
+    # that was invisible while the clipper "worked" for four merged fixes in a row.
+    return {"ok": True, "youtube": ytdlp_health.readiness()}
 
 
 # --------------------------------------------------------------------------- #

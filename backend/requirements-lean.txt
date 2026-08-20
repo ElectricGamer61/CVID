@@ -10,7 +10,17 @@ uvicorn[standard]==0.34.0
 sqlmodel==0.0.22
 python-multipart==0.0.20
 python-dotenv==1.0.1
-yt-dlp==2026.7.4
+# yt-dlp: NEVER pin this to an exact version, and never drop the extras.
+#  - [default] pulls yt-dlp-ejs, the script yt-dlp runs to answer YouTube's JavaScript
+#    player challenge; [deno] pulls a real Deno binary INTO THE VENV (there is a Windows
+#    wheel), which is what executes it. Bare `yt-dlp` has neither, and without them YouTube
+#    answers every anonymous download with "Sign in to confirm you're not a bot" - the
+#    failure PRs #15/#17/#18/#20 each mistook for a cookie or player-client problem.
+#  - the floor, not a pin: YouTube breaks yt-dlp's extractor on the order of weeks, so an
+#    exact pin guarantees the app rots. The launchers additionally run a periodic
+#    `pip install --upgrade yt-dlp[default,deno]` (scripts/cvideo-update.ps1) so this stays
+#    current without anyone editing this file.
+yt-dlp[default,deno]>=2026.8.19
 faster-whisper==1.1.1
 # opencv-contrib (not plain opencv-python) - includes the YuNet DNN face detector
 # (cv2.FaceDetectorYN) used for speaker-tracked reframe.

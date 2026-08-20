@@ -26,7 +26,9 @@ $backendEnv = Get-CvideoBackendEnvPrefix
 # launcher has to do this at all. start.ps1 runs the Vite dev server, so no dist rebuild here.
 . "$PSScriptRoot\cvideo-update.ps1"
 $checkout = Update-CvideoCheckout -Root $root
-foreach ($line in @($checkout.Message, (Sync-CvideoBackendDeps -Root $root -Log $log))) {
+foreach ($line in @($checkout.Message, (Sync-CvideoBackendDeps -Root $root -Log $log),
+                    (Sync-CvideoYtDlp -Root $root -Log $log), (Test-CvideoYtDlpReady -Root $root))) {
+  if (-not $line) { continue }
   Write-Host $line -ForegroundColor DarkGray
   Add-Content $log $line
 }

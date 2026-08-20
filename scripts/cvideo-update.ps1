@@ -164,6 +164,98 @@ function Sync-CvideoBackendDeps {
   return "Backend dependencies: updated to the pinned set (yt-dlp $version)."
 }
 
+function Get-CvideoYtDlpStampPath {
+  param([string]$Root)
+  return (Join-Path $Root "backend\.venv\.cvideo-ytdlp.stamp")
+}
+
+function Sync-CvideoYtDlp {
+  # Keep yt-dlp CURRENT, not merely "matching the pins".
+  #
+  # WHY THIS IS SEPARATE FROM Sync-CvideoBackendDeps
+  # That function only runs pip when requirements-bare.txt CHANGES. Every other dependency
+  # is fine with that: fastapi does not stop working because a month passed. yt-dlp does.
+  # YouTube changes its player and its anti-bot challenge on the order of weeks, and a
+  # yt-dlp that was correct when the requirements file was last edited is the single most
+  # common reason ingest starts failing. Pinning it - which this repo did, at 2026.7.4 -
+  # turns "the launcher self-updates" into a guarantee that the app rots in place, because
+  # the stamp matches and pip is never run at all.
+  #
+  # So: upgrade yt-dlp (with its extras) on its own cadence, at most once every
+  # CVIDEO_YTDLP_MAX_AGE_HOURS (default 24). Best-effort like everything else here - an
+  # offline laptop keeps the yt-dlp it has and starts normally.
+  param([string]$Root, [string]$Log, [switch]$Force)
+  $ErrorActionPreference = "Continue"   # pip writes to stderr; see Invoke-CvideoGit.
+  if ((-not $Force) -and (-not (Test-CvideoAutoUpdateEnabled))) {
+    return "YouTube downloader: skipped ($CvideoAutoUpdateVar is off)."
+  }
+  $py = Join-Path $Root "backend\.venv\Scripts\python.exe"
+  if (-not (Test-Path -LiteralPath $py)) { return "YouTube downloader: no venv yet - run install.cmd." }
+
+  $maxAge = 24
+  $configured = [Environment]::GetEnvironmentVariable("CVIDEO_YTDLP_MAX_AGE_HOURS", 'Process')
+  if ($configured) {
+    $parsed = 0
+    if ([int]::TryParse($configured, [ref]$parsed) -and $parsed -ge 0) { $maxAge = $parsed }
+  }
+  $stamp = Get-CvideoYtDlpStampPath -Root $Root
+  if ((-not $Force) -and (Test-Path -LiteralPath $stamp)) {
+    $age = (Get-Date) - (Get-Item -LiteralPath $stamp).LastWriteTime
+    if ($age.TotalHours -lt $maxAge) { return "YouTube downloader: checked recently - skipped." }
+  }
+
+  Write-Host "Checking for a newer YouTube downloader..." -ForegroundColor Cyan
+  # The extras are the point, not decoration: [default] brings yt-dlp-ejs (the JavaScript
+  # challenge solver) and [deno] brings the runtime that executes it. A yt-dlp without them
+  # cannot download from YouTube anonymously at all.
+  $before = (& $py -c "import yt_dlp, sys; sys.stdout.write(yt_dlp.version.__version__)" 2>$null)
+  $cmd = '"{0}" -m pip install --upgrade --disable-pip-version-check "yt-dlp[default,deno]" 2>&1' -f $py
+  if ($Log) { cmd /c $cmd | Tee-Object -FilePath $Log -Append | Out-Null }
+  else      { cmd /c $cmd | Out-Null }
+  if ($LASTEXITCODE -ne 0) {
+    return "YouTube downloader: could not check for an update - continuing with yt-dlp $before."
+  }
+  # Touch the stamp only on success, so an offline launch retries on the next start
+  # instead of going quiet for a day.
+  Set-Content -LiteralPath $stamp -Value (Get-Date -Format "o") -Encoding ASCII
+  $after = (& $py -c "import yt_dlp, sys; sys.stdout.write(yt_dlp.version.__version__)" 2>$null)
+  if (-not $after) { return "YouTube downloader: updated." }
+  if ($before -eq $after) { return "YouTube downloader: yt-dlp $after is current." }
+  return "YouTube downloader: yt-dlp $before -> $after."
+}
+
+function Test-CvideoYtDlpReady {
+  # Report whether yt-dlp can actually answer YouTube's JavaScript challenge, which is a
+  # different question from "is yt-dlp installed". Purely diagnostic: it prints one line so
+  # the console and the log say what is wrong BEFORE the user pastes a URL and waits.
+  param([string]$Root)
+  $ErrorActionPreference = "Continue"
+  $py = Join-Path $Root "backend\.venv\Scripts\python.exe"
+  if (-not (Test-Path -LiteralPath $py)) { return "" }
+  $probe = @'
+import sys
+sys.path.insert(0, r"{0}")
+try:
+    import settings
+    rt = ", ".join(settings.YOUTUBE_JS_RUNTIMES) or "none"
+except Exception:
+    rt = "unknown"
+try:
+    import yt_dlp_ejs
+    ejs = "yes"
+except Exception:
+    ejs = "no"
+sys.stdout.write(rt + "|" + ejs)
+'@ -f (Join-Path $Root "backend")
+  $out = (& $py -c $probe 2>$null)
+  if (-not $out) { return "" }
+  $parts = $out.Split("|")
+  if ($parts[0] -eq "none" -or $parts[1] -eq "no") {
+    return "YouTube: NOT ready (JS runtime: $($parts[0]); challenge solver: $($parts[1])). Run update.cmd."
+  }
+  return "YouTube: ready (JS runtime: $($parts[0]))."
+}
+
 function Sync-CvideoUi {
   # Rebuild frontend\dist when the UI sources moved (or it was never built). serve.ps1 and
   # open-cvideo.ps1 only build when dist is MISSING, so without this an update would start
@@ -193,6 +285,9 @@ function Update-CvideoInstall {
   $checkout = Update-CvideoCheckout -Root $Root
   $lines += $checkout.Message
   $lines += (Sync-CvideoBackendDeps -Root $Root -Log $Log)
+  $lines += (Sync-CvideoYtDlp -Root $Root -Log $Log)
   $lines += (Sync-CvideoUi -Root $Root -Changed $checkout.Changed)
+  $ready = Test-CvideoYtDlpReady -Root $Root
+  if ($ready) { $lines += $ready }
   return $lines
 }
