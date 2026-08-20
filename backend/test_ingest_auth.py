@@ -167,7 +167,7 @@ def test_every_browser_failing_is_still_an_ordinary_error():
     finally:
         settings.YOUTUBE_COOKIE_BROWSERS, ingest._ydl_attempt = old_order, old_attempt
     check("exhausting every browser is a reportable job error, not a raw crash",
-          message.startswith("YouTube asked Cvideo to sign in"))
+          "YouTube asked Cvideo to sign in" in message)
     check("the error names the browsers tried and both reasons",
           "chrome" in message and "firefox" in message and "cookies database" in message)
 
@@ -288,6 +288,93 @@ def test_windows_cookie_store_failures_are_diagnosed():
     check("the raw yt-dlp text is kept for support", "10927" in message and "7271" in message)
 
 
+def _with_prereqs(runtimes, ejs):
+    """Swap the JS-runtime / solver probes, returning a restore callable."""
+    old_rt, old_ejs = ingest._js_runtimes, ingest.has_ejs
+    ingest._js_runtimes = lambda: dict(runtimes)
+    ingest.has_ejs = lambda: ejs
+    def restore():
+        ingest._js_runtimes, ingest.has_ejs = old_rt, old_ejs
+    return restore
+
+
+def test_missing_js_runtime_is_named_first():
+    """The regression this whole change exists for.
+
+    Without a JavaScript runtime yt-dlp cannot answer YouTube's player challenge, so YouTube
+    returns the same "sign in / not a bot" text it returns for a genuine cookie problem.
+    Four merged fixes chased the cookie reading instead, because the one line that says
+    otherwise is a yt-dlp WARNING that ingest used to suppress. So: when the prerequisites
+    are missing, every YouTube failure must say so before it says anything about cookies."""
+    restore = _with_prereqs({}, False)
+    try:
+        note = ingest.js_challenge_note()
+        check("a missing JS runtime is called out", "JavaScript runtime" in note)
+        check("a missing challenge solver is called out", "yt-dlp-ejs" in note)
+        check("the note names the fix that needs no sign-in", "update.cmd" in note)
+        no_fallback = ingest._no_fallback_message()
+        check("the prerequisite leads the no-fallback message",
+              no_fallback.startswith("IMPORTANT:"))
+        cookie_failure = ingest._cookie_failure_message([("chrome", "boom")])
+        check("the prerequisite leads the cookie-failure message",
+              cookie_failure.startswith("IMPORTANT:"))
+        check("the cookie advice is still there for support",
+              "YouTube asked Cvideo to sign in" in cookie_failure)
+    finally:
+        restore()
+
+
+def test_ready_install_does_not_cry_wolf():
+    """The mirror image: with a runtime and the solver present, the message must NOT claim a
+    missing prerequisite - otherwise the note becomes noise and stops being read."""
+    restore = _with_prereqs({"deno": {"path": "/x/deno"}}, True)
+    try:
+        check("a ready install adds no prerequisite note", ingest.js_challenge_note() == "")
+        check("the cookie-failure message is unchanged when ready",
+              ingest._cookie_failure_message([("chrome", "boom")]).startswith(
+                  "YouTube asked Cvideo to sign in"))
+    finally:
+        restore()
+
+
+def test_js_runtime_is_passed_to_yt_dlp():
+    """A runtime that is resolved but never handed to yt-dlp fixes nothing. yt-dlp only ever
+    looks for `deno` on PATH, and the launchers run .venv\\Scripts\\python.exe directly, so the
+    venv's own deno is NOT on PATH - it has to be passed explicitly."""
+    seen = {}
+    class FakeYDL:
+        def __init__(self, params): seen.update(params)
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def extract_info(self, url, download=False): return {"id": "ok"}
+    import types
+    fake_mod = types.ModuleType("yt_dlp")
+    fake_mod.YoutubeDL = FakeYDL
+    old_mod = sys.modules.get("yt_dlp")
+    old_rt = ingest._js_runtimes
+    sys.modules["yt_dlp"] = fake_mod
+    ingest._js_runtimes = lambda: {"deno": {"path": "/venv/deno"}}
+    try:
+        ingest._ydl_attempt({"format": "bestaudio/best"}, "https://youtube.example/v")
+    finally:
+        ingest._js_runtimes = old_rt
+        if old_mod is not None: sys.modules["yt_dlp"] = old_mod
+        else: sys.modules.pop("yt_dlp", None)
+    check("the resolved JS runtime reaches yt-dlp",
+          seen.get("js_runtimes") == {"deno": {"path": "/venv/deno"}})
+    check("yt-dlp warnings are no longer suppressed", seen.get("no_warnings") is False)
+    check("yt-dlp diagnostics are routed to the backend log",
+          hasattr(seen.get("logger"), "warning"))
+
+
+def test_settings_resolves_a_js_runtime():
+    check("an explicit off-word disables the runtime", settings.resolve_js_runtimes("off") == {})
+    pinned = settings.resolve_js_runtimes("node:/usr/bin/node")
+    check("an explicit name:path is honoured", pinned == {"node": {"path": "/usr/bin/node"}})
+    check("an unknown runtime name is dropped rather than passed on",
+          settings.resolve_js_runtimes("nonsense-runtime") == {})
+
+
 if __name__ == "__main__":
     test_challenge_detection(); test_browser_fallback_order()
     test_format_fallback_order(); test_format_fallback_final_error_is_actionable()
@@ -298,5 +385,7 @@ if __name__ == "__main__":
     test_cookies_file_is_tried_before_any_browser(); test_cookies_file_resolution()
     test_windows_cookie_store_failures_are_diagnosed()
     test_no_cookie_error_and_local_path()
+    test_missing_js_runtime_is_named_first(); test_ready_install_does_not_cry_wolf()
+    test_js_runtime_is_passed_to_yt_dlp(); test_settings_resolves_a_js_runtime()
     print("\n" + ("ALL PASSED" if not failed else f"{len(failed)} FAILED: {failed}"))
     raise SystemExit(bool(failed))

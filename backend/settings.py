@@ -165,6 +165,68 @@ def resolve_cookies_file(raw: str | None, default_path: Path) -> Path | None:
 
 YOUTUBE_COOKIES_FILE = resolve_cookies_file(YOUTUBE_COOKIES_FILE_RAW, DEFAULT_COOKIES_FILE)
 
+# --- YouTube JavaScript challenge runtime ------------------------------------
+# THE reason anonymous YouTube downloads fail. yt-dlp no longer descrambles YouTube's
+# player itself: since the EJS rewrite it runs YouTube's own JavaScript challenge in an
+# EXTERNAL JavaScript runtime, and without one the extractor cannot mint the proof-of-origin
+# the player asks for. YouTube answers that with "Sign in to confirm you're not a bot" and
+# HTTP 403 on the media - which reads exactly like a cookie problem and is not one. No
+# amount of cookies, player-client sweeping or retrying fixes it; three previous rounds of
+# fixes chased those instead (see PRs #15/#17/#18/#20).
+#
+# yt-dlp only ever enables `deno`, and only if a deno binary happens to be on PATH. Cvideo
+# now installs one as an ordinary Python dependency (`yt-dlp[default,deno]` in
+# requirements-*.txt), so it lands inside backend/.venv on every platform including Windows
+# and needs nothing from the user. `deno.find_deno_bin()` resolves it even when the venv's
+# Scripts/bin directory is not on PATH, which is the normal case: the launchers run
+# .venv\Scripts\python.exe directly rather than activating the venv.
+#
+# Order: the pip-installed deno, then anything already on PATH (deno, node, bun, quickjs).
+# node is worth keeping as a fallback because Cvideo already requires npm to build the UI,
+# so a machine that can run Cvideo at all almost always has one.
+_JS_RUNTIME_PATH_CANDIDATES = ("deno", "node", "bun", "quickjs")
+
+
+def resolve_js_runtimes(raw: str | None = None) -> dict[str, dict]:
+    """The `js_runtimes` mapping to hand yt-dlp: {name: {"path": ...}}.
+
+    `raw` is CVIDEO_YOUTUBE_JS_RUNTIME: None/empty = detect, an off-word = disable
+    (restores the pre-EJS behaviour for anyone who needs it), "name" or "name:/path"
+    pins one. Detection never raises: a machine with no runtime at all still ingests
+    local uploads, and the ingest error says which runtimes were looked for."""
+    import shutil
+
+    text = (raw or "").strip().strip('"').strip("'")
+    if text and text.lower() in _COOKIE_BROWSERS_OFF:
+        return {}
+    if text:
+        name, _, path = text.partition(":")
+        name = name.strip().lower()
+        path = path.strip()
+        if name in _JS_RUNTIME_PATH_CANDIDATES:
+            return {name: {"path": path or shutil.which(name)}}
+        return {}
+
+    runtimes: dict[str, dict] = {}
+    try:
+        # Installed by the `deno` wheel that `yt-dlp[deno]` pulls in; resolves the binary
+        # inside the venv, which is where it is and where PATH does not point.
+        from deno import find_deno_bin
+        runtimes["deno"] = {"path": find_deno_bin()}
+    except Exception:  # noqa: BLE001 - an absent/moved wheel must not break ingest
+        pass
+    for name in _JS_RUNTIME_PATH_CANDIDATES:
+        if name in runtimes:
+            continue
+        found = shutil.which(name)
+        if found:
+            runtimes[name] = {"path": found}
+    return runtimes
+
+
+YOUTUBE_JS_RUNTIME_RAW = os.getenv("CVIDEO_YOUTUBE_JS_RUNTIME")
+YOUTUBE_JS_RUNTIMES = resolve_js_runtimes(YOUTUBE_JS_RUNTIME_RAW)
+
 # --- Shoot Drop (batch raw-footage intake) ------------------------------------
 # Watched folder: copy raw phone clips here and the backend auto-ingests them
 # (transcribe -> match to open video scripts -> attach). Empty = watcher off;

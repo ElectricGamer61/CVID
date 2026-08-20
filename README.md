@@ -117,6 +117,32 @@ This matters more than it sounds: **YouTube breaks yt-dlp every few weeks**. An 
 never updates eventually gets a bot challenge or an `HTTP 403` on every YouTube URL, and that
 is a stale downloader, not a broken app.
 
+Because of that, **yt-dlp is deliberately not pinned to an exact version** and is updated on
+its own schedule, separately from the other dependencies:
+
+- the launchers run `pip install --upgrade yt-dlp[default,deno]` at most once a day;
+- **the backend runs the same check itself when it starts**, so an install launched some
+  other way still repairs itself. Tune with `CVIDEO_YTDLP_MAX_AGE_HOURS` (default 24).
+
+The `[default,deno]` extras are not optional. yt-dlp no longer descrambles YouTube's player
+itself: it runs YouTube's own JavaScript challenge in an external JavaScript runtime, using
+solver scripts from `yt-dlp-ejs`. `[default]` installs the solver and `[deno]` installs the
+runtime (a real Deno binary, straight into `backend\\.venv` - there is a Windows wheel, so
+there is nothing to install by hand). Without them YouTube answers anonymous downloads with
+"Sign in to confirm you're not a bot", which reads exactly like a cookie problem and is not
+one.
+
+**To see whether this install can download from YouTube at all**, open
+<http://127.0.0.1:8000/api/health> and look at `youtube`:
+
+```json
+{"ok": true, "youtube": {"ytdlp": "2026.08.19", "js_runtimes": ["deno"],
+                         "ejs": true, "ready": true, "last_check": "..."}}
+```
+
+`"ready": false` means the downloader is missing a prerequisite and YouTube URLs will keep
+failing until it is fixed - double-click `update.cmd`.
+
 ### YouTube bot/sign-in challenges
 
 Cvideo always downloads YouTube URLs **anonymously first**. If YouTube refuses — “Sign in to

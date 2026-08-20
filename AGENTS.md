@@ -117,6 +117,36 @@ The app runs fine on Linux for verification, but nothing in-repo sets that up:
   before starting anything; `update.cmd` runs the same update by hand. Any future fix to this repo
   is worthless on a laptop until that laptop's checkout and venv actually move — assume they
   haven't and check, don't assume a merge is the end of the job.
+- **yt-dlp is not an ordinary dependency: never pin it, and never install it bare.** Two separate
+  traps, and each one hides the other (they cost four merged "fixes" — PRs #15/#17/#18/#20 — that
+  all left the clipper broken):
+  1. *Pinning.* YouTube rewrites its player every few weeks, so an exact pin guarantees the app
+     rots. Worse, the launcher's dependency sync only runs pip when `requirements-bare.txt`
+     *changes*, so a pin is not merely stale, it is unreachable — the "self-updating" install
+     could never move yt-dlp at all. It is now a floor (`>=`), refreshed on its own cadence by
+     `Sync-CvideoYtDlp` (launchers, daily) and by `backend/app/ytdlp_health.py` (the backend
+     itself, at startup — so an install whose checkout is too old to have the launcher change
+     still repairs itself).
+  2. *The extras.* yt-dlp no longer descrambles YouTube's player itself; it runs YouTube's own
+     JavaScript challenge in an EXTERNAL runtime using solver scripts from `yt-dlp-ejs`. Both are
+     extras: `yt-dlp[default]` for the solver, `yt-dlp[deno]` for a Deno binary (there is a
+     Windows wheel, so it lands inside `backend/.venv` with nothing to install by hand). yt-dlp
+     only ever looks for `deno` on PATH, and the launchers run `.venv\Scripts\python.exe`
+     directly — so the runtime must be passed explicitly (`settings.resolve_js_runtimes` ->
+     `js_runtimes`), never left to PATH discovery.
+  `GET /api/health` reports `youtube: {ytdlp, js_runtimes, ejs, ready}` — check that first when a
+  YouTube URL fails, before touching cookies.
+- **Never pass `no_warnings: True` to yt-dlp.** yt-dlp says *why* YouTube is refusing in warnings,
+  not errors — "No supported JavaScript runtime could be found", "Unable to fetch GVS PO Token",
+  `HTTP 429`. Suppressing them is the single reason a missing JS runtime looked like a cookie
+  problem through three rounds of fixes: what surfaced was YouTube's "Sign in to confirm you're
+  not a bot", which reads exactly like a cookie problem and is not one. `ingest.py` routes them
+  to `data/backend.log` via `_YdlLog`.
+- **A bot challenge is per-video, per-IP and time-varying, so one probe proves nothing.** The same
+  URL can 403 on every player client and download cleanly ten minutes later; a hammered IP starts
+  getting `HTTP 429` and challenges everything. When testing a YouTube fix, use several real URLs,
+  space the attempts out, and drive the *app's* full ladder rather than a single bare yt-dlp call —
+  a single-client probe reports "blocked" for videos the app ingests fine.
 - **Windows browser cookies are a dead end more often than not, so don't lean on them as the only
   fallback.** Chrome/Edge 127+ seal cookies with App-Bound Encryption yt-dlp cannot read
   (yt-dlp#10927), and a running Chrome/Edge locks its cookie DB (yt-dlp#7271) — "sign in to a

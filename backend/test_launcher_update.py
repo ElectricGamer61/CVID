@@ -277,13 +277,80 @@ $r = Update-CvideoCheckout -Root "{win_clone}"
     shutil.rmtree(local, ignore_errors=True)
 
 
+def test_every_launcher_keeps_ytdlp_current():
+    """The pin regression, pinned.
+
+    Sync-CvideoBackendDeps only runs pip when requirements-bare.txt CHANGES, and that file
+    pinned `yt-dlp==2026.7.4`. So the "self-updating" install could never move yt-dlp at all:
+    the stamp matched, pip never ran, and the one dependency that goes stale on its own -
+    YouTube rewrites its player every few weeks - was the one guaranteed to rot. Every
+    launcher must therefore run the separate yt-dlp refresh too."""
+    for name in LAUNCHERS:
+        text = (SCRIPTS / name).read_text(encoding="utf-8")
+        check(f"{name} refreshes yt-dlp on its own cadence",
+              "Sync-CvideoYtDlp" in text or "Update-CvideoInstall" in text)
+    update = (SCRIPTS / "update.ps1").read_text(encoding="utf-8")
+    check("update.cmd forces a yt-dlp refresh",
+          "Sync-CvideoYtDlp" in update and "-Force" in update)
+    for req in ("requirements-bare.txt", "requirements-lean.txt", "requirements.txt"):
+        text = (ROOT / "backend" / req).read_text(encoding="utf-8")
+        check(f"{req} does not pin yt-dlp to an exact version", "yt-dlp==" not in text)
+        check(f"{req} installs the JS-challenge extras", "yt-dlp[default,deno]" in text)
+
+
+def test_live_ytdlp_refresh():
+    """The refresh is time-gated, not hash-gated, and -Force overrides both gates."""
+    ps = _powershell()
+    if not ps:
+        skipped.append("live yt-dlp refresh checks (no powershell/pwsh on this machine)")
+        return
+    space = _workspace(ps)
+    if not space:
+        skipped.append("live yt-dlp refresh checks (no shared Windows temp directory)")
+        return
+    local, win = space
+    _fake_install(local)
+    stamp = local / "backend" / ".venv" / ".cvideo-ytdlp.stamp"
+
+    # A fresh stamp means "checked recently" - a launcher must NOT run pip on every start.
+    stamp.write_text("2026-08-20T00:00:00", encoding="ascii")
+    helper = win + chr(92) + "scripts" + chr(92) + "cvideo-update.ps1"
+    body = "\n".join([
+        '. "' + helper + '"',
+        '"recent=" + (Sync-CvideoYtDlp -Root "' + win + '")',
+        '$env:CVIDEO_YTDLP_MAX_AGE_HOURS = "0"',
+        '"always=" + (Sync-CvideoYtDlp -Root "' + win + '")',
+        '$env:CVIDEO_YTDLP_MAX_AGE_HOURS = $null',
+        '$env:CVIDEO_AUTO_UPDATE = "off"',
+        '"off=" + (Sync-CvideoYtDlp -Root "' + win + '")',
+        '"forced=" + (Sync-CvideoYtDlp -Root "' + win + '" -Force)',
+        '',
+    ])
+    out = _run_ps(ps, local, win, body)
+    text = out.stdout.replace("\r", "")
+    check("a recently checked install does not re-run pip",
+          "recent=YouTube downloader: checked recently" in text)
+    # The fake venv's python.exe is an empty file, so pip cannot actually succeed here; what
+    # is under test is that the gate OPENED, not that the download worked.
+    check("CVIDEO_YTDLP_MAX_AGE_HOURS=0 checks on every start",
+          "always=YouTube downloader: checked recently" not in text)
+    check("CVIDEO_AUTO_UPDATE=off stops the yt-dlp refresh too",
+          "off=YouTube downloader: skipped" in text)
+    check("-Force overrides both the age gate and the off switch",
+          "forced=YouTube downloader: skipped" not in text)
+
+    shutil.rmtree(local, ignore_errors=True)
+
+
 if __name__ == "__main__":
     test_every_launcher_updates_before_starting_the_backend()
+    test_every_launcher_keeps_ytdlp_current()
     test_setup_stamps_the_venv_it_built()
     test_manual_update_entry_point_exists()
     test_helper_is_parseable_ascii()
     test_live_dependency_sync()
     test_live_checkout_update()
+    test_live_ytdlp_refresh()
     for reason in skipped:
         print("  skip " + reason)
     print("\n" + ("ALL PASSED" if not failed else f"{len(failed)} FAILED: {failed}"))
