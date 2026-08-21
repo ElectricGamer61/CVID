@@ -4,7 +4,7 @@ Synthesizes a 16:9 test video with ffmpeg, then runs reframe + captions + render
 to produce a real 1080x1920 vertical mp4 with burned word-by-word captions.
 No models, no network, no GPU required — just proves the ffmpeg/ASS/crop code works.
 
-Run:  .\.venv\Scripts\python.exe verify_render.py
+Run:  .\\.venv\\Scripts\\python.exe verify_render.py
 """
 from __future__ import annotations
 
