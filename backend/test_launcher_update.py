@@ -130,9 +130,21 @@ def _fake_install(local: Path) -> None:
     (local / "backend" / "requirements-bare.txt").write_text("yt-dlp==2026.7.4\n", encoding="ascii")
     scripts_dir = local / "backend" / ".venv" / "Scripts"
     scripts_dir.mkdir(parents=True, exist_ok=True)
-    # A .cmd named python.exe would not be executed by PowerShell's & operator, so record the
-    # call from a real batch file the helper can invoke by full path instead.
-    (scripts_dir / "python.exe").write_text("", encoding="ascii")
+    # This must be a real executable. An empty file named python.exe can open Windows'
+    # "choose an app" dialog and wedge this supposedly unattended check for ten minutes.
+    # certutil rejects Python's arguments immediately; under native pwsh a tiny executable
+    # shell script provides the same deterministic failure.
+    stub = scripts_dir / "python.exe"
+    certutil_candidates = [
+        Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "certutil.exe",
+        Path("/mnt/c/Windows/System32/certutil.exe"),
+    ]
+    certutil = next((path for path in certutil_candidates if path.is_file()), None)
+    if certutil:
+        shutil.copyfile(certutil, stub)
+    else:
+        stub.write_text("#!/bin/sh\nexit 1\n", encoding="ascii")
+        stub.chmod(0o755)
 
 
 def test_live_dependency_sync():
