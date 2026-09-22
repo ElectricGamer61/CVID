@@ -125,4 +125,8 @@ if __name__ == "__main__":
     test_retry_reruns_the_same_project(pid)
     test_backend_survives_and_keeps_serving(pid)
     print("\n" + ("ALL PASSED" if not failed else f"{len(failed)} FAILED: {failed}"))
+    # Release the SQLite file before the temp dir goes away: on Windows an open connection
+    # pool holds cvideo.db locked and TemporaryDirectory.cleanup() dies with WinError 32.
+    from app import db
+    db._engine.dispose()
     raise SystemExit(bool(failed))

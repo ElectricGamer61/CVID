@@ -221,21 +221,16 @@ class OllamaScorer(ScorerBackend):
     name = "ollama"
 
     def score(self, words: list[dict], n: int) -> list[dict]:
-        import ollama
+        from . import llm
 
-        client = ollama.Client(host=settings.OLLAMA_HOST)
         prompt = learn.winners_prompt_block() + _PROMPT.format(
             n=n, mins=int(settings.MIN_CLIP_SEC), maxs=int(settings.MAX_CLIP_SEC),
             transcript=build_timed_transcript(words),
         )
-        resp = client.chat(
-            model=settings.OLLAMA_MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            format=_CLIPS_SCHEMA,
-            options={"temperature": 0.4},
-        )
-        raw = resp["message"]["content"]
-        return _normalize(_extract_json_array(raw), words)
+        # Capped + timed out (see llm.ollama_chat): a runaway local model must end in the
+        # heuristic fallback, never in a project stuck on "Finding moments".
+        raw = llm.ollama_chat(prompt, temperature=0.4, schema=_CLIPS_SCHEMA)
+        return _normalize(_extract_json_array(llm.strip_think(raw)), words)
 
 
 class GeminiScorer(ScorerBackend):
@@ -319,6 +314,40 @@ class HeuristicScorer(ScorerBackend):
                 "reason": "Evenly sampled (no LLM brain available).",
             })
         return _normalize(clips, words)
+
+
+_OLLAMA_PROBE_TTL = 30.0
+_ollama_probe: dict = {"at": 0.0, "ok": False}
+
+
+def ollama_reachable() -> bool:
+    """Is an Ollama server answering at settings.OLLAMA_HOST? Cached for 30 s.
+
+    The install defaults the clip finder to Ollama, but a laptop that never installed it
+    still shows "Local categorizer" as the pick and every project quietly ends on the
+    evenly-sampled fallback. Knowing up front lets /api/presets name the finder that will
+    actually run, so the UI does not promise an AI pick it cannot make."""
+    import time as _time
+    import urllib.request
+    now = _time.monotonic()
+    if now - _ollama_probe["at"] < _OLLAMA_PROBE_TTL:
+        return _ollama_probe["ok"]
+    ok = False
+    try:
+        with urllib.request.urlopen(settings.OLLAMA_HOST.rstrip("/") + "/api/tags", timeout=1.5):
+            ok = True
+    except Exception:  # noqa: BLE001 - not running, not installed, wrong host: all mean "no"
+        ok = False
+    _ollama_probe.update(at=now, ok=ok)
+    return ok
+
+
+def effective_default_brain() -> str:
+    """settings.DEFAULT_BRAIN, demoted to `heuristic` when it names an Ollama nobody runs."""
+    default = settings.DEFAULT_BRAIN
+    if default == "ollama" and not ollama_reachable():
+        return "heuristic"
+    return default
 
 
 def get_backend(name: str) -> ScorerBackend:

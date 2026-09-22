@@ -107,8 +107,14 @@ function Initialize-CvideoBackendEnv {
     [string]$UserEnvPath = "HKCU:\Environment",
     [string]$MachineEnvPath = $CvideoMachineEnvKey
   )
+  # PowerShell 7 answers "" (not $null) for a variable this process does not have, and
+  # Windows cannot store an empty variable at all - so an empty process value always means
+  # "not configured" and must fall through to the registry and backend\.env, never read as
+  # "configured empty" (= off). Windows PowerShell 5.1 returns $null here, as expected.
+  $processValue = [Environment]::GetEnvironmentVariable($CvideoCookieVar, 'Process')
+  if ($processValue -eq "") { $processValue = $null }
   $resolved = Resolve-CvideoCookieBrowsers `
-    -ProcessValue  ([Environment]::GetEnvironmentVariable($CvideoCookieVar, 'Process')) `
+    -ProcessValue  $processValue `
     -UserValue     (Get-CvideoRegistryEnv -Name $CvideoCookieVar -Path $UserEnvPath) `
     -MachineValue  (Get-CvideoRegistryEnv -Name $CvideoCookieVar -Path $MachineEnvPath) `
     -EnvFileValue  (Get-CvideoEnvFileValue -Path (Join-Path $Root "backend\.env") -Name $CvideoCookieVar)

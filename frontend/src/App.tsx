@@ -1600,11 +1600,15 @@ function MomentCard({ clip, onEdit, onRender, onDelete }: {
       <div className="moment-body">
         <div className="moment-scorerow">
           <div className={"viral " + scoreCls}><b>{Math.round(clip.score)}</b><span>/100</span></div>
+          {/* Words, not glyphs: "⤓ vs ⬇" was a guessing game for anyone who had not built
+              the app. Export makes the file; Download saves it once it exists. */}
           <div className="moment-actions">
-            <button className="sm" onClick={onEdit} title="Edit">✎</button>
-            {rendered && <button className="sm" title="Download" onClick={() => downloadClip(clip.id, clip.title, toast)}>⬇</button>}
-            <button className="sm" onClick={onRender} disabled={busy} title="Export">{busy ? "…" : "⤓"}</button>
-            <button className="sm danger" onClick={onDelete} title="Delete">🗑</button>
+            <button className="sm" onClick={onEdit} title="Open in the editor">✎ Edit</button>
+            {rendered
+              ? <button className="sm primary" title="Save the exported clip" onClick={() => downloadClip(clip.id, clip.title, toast)}>⬇ Download</button>
+              : <button className="sm primary" onClick={onRender} disabled={busy} title="Render this clip as a vertical short">{busy ? "Exporting…" : "Export"}</button>}
+            {rendered && <button className="sm" onClick={onRender} disabled={busy} title="Render again">{busy ? "…" : "↻"}</button>}
+            <button className="sm danger" onClick={onDelete} title="Delete this clip">🗑</button>
           </div>
         </div>
         <div className="moment-title">{clip.title}</div>

@@ -37,52 +37,53 @@ transcription and local clip finding; cloud services are optional. No GPU is req
 ---
 
 ## What's in the box
-- **Backend** (`backend/`) — FastAPI + SQLite pipeline:
-  ingest (yt-dlp / upload) → transcribe (faster-whisper) → brain (Ollama / Gemini /
-  heuristic) → reframe (OpenCV 9:16) → captions (ffmpeg ASS) → render (ffmpeg).
-- **Frontend** (`frontend/`) — React + Vite editor: create projects, review scored
-  clips, trim, pick caption style, give the clip a **cinematic Look** (one colour-grade
-  preset + a strength) and a **big cinematic title** beside the subject, export.
+- **Backend** (`backend/`) - FastAPI + SQLite pipeline:
+  ingest (yt-dlp / upload) -> transcribe (faster-whisper on the CPU, or ElevenLabs with a key)
+  -> clip finder (OpenAI with a key, local Ollama if it is running, otherwise an evenly
+  sampled fallback) -> 9:16 reframe (OpenCV face tracking) -> captions (ffmpeg ASS) -> render.
+- **Frontend** (`frontend/`) - React + Vite: paste a link or upload, review the scored
+  clips, trim / cut / caption / reframe in the editor, export, download.
 
-## Prerequisites (installed in Phase 0)
-- **ffmpeg** (on PATH) — `ffmpeg -version`
-- **Python 3.11**
-- **Node 18+**
-- **Ollama** (optional, for local clip finding) — `ollama pull qwen2.5:7b`
-- (optional) **GEMINI_API_KEY** in `backend/.env` for Gemini clip finding
-- (optional) **OPENAI_API_KEY** in `backend/.env` for the Cloud categorizer
+## What it needs
+`install.cmd` installs all of this for you; listed here so you know what is on the machine:
+- **ffmpeg** (on PATH) - `ffmpeg -version`
+- **Python 3.11** - the venv lives in `backend\.venv`
+- **Node 18+** - only to build the UI
+- Optional keys in `backend\.env`: `ELEVENLABS_API_KEY` (cloud transcription + AI voice),
+  `OPENAI_API_KEY` (AI clip picking). Without them transcription runs offline on the CPU
+  and clips are sampled evenly through the video.
+- Optional: **Ollama** with a chat model (`ollama pull qwen2.5:7b`) gives AI clip picking
+  with no key. If it is not running the app says so and uses the basic finder.
 
-> RTX 5070 note: the MVP uses **faster-whisper (CTranslate2)**, which needs no PyTorch,
-> so the Blackwell/`sm_120` PyTorch issue does not block transcription. It uses the GPU
-> if CTranslate2 supports it, otherwise falls back to CPU automatically.
+## Starting it
 
-## Opening it again later (one click)
 Double-click the **`Cvideo`** icon on your Desktop (`install.cmd` puts it there; run
 **`install-shortcut.cmd`** any time to recreate it). It starts the local app only if it isn't
-already running and opens it in its own window — no terminal, nothing to type. It is a plain
+already running and opens it in its own window - no terminal, nothing to type. It is a plain
 Windows shortcut to `scripts\open-cvideo.ps1`; there is no desktop app to install.
 
 Other ways in, if you want them:
-- **`serve.cmd`** — one port, `http://127.0.0.1:8000`, also reachable from your phone on the
+- **`serve.cmd`** - one port, `http://127.0.0.1:8000`, also reachable from your phone on the
   same wifi (run `allow-network.cmd` once). It keeps the window open and restarts the backend
-  if it ever crashes; everything it prints is also written to `data\backend.log`.
-- **`scripts\start.ps1`** — the two-server dev setup (backend + Vite on
+  if it ever crashes; everything it prints is also written to `dataackend.log`.
+- **`scripts\start.ps1`** - the two-server dev setup (backend + Vite on
   http://localhost:3000), for working on the code.
 
-> ✅ Verified on RTX 5070: transcription runs **on the GPU** (`device=cuda`, ~126 words in 5s)
-> via faster-whisper / CTranslate2 4.8.0. The full pipeline (upload → transcribe → Ollama
-> brain → 9:16 reframe → captions → render → download) passed end-to-end.
+If the app was closed or restarted while a video was being analyzed or exported, that item
+shows an error with a **Retry** / **Export** button; nothing is lost, and a retry reuses the
+audio and transcript already on disk instead of downloading or transcribing again.
 
-## Setup
+## Setup by hand (developers)
 
 ### Backend
 ```powershell
 cd backend
 py -3.11 -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-uvicorn app.main:app --reload --port 8000
+.\.venv\Scripts\python.exe -m pip install -r requirements-bare.txt
+.\.venv\Scripts\python.exe -m uvicorn app.main:app --port 8000
 ```
+`requirements-bare.txt` is the laptop profile (CPU transcription, no GPU libraries, ~1 GB).
+`requirements.txt` adds the CUDA libraries for a desktop with an NVIDIA card.
 
 ### Frontend
 ```powershell
@@ -91,10 +92,19 @@ npm install
 npm run dev
 ```
 Open http://localhost:3000. The Vite dev server proxies `/api` to the backend on :8000.
+`npm run build` produces `frontend/dist`, which the backend serves itself on :8000.
+
+### Tests
+```powershell
+cd frontend; npm run build; npm test
+cd backend;  foreach ($t in Get-ChildItem test_*.py) { .\.venv\Scripts\python.exe $t.Name }
+```
+`test_api.py`, `test_api2.py`, `test_brain.py` and `test_full.py` need a running server and
+real media; every other `backend	est_*.py` runs offline.
 
 ## Configuration (env vars / `backend/.env`)
 - `CVIDEO_WHISPER_MODEL` (default `large-v3`) · `CVIDEO_WHISPER_DEVICE` (`auto`/`cuda`/`cpu`)
-- `CVIDEO_OLLAMA_MODEL` (default `qwen2.5:7b`) · `OLLAMA_HOST`
+- `CVIDEO_OLLAMA_MODEL` (default `qwen3.5:9b`) · `OLLAMA_HOST` · `CVIDEO_OLLAMA_MAX_TOKENS` (default 4096) · `CVIDEO_OLLAMA_TIMEOUT_SEC` (default 600)
 - `GEMINI_API_KEY` · `CVIDEO_GEMINI_MODEL` (default `gemini-1.5-flash`)
 - `CVIDEO_DEFAULT_BRAIN` (`openai`/`claude`/`ollama`/`gemini`/`heuristic`); `openai` is retained as the backend compatibility id for Cloud categorizer
 - `CVIDEO_TARGET_CLIPS`, `CVIDEO_MIN_CLIP`, `CVIDEO_MAX_CLIP`

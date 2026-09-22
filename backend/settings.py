@@ -264,8 +264,9 @@ OUT_H = 1920
 # Export resolution tiers, keyed by the vertical short's WIDTH (its short edge).
 # Height is derived from the chosen aspect so non-9:16 outputs aren't distorted.
 # NOTE: real detail is bounded by the source — a 9:16 crop of a 1080p source has
-# ~600px of true width, so 4K is a high-quality (lanczos) upscale. We still fetch
-# the best available source (download cap raised to 2160p) to maximise real detail.
+# ~600px of true width, so 1440p/4K are high-quality (lanczos) upscales. The source is
+# fetched at up to 1080p H.264 (ingest._FMT_FULL): a laptop cannot decode 4K AV1 at a
+# usable speed, and those extra pixels never survived the vertical crop anyway.
 RESOLUTIONS = {"1080p": 1080, "1440p": 1440, "4k": 2160}
 DEFAULT_RESOLUTION = os.getenv("CVIDEO_DEFAULT_RESOLUTION", "1080p")
 

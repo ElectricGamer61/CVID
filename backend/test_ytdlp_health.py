@@ -16,6 +16,7 @@ No network, no pip, no subprocess: _pip_upgrade is swapped out throughout.
 """
 from __future__ import annotations
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -91,7 +92,7 @@ def test_an_upgrade_that_does_not_fix_it_does_not_claim_success():
     prerequisites are STILL missing afterwards, the line must say so."""
     restore = _swap(_pip_upgrade=lambda: (True, ""),
                     js_runtimes=lambda: {}, has_ejs=lambda: False,
-                    _stamp_path=lambda: Path("/dev/null"))
+                    _stamp_path=lambda: Path(tempfile.gettempdir()) / "cvideo-ytdlp-test.stamp")
     try:
         line = health.check(force=True)
     finally:

@@ -11,12 +11,18 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import threading
 import time
 from pathlib import Path
 
-# Forgiving format selector: grab the best source up to 4K so high-res exports have
-# real detail to work with, falling back gracefully to whatever's available.
-_FMT_FULL = "bv*[height<=2160]+ba/b[height<=2160]/bv*+ba/b/best"
+# Full-quality source selector, tuned for the machine this actually runs on: a laptop.
+# Prefer H.264 (avc1) at up to 1080p, then any codec at up to 1080p, then whatever exists.
+# The old "best up to 4K" pulled a 4K AV1 stream (700 MB for ten minutes, multi-GB for the
+# long videos people clip) and every render then had ffmpeg and the face detector decoding
+# 4K AV1 on a laptop CPU - minutes per clip. A vertical crop of a 1080p source is ~608 px
+# wide either way, so the extra pixels never reached the export.
+_FMT_FULL = ("bv*[height<=1080][vcodec^=avc1]+ba[acodec^=mp4a]/bv*[height<=1080]+ba"
+             "/b[height<=1080]/bv*+ba/b/best")
 _FMT_PROXY = "bv*[height<=360]+ba/b[height<=360]/worst[height>=240]/best"
 
 # YouTube's googlevideo URLs expire / throttle and intermittently return HTTP 403.
@@ -494,6 +500,12 @@ def _finalize(out_path: Path) -> Path:
                 break
     if not out_path.exists():
         raise RuntimeError(f"yt-dlp produced no file at {out_path}")
+    # A refused first pass leaves its half-fetched stream behind (e.g. `full.f401.mp4.part`,
+    # 60 MB of a 4K stream YouTube 403'd) next to the file another player then completed.
+    # Nothing ever resumes those, so drop them rather than let every project dir hoard them.
+    for leftover in out_path.parent.glob(out_path.stem + ".*"):
+        if leftover.suffix in (".part", ".ytdl") and leftover != out_path:
+            leftover.unlink(missing_ok=True)
     return out_path
 
 
@@ -529,14 +541,35 @@ def download_proxy(url: str, proxy_mp4: Path) -> Path:
     return _finalize(proxy_mp4)
 
 
+# One lock per destination file. The full source is fetched by the background prefetch that
+# starts the moment analysis finishes AND lazily by the first export - and a user who clicks
+# Export while the prefetch is still running used to start a SECOND yt-dlp on the same
+# `source.mp4` (both writing the same .part file, which on Windows ends in "file in use" or a
+# truncated video). Serialise per path; whoever arrives second finds the finished file.
+_download_locks: dict[str, threading.Lock] = {}
+_download_locks_guard = threading.Lock()
+
+
+def _lock_for(path: Path) -> threading.Lock:
+    key = str(path.resolve()) if path.parent.exists() else str(path)
+    with _download_locks_guard:
+        return _download_locks.setdefault(key, threading.Lock())
+
+
 def download_full(url: str, out_mp4: Path) -> Path:
-    """Download the full-quality video once (cached, reused for all clip exports)."""
-    _ydl(
-        {"format": _FMT_FULL, "merge_output_format": "mp4",
-         "outtmpl": str(out_mp4.with_suffix("")) + ".%(ext)s"},
-        url,
-    )
-    return _finalize(out_mp4)
+    """Download the full-quality video once (cached, reused for all clip exports).
+
+    Safe to call from several threads for the same file: only one download runs, the
+    others wait for it and return the same path."""
+    with _lock_for(out_mp4):
+        if out_mp4.exists():
+            return out_mp4
+        _ydl(
+            {"format": _FMT_FULL, "merge_output_format": "mp4",
+             "outtmpl": str(out_mp4.with_suffix("")) + ".%(ext)s"},
+            url,
+        )
+        return _finalize(out_mp4)
 
 
 def download_clip_range(url: str, out_mp4: Path, start: float, end: float) -> Path:

@@ -81,7 +81,12 @@ Native reel: scenes (Beats) → `build_edit_video` (stitch to one editable video
 via `render_scene_reel` (voice-first) or `assemble_ticket`.
 
 - **ingest.py** — URL downloads: `download_audio()` (analysis), `download_proxy()` (360p preview),
-  `download_full()` (full video, fetched **once** on first export, cached `source.mp4`). Uploads use
+  `download_full()` (full video, fetched **once** on first export, cached `source.mp4`).
+  `download_full()` holds a **per-file lock**: the post-analysis prefetch and a user's first
+  Export used to start two yt-dlp runs on the same `source.mp4`. The full source is capped at
+  **1080p H.264** (`_FMT_FULL`): a 4K AV1 source was 700 MB per ten minutes and a laptop could
+  not decode it at a usable speed for renders or face detection; the vertical crop never used
+  the extra pixels. `_finalize()` deletes leftover `.part`/`.ytdl` files from a refused pass. Uploads use
   `save_upload`. **Two audio extractors:** `extract_audio()` = 16 kHz mono (for Whisper);
   **`extract_voiceover()` = 48 kHz stereo** (for recorded voice that ends up in the export — do NOT
   run voiceovers through the 16 kHz Whisper path or they sound bad).
@@ -119,7 +124,13 @@ via `render_scene_reel` (voice-first) or `assemble_ticket`.
   the project dir (no re-upload, and a part-downloaded model resumes); the UI shows it as ↻ Retry
   on any errored card.
   Trade-off: the whisper model reloads per analyze (no in-process cache).
-- **brain.py** — viral-moment picker: `claude`/`ollama`/`gemini`/`heuristic`. Virality-framework prompt,
+- **brain.py** — viral-moment picker: `claude`/`openai`/`ollama`/`gemini`/`heuristic`. Virality-framework prompt,
+  **Ollama goes through `llm.ollama_chat()`** (plain HTTP via `requests`, no `ollama` package): `think:
+  false`, `num_predict` capped (`CVIDEO_OLLAMA_MAX_TOKENS`, 4096) and a request timeout
+  (`CVIDEO_OLLAMA_TIMEOUT_SEC`, 600). A thinking model (qwen3.5) handed the JSON schema generated
+  16k+ tokens and never answered, leaving projects on "Finding moments" forever. `ollama_reachable()`
+  / `effective_default_brain()` let `/api/presets` report `heuristic` when the Ollama default has no
+  server answering, so the UI names the finder that will actually run.
   chunking + cross-chunk de-dupe, sentence-boundary snapping. Fields must be in `_CLIPS_SCHEMA` required.
 - **reframe.py** — 9:16 crop center via OpenCV **YuNet DNN** (+ Haar fallback). `crop_filter()` builds
   the ffmpeg crop+scale. **No MediaPipe.** **Detection never fails the export:** an OpenCV build
@@ -191,7 +202,15 @@ via `render_scene_reel` (voice-first) or `assemble_ticket`.
   never errors. Only clips with `>= MIN_SPEECH_WORDS` (4) real words can auto-invent a reverse ticket,
   so the common "I voice it over later" workflow leaves clips for manual drag-placement.
 
-`jobs.py` runs long-form analysis in a background thread. **`Project.mode`**: `moments` (default,
+`jobs.py` runs long-form analysis in a background thread. **Retry resumes:** a URL project
+reuses `audio.wav` and any project reuses `words.json` when they already exist, so a retry after
+a failed moment search never downloads or transcribes (ElevenLabs = money) again.
+**`recover_interrupted()`** runs at startup and flips every project caught mid-flight by a
+restart (`created`/`ingesting`/`transcribing`/`analyzing`) to an error with a Retry, and
+`main._recover_interrupted_renders()` does the same for clips stuck at `rendering`; before this
+they showed a progress bar forever with no way out. `main.py` also line-buffers stdout so the
+`[ingest]`/`[brain]` lines reach `data/backend.log` as they happen (a piped stdout is
+block-buffered, which is why the log used to lag or lose them). **`Project.mode`**: `moments` (default,
 run the brain) or `caption` (skip brain, make ONE full-length clip — used by "Just caption my clip"
 uploads AND by `build-edit` reels).
 

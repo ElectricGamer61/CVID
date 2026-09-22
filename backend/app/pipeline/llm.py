@@ -6,18 +6,50 @@ so JSON/array parsing downstream stays robust.
 """
 from __future__ import annotations
 
+import os
 import re
 
 import settings
 
 
+# Hard ceilings for a local model. A "thinking" model (qwen3 / qwen3.5) that is handed a JSON
+# schema can reason for tens of thousands of tokens before it answers - the project row sat on
+# "Finding moments" for a quarter of an hour while Ollama was at 16,000 generated tokens and
+# climbing - and the official client waits forever by default. Think mode is switched off,
+# generation is capped and the request times out, so the worst case is a clean fallback.
+OLLAMA_MAX_TOKENS = int(os.getenv("CVIDEO_OLLAMA_MAX_TOKENS", "4096"))
+OLLAMA_TIMEOUT_SEC = float(os.getenv("CVIDEO_OLLAMA_TIMEOUT_SEC", "600"))
+
+
+def ollama_chat(prompt: str, temperature: float = 0.7, schema: dict | None = None,
+                num_predict: int | None = None) -> str:
+    """One chat turn against the local Ollama server, returning the reply text.
+
+    Plain HTTP via `requests` (already a core dependency) rather than the `ollama` package:
+    the bare laptop install does not ship that package, so importing it made the local brain
+    fail on exactly the machines it was meant to serve. `schema` switches on Ollama's
+    structured output; unknown fields are ignored by older servers."""
+    import requests
+
+    body = {
+        "model": settings.OLLAMA_MODEL,
+        "messages": [{"role": "user", "content": prompt}],
+        "stream": False,
+        "think": False,
+        "options": {"temperature": temperature,
+                    "num_predict": int(num_predict or OLLAMA_MAX_TOKENS)},
+    }
+    if schema is not None:
+        body["format"] = schema
+    resp = requests.post(settings.OLLAMA_HOST.rstrip("/") + "/api/chat", json=body,
+                         timeout=(5, OLLAMA_TIMEOUT_SEC))
+    resp.raise_for_status()
+    data = resp.json()
+    return str((data.get("message") or {}).get("content") or "")
+
+
 def _ollama_chat(prompt: str, temperature: float = 0.7) -> str:
-    import ollama
-    client = ollama.Client(host=settings.OLLAMA_HOST)
-    resp = client.chat(model=settings.OLLAMA_MODEL,
-                       messages=[{"role": "user", "content": prompt}],
-                       options={"temperature": temperature})
-    return resp["message"]["content"]
+    return ollama_chat(prompt, temperature)
 
 
 def _gemini_chat(prompt: str) -> str:

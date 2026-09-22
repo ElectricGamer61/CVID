@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import sys
 import tempfile
 import traceback
 from concurrent.futures import ThreadPoolExecutor
@@ -19,9 +20,20 @@ import settings
 from . import ai, autopilot, cartridge, intake, learn, sheets, ytdlp_health
 from .db import (Angle, Beat, Clip, Folder, IngestClip, Outlier, Perf, Project,
                  Ticket, get_session, init_db)
-from .jobs import get_words, start_shootdrop_watcher, submit_analyze, submit_shootdrop
+from .jobs import (get_words, recover_interrupted, start_shootdrop_watcher, submit_analyze,
+                   submit_shootdrop)
 from .pipeline import captions as caps
-from .pipeline import ingest, look, reframe, render, shootdrop
+from .pipeline import brain, ingest, look, reframe, render, shootdrop
+
+# Every launcher pipes the backend through Tee-Object into dataackend.log, and a piped
+# Python stdout is block-buffered: the pipeline's "[ingest] ..." / "[brain] ..." lines only
+# reached the log kilobytes later, or never (a crash loses the buffer). Line-buffer it so the
+# log tells the truth about what is happening right now - it is the one support artefact.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(line_buffering=True)
+    except (AttributeError, ValueError):  # not a TextIOWrapper, or already closed
+        pass
 
 app = FastAPI(title="Cvideo")
 app.add_middleware(
@@ -58,10 +70,28 @@ _assemble_status: dict[int, dict] = {}
 @app.on_event("startup")
 def _startup():
     init_db()
+    # Whatever was mid-flight when the last process died can never finish now; say so.
+    recover_interrupted()
+    _recover_interrupted_renders()
     start_shootdrop_watcher()
     # Keep the YouTube downloader able to download. Runs off the startup path (see
     # ytdlp_health) because a pip run is slower than the launcher's health-check window.
     ytdlp_health.check_in_background()
+
+
+def _recover_interrupted_renders() -> None:
+    """A clip left at "rendering" by a restart shows a spinner forever; its render pool died
+    with the process. Flip it to an error the user can act on (Export again)."""
+    from sqlmodel import select
+    with get_session() as s:
+        rows = s.exec(select(Clip).where(Clip.status == "rendering")).all()
+        for clip in rows:
+            clip.status, clip.stage = "error", ""
+            clip.error = "Cvideo was restarted during this export. Press Export again."
+            s.add(clip)
+        if rows:
+            s.commit()
+            print(f"[render] marked {len(rows)} interrupted export(s)")
 
 
 # --------------------------------------------------------------------------- #
@@ -2214,7 +2244,9 @@ def list_presets():
             "caption_styles": {k: asdict(v) for k, v in caps.PRESETS.items()},
             "aspects": list(reframe.ASPECTS.keys()),
             "brains": ["openai", "claude", "ollama", "gemini", "heuristic"],
-            "brains_default": settings.DEFAULT_BRAIN,
+            # The finder that will actually run: an Ollama default with no Ollama answering
+            # is reported as the basic finder it silently falls back to.
+            "brains_default": brain.effective_default_brain(),
             "transcribe": ["local", "elevenlabs"],
             "transcribe_default": settings.DEFAULT_TRANSCRIBE,
             "resolutions": resolutions,

@@ -163,7 +163,15 @@ def _analyze(project_id: int, upload_path: str | None):
             )
 
         # 1. Ingest — efficient: audio only for analysis; full video never pulled up front
-        if source_type == "url":
+        words_file = pdir / "words.json"
+        if source_type == "url" and audio.exists() and audio.stat().st_size > 0:
+            # A retry resumes: the audio is already here, so do not fetch it again (and do
+            # not risk a second YouTube refusal for a step that already succeeded).
+            current_stage = "URL ingest"
+            _set(project_id, status="ingesting", stage="Reusing downloaded audio", progress=10)
+            duration = ingest.probe_duration(audio)
+            _set(project_id, duration=duration)
+        elif source_type == "url":
             current_stage = "URL ingest"
             _set(project_id, status="ingesting", stage="Downloading audio", progress=5)
             try:
@@ -227,9 +235,16 @@ def _analyze(project_id: int, upload_path: str | None):
         def _tp(pct, msg):
             _set(project_id, stage=msg, progress=20 + int(pct * 0.5))
 
+        # A retry after the moment search failed (or the app was restarted) must not pay
+        # for the transcript twice - on ElevenLabs that is real money, on the CPU it is
+        # minutes. The transcript on disk is the same audio's, so it is simply reused.
+        result = _cached_transcript(words_file)
+        if result is not None:
+            _set(project_id, stage="Reusing transcript", progress=70)
         try:
-            result = transcribe_subprocess(
-                audio, pdir / "words.tmp.json", tx_backend, _tp)
+            if result is None:
+                result = transcribe_subprocess(
+                    audio, pdir / "words.tmp.json", tx_backend, _tp)
         except RuntimeError as first_error:
             # A native GPU crash or a wedged worker cannot execute its own CPU fallback.
             # Reuse the same audio/source once in a clean CPU child; config errors are not
@@ -242,9 +257,7 @@ def _analyze(project_id: int, upload_path: str | None):
                     audio, pdir / "words.tmp.json", "local", _tp, force_cpu=True)
             else:
                 raise
-        (pdir / "words.json").write_text(
-            json.dumps(result, ensure_ascii=False), encoding="utf-8"
-        )
+        words_file.write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
 
         # 3. Brain — skipped in "caption" mode (one full-length clip instead)
         if mode == "caption":
@@ -306,6 +319,17 @@ def _analyze(project_id: int, upload_path: str | None):
         _set(project_id, status="error", stage=f"Failed: {current_stage}", error=_job_error_text(e))
 
 
+def _cached_transcript(words_file: Path) -> dict | None:
+    """The transcript a previous run left behind, or None when there is none worth keeping."""
+    if not words_file.exists():
+        return None
+    try:
+        data = json.loads(words_file.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) and data.get("words") else None
+
+
 def _prefetch_full(project_id: int, source_url: str) -> None:
     """Fetch + cache the full source video so the first render is instant. Best-effort:
     if it fails, `_render_clip_job` still downloads lazily on export."""
@@ -316,6 +340,31 @@ def _prefetch_full(project_id: int, source_url: str) -> None:
         ingest.download_full(source_url, source)
     except Exception as e:  # noqa: BLE001 - non-fatal; export falls back to lazy fetch
         print(f"[prefetch] full-video prefetch failed for project {project_id}: {e}")
+
+
+_IN_FLIGHT = ("created", "ingesting", "transcribing", "analyzing")
+INTERRUPTED_MSG = ("Cvideo was restarted while this video was being analyzed. Nothing is lost - "
+                   "press Retry to pick it up again.")
+
+
+def recover_interrupted() -> int:
+    """Mark every project that was mid-analysis when the backend last stopped as an error.
+
+    The analyze worker lives in this process: a restart (crash, update, laptop closed) kills
+    it, and a project left at "ingesting"/"transcribing"/"analyzing" would otherwise show a
+    progress bar forever with no way out, because Retry only accepts error/ready. Runs once
+    at startup, before any new job can be queued. Returns how many were recovered."""
+    from sqlmodel import select
+    with get_session() as s:
+        rows = s.exec(select(Project).where(Project.status.in_(_IN_FLIGHT))).all()
+        for proj in rows:
+            proj.status, proj.error = "error", INTERRUPTED_MSG
+            proj.stage = f"Interrupted: {proj.stage or 'starting'}"
+            s.add(proj)
+        if rows:
+            s.commit()
+            print(f"[jobs] marked {len(rows)} interrupted project(s) for retry")
+        return len(rows)
 
 
 def submit_analyze(project_id: int, upload_path: str | None = None):

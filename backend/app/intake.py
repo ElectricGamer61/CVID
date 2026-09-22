@@ -158,6 +158,14 @@ def parse_script(text: str) -> dict:
                 blocks.append(para); para = []
         if para:
             blocks.append(para)
+        # One paragraph of several plain lines is a script typed one sentence per line -
+        # the most common way anyone writes one - not a single scene. The Create box
+        # promises "plain lines work", so each line becomes its own scene. Labeled lines
+        # (Spoken:/Shot:) describe ONE scene and keep the block together.
+        if len(blocks) == 1:
+            lines = [l for l in blocks[0] if l.strip()]
+            if len(lines) > 1 and not any(_match_label(l.strip())[0] for l in lines):
+                blocks = [[l] for l in lines]
 
     beats = []
     for blk in blocks:
