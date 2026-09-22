@@ -4,8 +4,12 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 
 ## Where the real docs are
 
+**Installing the app rather than changing it? `INSTALL.md` is the runbook** - written for an
+agent, with a verification after every step and the two scripts that block on input
+(`install.cmd`, `update.cmd`) called out. Do not reinvent the install from the code.
+
 `CONTEXT.md` is the source of truth for **how CVideo works today** (pipeline, API, frontend,
-gotchas, and a "Verify quickly" checklist). `README.md` is Windows setup, `SPEC.md`/`GOAL.md` are
+gotchas, and a "Verify quickly" checklist). `README.md` is what the app is plus the human install, `SPEC.md`/`GOAL.md` are
 the original spec, `docs/` holds the session timeline. Read `CONTEXT.md` before changing anything.
 
 ## Validating a change
