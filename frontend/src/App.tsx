@@ -2,6 +2,7 @@ import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
 import { api, isNotFound, Beat, Clip, ClipEffects, ExportItem, Folder, Presets, Project, Ticket } from "./api";
 import { CaptionOverlay } from "./CaptionOverlay";
 import { CaptionStyle, DEFAULT_PRESET, FALLBACK_PRESETS, groupLines, isBigSubtitleStyle, presetHint, presetLabel, Word, wordsInRange } from "./captionStyles";
+import { fillerRanges, mergeRanges, newRanges, pauseRanges, totalSeconds } from "./cleanup";
 import { DEFAULT_STRENGTH, emptyTitle, FALLBACK_LOOKS, LookSetting, lookLayers, STRENGTHS, TitleCard, TITLE_PLACES, TITLE_STYLES } from "./looks";
 import { TitleOverlay } from "./TitleOverlay";
 import { Sidebar } from "./Sidebar";
@@ -1472,7 +1473,7 @@ const BRAIN_LABELS: Record<string, string> = {
   claude: "Claude categorizer",
   ollama: "Local categorizer",
   gemini: "Gemini categorizer",
-  heuristic: "Basic moment finder",
+  heuristic: "Built-in finder (no AI key)",
 };
 /** Friendly task-oriented names; backend ids stay private compatibility details. */
 export const brainLabel = (b: string) => BRAIN_LABELS[b] ?? "Moment finder";
@@ -2716,6 +2717,7 @@ function CutPanel({ doc, set, time, onSeek }: { doc: EditDoc; set: (p: Partial<E
         <button className="primary" disabled={mark == null} onClick={() => { if (mark != null) { addCut(mark, time); setMark(null); } }}>Cut to here</button>
       </div>
       {mark != null && <div className="muted" style={{ fontSize: 12 }}>Cut starts at {fmt(mark)} — move the playhead forward, then press “Cut to here”.</div>}
+      <CleanupPanel doc={doc} set={set} />
       <div className="muted" style={{ fontSize: 12.5, marginTop: 12 }}>Removed: <b>{fmt(removed)}</b> · Final length: <b>{fmt(Math.max(0, (doc.end - doc.start) - removed))}</b></div>
       <div className="word-list" style={{ marginTop: 8 }}>
         {doc.cuts.length === 0 && <div className="muted">No cuts yet.</div>}
@@ -2725,6 +2727,35 @@ function CutPanel({ doc, set, time, onSeek }: { doc: EditDoc; set: (p: Partial<E
             <button className="sm danger" title="Undo this cut" onClick={() => set({ cuts: doc.cuts.filter((_, j) => j !== i) })}>🗑</button>
           </div>
         ))}
+      </div>
+    </div>
+  );
+}
+
+/* One-click clean-up, Descript-style: every "um"/"uh" and every pause over a second becomes
+   an ordinary cut, so preview, captions, undo and export all already know what to do. The
+   counts are what is LEFT to remove, so a second press is a no-op instead of a surprise. */
+function CleanupPanel({ doc, set }: { doc: EditDoc; set: (p: Partial<EditDoc>) => void }) {
+  const fillers = useMemo(() => newRanges(doc.cuts, fillerRanges(doc.words, doc.start, doc.end)), [doc.words, doc.cuts, doc.start, doc.end]);
+  const pauses = useMemo(() => newRanges(doc.cuts, pauseRanges(doc.words, doc.start, doc.end)), [doc.words, doc.cuts, doc.start, doc.end]);
+  const apply = (found: [number, number][]) => { if (found.length) set({ cuts: mergeRanges(doc.cuts, found) }); };
+  const noWords = doc.words.length === 0;
+  return (
+    <div className="cleanup">
+      <div className="field-label">Clean up automatically</div>
+      <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+        <button disabled={!fillers.length} onClick={() => apply(fillers)}
+          title="Cut every um / uh / er out of the clip (captions follow)">
+          {fillers.length ? `Remove ${fillers.length} filler word${fillers.length === 1 ? "" : "s"} (−${totalSeconds(fillers).toFixed(1)}s)` : "No filler words found"}
+        </button>
+        <button disabled={!pauses.length} onClick={() => apply(pauses)}
+          title="Cut silences longer than a second down to a short breath">
+          {pauses.length ? `Remove ${pauses.length} long pause${pauses.length === 1 ? "" : "s"} (−${totalSeconds(pauses).toFixed(1)}s)` : "No long pauses found"}
+        </button>
+      </div>
+      <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>
+        {noWords ? "Clean-up needs a transcript; this clip has no words yet."
+          : "Each one becomes a normal cut below, so you can undo any of them. Ctrl+Z undoes the whole batch."}
       </div>
     </div>
   );

@@ -14,8 +14,8 @@ your machine unless you ask it to, and there is nothing to subscribe to.
 1. **Paste a link** (or drag in a video file) on the **Clipping** screen.
 2. **Wait.** It writes down everything said in the video and finds the best moments.
 3. **Look at what it found** - a grid of clips, each scored out of 100 with the line that makes it work.
-4. **Open one in the editor.** Trim it, cut the boring middle out, change the caption style,
-   move the crop onto the speaker, add a colour look.
+4. **Open one in the editor.** Trim it, cut the boring middle out, remove every "um" and long
+   pause with one click, change the caption style, move the crop onto the speaker, add a colour look.
 5. **Export, then download.** The finished clip lands in the folder you choose.
 
 That is the whole app. It does not post for you, it has no accounts, and it never asks for a
@@ -24,8 +24,9 @@ card.
 ### What you need
 
 A Windows PC. That is it. A graphics card and API keys both make it better, and neither is
-required: transcription runs free on your processor, and without an AI key it still finds
-clips by sampling evenly through the video.
+required: transcription runs free on your processor, and the built-in finder scores moments
+from the transcript itself (questions, hooks, numbers, emotion, pace) with no AI service at all.
+An OpenAI key or a local Ollama model makes the picks smarter; it is not needed to start.
 
 ---
 
@@ -79,10 +80,11 @@ own window. Missing or moved? Double-click **`install-shortcut.cmd`** to put it 
 ## What's in the box
 - **Backend** (`backend/`) - FastAPI + SQLite pipeline:
   ingest (yt-dlp / upload) -> transcribe (faster-whisper on the CPU, or ElevenLabs with a key)
-  -> clip finder (OpenAI with a key, local Ollama if it is running, otherwise an evenly
-  sampled fallback) -> 9:16 reframe (OpenCV face tracking) -> captions (ffmpeg ASS) -> render.
+  -> clip finder (OpenAI with a key, local Ollama if it is running, otherwise the built-in
+  transcript scorer) -> 9:16 reframe (OpenCV face tracking) -> captions (ffmpeg ASS) -> render.
 - **Frontend** (`frontend/`) - React + Vite: paste a link or upload, review the scored
-  clips, trim / cut / caption / reframe in the editor, export, download.
+  clips, trim / cut / clean up fillers and pauses / caption / reframe in the editor, export,
+  download.
 
 ## What gets installed on your PC
 
@@ -92,7 +94,7 @@ own window. Missing or moved? Double-click **`install-shortcut.cmd`** to put it 
 - **Node 18+** - only to build the UI
 - Optional keys in `backend\.env`: `ELEVENLABS_API_KEY` (cloud transcription + AI voice),
   `OPENAI_API_KEY` (AI clip picking). Without them transcription runs offline on the CPU
-  and clips are sampled evenly through the video.
+  and the built-in finder picks and scores clips from the transcript.
 - Optional: **Ollama** with a chat model (`ollama pull qwen2.5:7b`) gives AI clip picking
   with no key. If it is not running the app says so and uses the basic finder.
 

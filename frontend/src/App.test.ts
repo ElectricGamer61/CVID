@@ -192,7 +192,7 @@ describe("new-project options summary", () => {
     expect(brainLabel("claude")).toBe("Claude categorizer");
     expect(brainLabel("ollama")).toBe("Local categorizer");
     expect(brainLabel("gemini")).toBe("Gemini categorizer");
-    expect(brainLabel("heuristic")).toBe("Basic moment finder");
+    expect(brainLabel("heuristic")).toBe("Built-in finder (no AI key)");
     expect(brainLabel("future-provider")).toBe("Moment finder");
     expect(stageLabel("Finding moments (openai)")).toBe("Finding clips with Cloud categorizer");
   });

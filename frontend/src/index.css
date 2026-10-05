@@ -782,3 +782,7 @@ button.primary.danger-solid:hover { background: #db3a48; border-color: #db3a48; 
 .hook-fold[open] > summary::before { transform: rotate(90deg); }
 .hook-fold > summary:hover { color: var(--text); }
 .hook-fold[open] > summary { margin-bottom: 10px; }
+
+/* Cut tool: the automatic clean-up block */
+.cleanup { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }
+.cleanup .field-label { margin-bottom: 8px; }

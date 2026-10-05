@@ -124,7 +124,14 @@ via `render_scene_reel` (voice-first) or `assemble_ticket`.
   the project dir (no re-upload, and a part-downloaded model resumes); the UI shows it as ↻ Retry
   on any errored card.
   Trade-off: the whisper model reloads per analyze (no in-process cache).
-- **brain.py** — viral-moment picker: `claude`/`openai`/`ollama`/`gemini`/`heuristic`. Virality-framework prompt,
+- **brain.py** — viral-moment picker: `claude`/`openai`/`ollama`/`gemini`/`heuristic`. `heuristic` is the
+  **built-in finder** (`pipeline/local_scorer.py`): no key, no model, instant. It splits the transcript
+  into sentences, opens a candidate at every sentence, closes it near 30 s and 50 s inside
+  [MIN,MAX], scores hook (question / opener pattern / number / emotion), body (emotional density,
+  numbers, contrast, second person), pace, punchiness and completeness, penalises intros/outros, and
+  picks the best non-overlapping set. Titles are title-cased opening words, the hook is the first
+  sentence, the reason lists the signals. Covered by `test_local_scorer.py`. An empty transcript
+  raises a clear "no speech was found" error before any brain is tried. Virality-framework prompt,
   **Ollama goes through `llm.ollama_chat()`** (plain HTTP via `requests`, no `ollama` package): `think:
   false`, `num_predict` capped (`CVIDEO_OLLAMA_MAX_TOKENS`, 4096) and a request timeout
   (`CVIDEO_OLLAMA_TIMEOUT_SEC`, 600). A thinking model (qwen3.5) handed the JSON schema generated
@@ -437,7 +444,11 @@ section label even though `SECTION_LABELS` names it for the sidebar.
     duration) so trimming reaches any part. Cut ranges show as a **subtle grey band** (`.fs-cut`, not a
     loud red bar); `seek()` skips past a cut.
   - **Cut** = mark a middle range to remove (Cut tool: set cut start → cut to here); export via
-    `render_clip_segments` (`kept_segments` drops the gap from the VIDEO).
+    `render_clip_segments` (`kept_segments` drops the gap from the VIDEO). The Cut panel also has
+    **Clean up automatically** (`cleanup.ts`, pure + tested): one button cuts every filler word
+    (um/uh/er/hmm; never "like"), another cuts silences over 1 s down to a 0.15 s breath each
+    side. They produce ordinary cuts (merged with `mergeRanges`), so preview, caption retiming,
+    undo and export need nothing new; the counts show only what is not already cut.
   - **A cut removes VIDEO, not caption words.** `remapWords` (preview overlay, via `srcToEdited(time)`)
     and backend `remap_words_for_cuts` (export) **keep EVERY word**, retimed onto the edited timeline —
     words inside a removed gap collapse to the seam but stay in sequence (captions read

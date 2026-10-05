@@ -294,54 +294,13 @@ class ClaudeScorer(ScorerBackend):
 
 
 class HeuristicScorer(ScorerBackend):
-    """No-LLM fallback: evenly spaced ~40s windows, snapped to sentence breaks by _normalize.
-
-    This is what a keyless install with no Ollama gets, so it must still look finished: each
-    clip is titled with its own opening words and quotes its first sentence, instead of six
-    cards all called "Moment N"."""
+    """The built-in finder (id kept as "heuristic" for stored projects): picks and scores
+    moments from the transcript alone - no key, no model, no network. See local_scorer."""
     name = "heuristic"
 
     def score(self, words: list[dict], n: int) -> list[dict]:
-        if not words:
-            return []
-        total = words[-1]["end"] - words[0]["start"]
-        target = max(settings.MIN_CLIP_SEC, min(settings.MAX_CLIP_SEC, 40))
-        n = max(1, min(n, int(total // target) or 1))
-        clips = [{
-            "start": words[0]["start"] + i * (total / n),
-            "end": words[0]["start"] + i * (total / n) + target,
-            "title": f"Moment {i + 1}", "score": 50,
-            "reason": "Picked at even intervals through the video. Add an OpenAI key or run "
-                      "Ollama for AI-scored picks.",
-        } for i in range(n)]
-        # Title and hook come from the words INSIDE the final, sentence-snapped range, so a
-        # clip never opens with words its own title does not start with.
-        out = _normalize(clips, words)
-        for i, c in enumerate(out):
-            spoken = [w["word"].strip() for w in words
-                      if w["start"] >= c["start"] - 0.01 and w["start"] < c["end"] and w["word"].strip()]
-            c["title"] = _title_from_words(spoken, i)[:120]
-            c["hook"] = _first_sentence(spoken)[:200]
-        return out
-
-
-def _title_from_words(spoken: list[str], index: int, max_words: int = 6) -> str:
-    """'Truth Be Told I Never Graduated' rather than 'Moment 1'."""
-    head = [w.strip(".,!?;:\"'") for w in spoken[:max_words]]
-    head = [w for w in head if w]
-    if not head:
-        return f"Moment {index + 1}"
-    title = " ".join(head)
-    return title[:1].upper() + title[1:]
-
-
-def _first_sentence(spoken: list[str], max_words: int = 24) -> str:
-    out: list[str] = []
-    for w in spoken:
-        out.append(w)
-        if w.endswith((".", "!", "?")) or len(out) >= max_words:
-            break
-    return " ".join(out)
+        from . import local_scorer
+        return _normalize(local_scorer.pick_moments(words, n), words)
 
 
 _OLLAMA_PROBE_TTL = 30.0
@@ -454,6 +413,11 @@ def find_moments_detailed(words: list[dict], brain: str,
     project state or discards the uploaded source.
     """
     n = n or settings.TARGET_CLIP_COUNT
+    if not words:
+        # No brain can pick moments from silence. Say that, rather than "every provider failed".
+        raise RuntimeError(
+            "no speech was found in this video, so there are no moments to pick from. For "
+            "silent footage use \"Just caption my clip\" (or the Editor), which needs no transcript.")
     failures: list[str] = []
     for candidate in fallback_order(brain):
         try:

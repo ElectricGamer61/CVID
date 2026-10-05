@@ -114,7 +114,7 @@ key in any other file, and never paste one into a commit.
 
 | Key | Buys you | Without it |
 | --- | --- | --- |
-| `OPENAI_API_KEY` | AI picks the strongest moments and scores them | Clips are sampled evenly through the video |
+| `OPENAI_API_KEY` | A large model picks and scores the moments | The built-in finder scores them from the transcript (questions, hooks, numbers, emotion, pace) |
 | `ELEVENLABS_API_KEY` | Cloud transcription, and AI voiceover | Transcription runs offline on your CPU, free |
 
 Ask the person whether they have either. If they do not, or they would rather not say, leave
@@ -198,7 +198,7 @@ transcript already on disk rather than starting over.
 | --- | --- | --- |
 | `"ready": false` on `/api/health`, or YouTube links fail with a sign-in / bot message | The downloader is stale or missing its JS challenge solver. **This is the most common failure by far.** | `.\update.cmd`, then re-check health |
 | Every YouTube video downloads tiny or blurry | Usually the source really is low resolution (old 4:3 uploads are 240p). Check the video on YouTube. | Nothing to fix if the source is small |
-| A project sits on "Finding moments" for many minutes | The local Ollama model is thinking without answering | Set `CVIDEO_DEFAULT_BRAIN=heuristic` (or `openai` with a key) in `backend\.env` and restart |
+| A project sits on "Finding moments" for many minutes | The local Ollama model is thinking without answering | Set `CVIDEO_DEFAULT_BRAIN=heuristic` (the built-in finder) or `openai` with a key in `backend\.env` and restart |
 | A project or export shows "Cvideo was restarted..." | The app was closed mid-job | Press **Retry** / **Export**. Nothing is lost |
 | A red bar at the top says **ffmpeg is not installed** | ffmpeg/ffprobe are not on PATH; nothing can be exported | `winget install Gyan.FFmpeg`, open a new shell, restart Cvideo. `/api/health` → `tools.ok` turns true |
 | "Backend venv is missing" | Section 3 never completed | Re-run `scripts\setup-laptop.ps1` |

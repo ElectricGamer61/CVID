@@ -44,3 +44,5 @@ jobs:
         working-directory: backend
       - run: python test_intake.py
         working-directory: backend
+      - run: python test_local_scorer.py
+        working-directory: backend
