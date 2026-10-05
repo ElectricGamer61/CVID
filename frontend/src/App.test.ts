@@ -15,7 +15,7 @@ import { DEFAULT_PRESET, FALLBACK_PRESETS, isBigSubtitleStyle } from "./captionS
 import { TITLE_PLACES } from "./looks";
 
 const ticket = (over: Partial<Ticket> = {}): Ticket => ({
-  id: 1, brand: "NoCrapDiet", angle: "", format: "reel", capture_mode: "native-short",
+  id: 1, brand: "", angle: "", format: "reel", capture_mode: "native-short",
   stage: "scripted", hook_text: "", auto_voiceover: false,
   ...over,
 } as Ticket);

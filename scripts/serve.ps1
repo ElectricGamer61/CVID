@@ -48,6 +48,19 @@ Write-Host "`nCvideo will be reachable at:" -ForegroundColor Green
 foreach ($ip in $ips) { Write-Host ("  http://{0}:8000" -f $ip) -ForegroundColor Green }
 Write-Host ""
 
+# Already running? Then a second copy would fail to bind port 8000, and the supervised loop
+# below would restart it every two seconds forever, printing a bind error each time. Open
+# the running one instead - that is what the person double-clicking this wanted anyway.
+try {
+  $up = (Invoke-WebRequest -UseBasicParsing -TimeoutSec 2 "http://127.0.0.1:8000/api/health").StatusCode -eq 200
+} catch { $up = $false }
+if ($up) {
+  Write-Host "Cvideo is already running at http://127.0.0.1:8000 - opening it." -ForegroundColor Green
+  Start-Process "http://127.0.0.1:8000"
+  Start-Sleep -Seconds 2
+  exit 0
+}
+
 # Fail loudly here rather than in the loop below: a missing venv means install.cmd never ran.
 Set-Location "$root\backend"
 if (-not (Test-Path ".\.venv\Scripts\python.exe")) {

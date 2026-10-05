@@ -45,9 +45,6 @@ good checklist to follow yourself.
 
 ### Doing it yourself (Windows, about 10 minutes)
 
-This repo is **private**, so the first step needs a one-time sign-in. A browser window pops up
-on its own - there is no token to paste.
-
 **1.** Open PowerShell and install Git (skip if you already have it):
 
 ```powershell
@@ -56,7 +53,7 @@ winget install -e --id Git.Git
 
 Close and reopen PowerShell so `git` is on PATH.
 
-**2.** Clone the repo (a browser window opens once - sign in to GitHub there):
+**2.** Clone the repo (no account or sign-in needed):
 
 ```powershell
 git clone https://github.com/ElectricGamer61/CVID.git
@@ -74,9 +71,6 @@ own window. Missing or moved? Double-click **`install-shortcut.cmd`** to put it 
 **`serve.cmd`** to start the server by hand.
 
 **Not on Windows?** Section 8 of [INSTALL.md](INSTALL.md) has the macOS and Linux commands.
-
-<sub>If you ever make this repo public, `scripts/bootstrap.ps1` can also run as a single
-`iwr -useb <raw-url> | iex` one-liner that does steps 1 to 3 in one shot.</sub>
 
 <sub>Already cloned the repo? Just double-click **`install.cmd`**.</sub>
 
@@ -252,10 +246,16 @@ Picked per clip in the editor, where you can see them on your own footage:
 
 Size, colours, position and words-per-line are all adjustable on top of whichever you pick.
 
+## License
+
+Cvideo is free software under the **GNU AGPL-3.0** (see [LICENSE](LICENSE)). Use it, change it,
+run it for yourself or your clients, for free. The one condition: if you run a modified Cvideo
+as a service for other people, you publish your changes under the same license.
+
 ## Where to read more
 
 - **[INSTALL.md](INSTALL.md)** - installing it, step by step, human or AI agent.
 - **`CONTEXT.md`** - how the app works inside: the pipeline, the API, the editor, and the
   sharp edges. Read this before changing code.
 - **`AGENTS.md`** - the working rules for anyone (or anything) editing this repo.
-- **`SPEC.md`** / **`GOAL.md`** - the original build spec, kept for history.
+- **`SPEC.md`** - the original product spec, kept for history.

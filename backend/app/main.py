@@ -67,9 +67,23 @@ _render_pool = ThreadPoolExecutor(max_workers=2)
 _assemble_status: dict[int, dict] = {}
 
 
+def _tools_health() -> dict:
+    """Are ffmpeg and ffprobe reachable? Every render, thumbnail and audio extraction shells
+    out to them, and on a machine where the install skipped ffmpeg the first symptom used to
+    be a raw `FileNotFoundError: [WinError 2]` on the first export. Surfaced on /api/health
+    so the UI can say it in words before anyone clicks Export."""
+    import shutil
+    ffmpeg, ffprobe = shutil.which("ffmpeg"), shutil.which("ffprobe")
+    return {"ffmpeg": bool(ffmpeg), "ffprobe": bool(ffprobe), "ok": bool(ffmpeg and ffprobe)}
+
+
 @app.on_event("startup")
 def _startup():
     init_db()
+    tools = _tools_health()
+    if not tools["ok"]:
+        print("[startup] WARNING: ffmpeg/ffprobe not found on PATH - nothing can be exported "
+              "until it is installed (Windows: winget install Gyan.FFmpeg, then restart Cvideo)")
     # Whatever was mid-flight when the last process died can never finish now; say so.
     recover_interrupted()
     _recover_interrupted_renders()
@@ -201,7 +215,7 @@ class ClipPatch(BaseModel):
 
 
 class CreateTicket(BaseModel):
-    brand: str = "NoCrapDiet"
+    brand: str = ""                    # optional label; "" = not sorted under a brand
     angle: str = ""
     format: str = "reel"               # reel | carousel
     capture_mode: str = "native-short" # longform-clip | native-short | repurpose
@@ -697,7 +711,7 @@ def list_exports():
     """Every rendered output across the app — project clips + assembled ticket reels.
     Powers the Downloads screen. Items carry folder metadata: `group` (top folder) →
     `subgroup` → cards. REELS all live under one "Reels" folder, split into brand
-    subfolders (NoCrapDiet / SemSeo / …); plain clips stay grouped by their project.
+    subfolders when a brand was set; plain clips stay grouped by their project.
     Names are the ONE canonical `_video_name` so Downloads matches the editor & Results."""
     from sqlmodel import select
     REELS = "Reels"
@@ -706,7 +720,7 @@ def list_exports():
         for c in s.exec(select(Clip).where(Clip.status == "rendered")).all():
             title = _video_name(s, "clip", c.id)
             if _is_reel_clip(s, c):   # a caption-mode reel → Reels/<brand>
-                brand = _video_brand(s, "clip", c.id) or "Unsorted"
+                brand = _video_brand(s, "clip", c.id) or "My videos"
                 out.append({"kind": "clip", "id": c.id, "title": title,
                             "subtitle": f"{brand} · reel",
                             "group": (c.folder or REELS), "subgroup": brand,
@@ -724,7 +738,7 @@ def list_exports():
                             "thumb": f"/api/clips/{c.id}/thumb"})
         for t in s.exec(select(Ticket).where(Ticket.clip_url.is_not(None))).all():
             title = _video_name(s, "reel", t.id)
-            brand = _video_brand(s, "reel", t.id) or t.brand or "Unsorted"
+            brand = _video_brand(s, "reel", t.id) or t.brand or "My videos"
             out.append({"kind": "reel", "id": t.id, "title": title,
                         "subtitle": f"{brand} · reel",
                         "group": (t.folder or REELS), "subgroup": brand,
@@ -848,7 +862,7 @@ def ticket_from_outlier(oid: int):
         o = s.get(Outlier, oid)
         if not o:
             raise HTTPException(404, "outlier not found")
-        t = Ticket(brand="NoCrapDiet", angle=o.angle, outlier_id=oid,
+        t = Ticket(brand="", angle=o.angle, outlier_id=oid,
                    hook_text=o.hook or "", stage="outlier")
         s.add(t); s.commit(); s.refresh(t)
         return {"ticket": t.model_dump(), "beats": []}
@@ -950,7 +964,7 @@ def _video_brand(s, kind: str, vid: int) -> str:
     per-brand Growth Logs). Reel → its Ticket.brand; clip → its stored brand (chosen on the
     Results logger), else the brand of a ticket linked to the clip's project. NEVER falls back
     to a default — returns "" when unknown, so an unlinked/long-form clip logs BLANK instead
-    of being silently mislabeled as NoCrapDiet."""
+    of being silently mislabeled with somebody's default brand."""
     from sqlmodel import select
     if kind == "reel":
         t = s.get(Ticket, vid)
@@ -2266,7 +2280,8 @@ def list_presets():
 def health():
     # youtube: whether yt-dlp can answer YouTube's JavaScript challenge at all - the thing
     # that was invisible while the clipper "worked" for four merged fixes in a row.
-    return {"ok": True, "youtube": ytdlp_health.readiness()}
+    # tools: ffmpeg/ffprobe on PATH - without them no export can ever succeed.
+    return {"ok": True, "youtube": ytdlp_health.readiness(), "tools": _tools_health()}
 
 
 # --------------------------------------------------------------------------- #

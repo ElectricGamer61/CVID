@@ -18,7 +18,9 @@ import {
 /* Every video is filed under one name. There is no brand picker any more — this app edits
    your videos, it doesn't run a multi-brand content operation — but exports still group by
    it, so the constant keeps existing folders where they are. */
-const BRAND = "NoCrapDiet";
+// Videos made here carry no brand unless the user sets one; Downloads files them under
+// "My videos". (Brand cartridges in backend/brands are an optional, per-install extra.)
+const BRAND = "";
 
 export type Route =
   | { name: "home" }
@@ -92,6 +94,8 @@ export default function App() {
   const [route, setRoute] = useState<Route>({ name: "home" });
   const [projName, setProjName] = useState("");
   const [backendDown, setBackendDown] = useState(false);
+  // ffmpeg missing = every export will fail. Say so at the top, in words, before the first click.
+  const [ffmpegMissing, setFfmpegMissing] = useState(false);
   const toast = useToast();
 
   useEffect(() => { api.presets().then(setPresets); }, []);
@@ -99,7 +103,9 @@ export default function App() {
   // dead server used to eat edits with no warning. This banner makes the outage impossible to miss.
   useEffect(() => {
     let alive = true;
-    const ping = () => api.health().then(() => alive && setBackendDown(false)).catch(() => alive && setBackendDown(true));
+    const ping = () => api.health()
+      .then((h) => { if (!alive) return; setBackendDown(false); setFfmpegMissing(h?.tools ? !h.tools.ok : false); })
+      .catch(() => alive && setBackendDown(true));
     ping();
     const t = setInterval(ping, 5000);
     return () => { alive = false; clearInterval(t); };
@@ -138,6 +144,11 @@ export default function App() {
         {backendDown && (
           <div className="backend-down-banner" role="alert">
             ⚠ Backend offline — your edits are <b>NOT</b> saving. It auto-restarts in a couple of seconds; this clears on its own when it's back.
+          </div>
+        )}
+        {!backendDown && ffmpegMissing && (
+          <div className="backend-down-banner" role="alert">
+            ⚠ <b>ffmpeg is not installed</b>, so nothing can be exported. Run <b>install.cmd</b> again (or <b>winget install Gyan.FFmpeg</b>), then restart Cvideo.
           </div>
         )}
         <header className="topbar">

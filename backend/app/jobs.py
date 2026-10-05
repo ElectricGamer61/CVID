@@ -275,7 +275,10 @@ def _analyze(project_id: int, upload_path: str | None):
             current_stage = "Moment analysis"
             _set(project_id, status="analyzing",
                  stage=f"Finding moments ({chosen_brain})", progress=75)
-            moments = brain.find_moments(result["words"], chosen_brain)
+            moments, used_brain = brain.find_moments_detailed(result["words"], chosen_brain)
+            if used_brain != chosen_brain:
+                # Say which finder actually produced these clips. The card reads this field.
+                _set(project_id, brain=used_brain)
 
             # 4. Persist clips
             with get_session() as s:

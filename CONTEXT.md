@@ -8,7 +8,7 @@ A local, free clone of wayinvideo / OpusClip. Two creation paths, one editor:
 
 Runs entirely on this machine. Built to replace a paid wayinvideo sub.
 
-> This file is the single source of truth for *how Cvideo works today*. `GOAL.md`/`SPEC.md` are the
+> This file is the single source of truth for *how Cvideo works today*. `SPEC.md` is the
 > original spec; `README.md` is setup. When in doubt, trust this file + the code.
 
 ---
@@ -129,8 +129,11 @@ via `render_scene_reel` (voice-first) or `assemble_ticket`.
   false`, `num_predict` capped (`CVIDEO_OLLAMA_MAX_TOKENS`, 4096) and a request timeout
   (`CVIDEO_OLLAMA_TIMEOUT_SEC`, 600). A thinking model (qwen3.5) handed the JSON schema generated
   16k+ tokens and never answered, leaving projects on "Finding moments" forever. `ollama_reachable()`
-  / `effective_default_brain()` let `/api/presets` report `heuristic` when the Ollama default has no
-  server answering, so the UI names the finder that will actually run.
+  / `effective_default_brain()` let `/api/presets` report the finder that will ACTUALLY run: a cloud
+  brain whose key is missing demotes to Ollama, and Ollama with no server answering demotes to
+  `heuristic`. `find_moments_detailed()` returns `(clips, brain_used)` and `jobs._analyze` writes
+  `brain_used` back onto the Project, so the card never credits "Cloud categorizer" for clips the
+  basic finder sampled. A fresh keyless install therefore says "Basic moment finder" everywhere.
   chunking + cross-chunk de-dupe, sentence-boundary snapping. Fields must be in `_CLIPS_SCHEMA` required.
 - **reframe.py** — 9:16 crop center via OpenCV **YuNet DNN** (+ Haar fallback). `crop_filter()` builds
   the ffmpeg crop+scale. **No MediaPipe.** **Detection never fails the export:** an OpenCV build
@@ -228,7 +231,8 @@ uploads AND by `build-edit` reels).
   columns added by `_migrate()` on startup.
 
 **Pipeline lifecycle tables:**
-- **Ticket** (spine): brand, stage (outlier→posted), angle, outlier_id, format, capture_mode
+- **Ticket** (spine): brand (optional label, default `""` — there is no built-in brand; Downloads
+  files unbranded reels under "My videos"), stage (outlier→posted), angle, outlier_id, format, capture_mode
   (longform-clip|native-short|repurpose), **project_id** (set by `build-edit`/`use-clip`), source_ref,
   hook_text, clip_url, platforms (JSON), scheduled_at/posted_at, folder (Downloads override).
   **`post_meta`** (JSON) = per-platform PUBLISH copy `{tt:{caption,hashtags}, ig:{caption,hashtags},
@@ -283,6 +287,10 @@ uploads AND by `build-edit` reels).
   ("Reels"/"Clips"), `hook`, `filename` (hook-based).
 - **Presets:** `GET /api/presets` — captions, caption_styles, aspects, brains, transcribe,
   resolutions, stages, formats, capture_modes.
+- **Health:** `GET /api/health` → `{ok, youtube: {ytdlp, js_runtimes, ejs, ready, ...}, tools:
+  {ffmpeg, ffprobe, ok}}`. `tools.ok` false = ffmpeg/ffprobe not on PATH, and the UI shows a red
+  banner saying so (every export, thumbnail and audio extraction shells out to them). Startup
+  prints the same warning to the log.
 - **Script import:** `intake.parse_script(text)` → `{hook, beats[]}` (deterministic, no LLM).
 - **Shoot Drop:** `POST /api/shootdrop` (multipart multi-file → batch → queued on the jobs worker) ·
   `GET /api/shootdrop` → `{clips[] (+ticket_label/scene_index), watch_dir, open_scenes[]}` ·
@@ -524,8 +532,8 @@ section label even though `SECTION_LABELS` names it for the sidebar.
   never written into Cvideo code — only ever a roadmap plan — so nothing was removed. **Publisher
   layer stays a thin interface with two real adapters: Upload-Post (`pipeline/poster.py`, the audited
   broker that dodges the Meta/TikTok dev-app pain) + manual.** Remaining P6 polish = wire post copy
-  from `Ticket.post_meta` + per-ticket TikTok trending-audio mode. See the `cvideo-postiz-licensing`
-  + `dennis-facebook-banned` memories for the full why.
+  from `Ticket.post_meta` + per-ticket TikTok trending-audio mode. Postiz is AGPL, so it is only
+  ever called over REST, never embedded; Meta's own developer flow is deliberately avoided.
 - **Metrics — Results upgraded** (2026-06-27): `/api/insights` adds `by_platform` + `trend`; the
   Results screen now shows a **Momentum** day-by-day bar chart + a **By platform** breakdown table.
 - **Fast bulk logger** (`BulkLogger`, default mode in `VideoTracker`): pick ONE platform tab

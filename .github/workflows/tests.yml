@@ -42,3 +42,5 @@ jobs:
         working-directory: backend
       - run: python test_look.py
         working-directory: backend
+      - run: python test_intake.py
+        working-directory: backend

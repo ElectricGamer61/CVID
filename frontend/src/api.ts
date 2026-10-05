@@ -194,7 +194,8 @@ const jsonInit = (method: string, body?: unknown): RequestInit =>
   ({ method, headers: J, body: body === undefined ? undefined : JSON.stringify(body) });
 
 export const api = {
-  health: (): Promise<{ ok: boolean }> => req("/api/health"),
+  health: (): Promise<{ ok: boolean; tools?: { ffmpeg: boolean; ffprobe: boolean; ok: boolean } }> =>
+    req("/api/health"),
   presets: (): Promise<Presets> => req("/api/presets"),
   listProjects: (): Promise<Project[]> => req("/api/projects"),
   getProject: (id: number): Promise<{ project: Project; clips: Clip[] }> =>

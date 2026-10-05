@@ -9,8 +9,8 @@ agent, with a verification after every step and the two scripts that block on in
 (`install.cmd`, `update.cmd`) called out. Do not reinvent the install from the code.
 
 `CONTEXT.md` is the source of truth for **how CVideo works today** (pipeline, API, frontend,
-gotchas, and a "Verify quickly" checklist). `README.md` is what the app is plus the human install, `SPEC.md`/`GOAL.md` are
-the original spec, `docs/` holds the session timeline. Read `CONTEXT.md` before changing anything.
+gotchas, and a "Verify quickly" checklist). `README.md` is what the app is plus the human install, `SPEC.md` is the original product
+spec. Read `CONTEXT.md` before changing anything.
 
 ## Validating a change
 
@@ -18,10 +18,13 @@ the original spec, `docs/` holds the session timeline. Read `CONTEXT.md` before 
   `src/App.test.ts` — no DOM, no server). There is no jsdom/testing-library here: to pin something
   about a *screen*, either extract the rule into a pure module (`scriptPrompt.ts`, `looks.ts`) or
   assert against `import appSource from "./App.tsx?raw"`, which is how the copy guards work.
-- Backend: `cd backend && <venv python> test_reframe.py`, `test_look.py` (Cinematic Look /
-  big title) and `test_transcribe.py` (transcription fallback + failure reporting + secret
-  hygiene). The other `backend/test_*.py` and `verify_*.py` scripts need a **running server**
-  and real media; these three do not.
+- Backend: every `backend/test_*.py` EXCEPT `test_api.py`, `test_api2.py`, `test_brain.py` and
+  `test_full.py` runs offline with the venv python and no server: `test_intake.py` (script parser),
+  `test_ingest_auth.py` (YouTube fallback ladder), `test_launcher_env.py` / `test_launcher_update.py`
+  (the PowerShell launchers, live), `test_longform_fallback.py` (brain fallback), `test_look.py`,
+  `test_reframe.py`, `test_transcribe.py`, `test_youtube_job_recovery.py` (real analyze worker on a
+  throwaway DB) and `test_ytdlp_health.py`. Each prints `ALL PASSED` or the failures. The four
+  excluded ones and `verify_*.py` need a **running server** and real media.
 
 ## Running it on WSL/Linux (the docs assume Windows)
 

@@ -65,8 +65,9 @@ CLAUDE_MODEL = os.getenv("CVIDEO_CLAUDE_MODEL", "claude-opus-4-8")
 
 # claude | openai | ollama | gemini | heuristic. Defaults to claude when its key is present,
 # else OpenAI when that key is present, else local ollama.
-DEFAULT_BRAIN = os.getenv(
-    "CVIDEO_DEFAULT_BRAIN",
+# `or`, not a getenv default: a line like `CVIDEO_DEFAULT_BRAIN=` left blank in .env must
+# mean "automatic", not a brain called "".
+DEFAULT_BRAIN = (os.getenv("CVIDEO_DEFAULT_BRAIN") or "").strip().lower() or (
     "claude" if ANTHROPIC_API_KEY else "openai" if OPENAI_API_KEY else "ollama")
 
 # Closed learning loop (learn.py) — feeds your best-performing hooks/angles back into the
@@ -84,7 +85,7 @@ ELEVENLABS_MODEL = os.getenv("CVIDEO_ELEVENLABS_MODEL", "scribe_v1")
 # Text-to-speech (read a transcript into a voiceover). Default voice = "Rachel" (public).
 ELEVENLABS_VOICE_ID = os.getenv("CVIDEO_ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")
 ELEVENLABS_TTS_MODEL = os.getenv("CVIDEO_ELEVENLABS_TTS_MODEL", "eleven_turbo_v2_5")
-_DEFAULT_TRANSCRIBE = os.getenv("CVIDEO_DEFAULT_TRANSCRIBE", "local").strip().lower()
+_DEFAULT_TRANSCRIBE = (os.getenv("CVIDEO_DEFAULT_TRANSCRIBE") or "local").strip().lower() or "local"
 # Asking for ElevenLabs without a key is not a choice, it's a dead end: the .env template
 # ships `elevenlabs` and the installer lets you skip the key, which left the default
 # pointing at a backend that can never run. Demote to local so /api/presets — and the

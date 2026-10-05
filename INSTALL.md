@@ -200,6 +200,7 @@ transcript already on disk rather than starting over.
 | Every YouTube video downloads tiny or blurry | Usually the source really is low resolution (old 4:3 uploads are 240p). Check the video on YouTube. | Nothing to fix if the source is small |
 | A project sits on "Finding moments" for many minutes | The local Ollama model is thinking without answering | Set `CVIDEO_DEFAULT_BRAIN=heuristic` (or `openai` with a key) in `backend\.env` and restart |
 | A project or export shows "Cvideo was restarted..." | The app was closed mid-job | Press **Retry** / **Export**. Nothing is lost |
+| A red bar at the top says **ffmpeg is not installed** | ffmpeg/ffprobe are not on PATH; nothing can be exported | `winget install Gyan.FFmpeg`, open a new shell, restart Cvideo. `/api/health` → `tools.ok` turns true |
 | "Backend venv is missing" | Section 3 never completed | Re-run `scripts\setup-laptop.ps1` |
 | "The UI could not be built" | `npm run build` failed | `cd frontend; npm install; npm run build` and read the error |
 | Transcription never finishes on a laptop | A multi-GB model on a CPU | `CVIDEO_WHISPER_MODEL_CPU=small` in `backend\.env` |

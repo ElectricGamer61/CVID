@@ -115,7 +115,7 @@ class Outlier(SQLModel, table=True):
 class Ticket(SQLModel, table=True):
     """One row per piece of content — the lifecycle spine."""
     id: Optional[int] = Field(default=None, primary_key=True)
-    brand: str = "NoCrapDiet"          # loads the cartridge
+    brand: str = ""                    # optional; loads a cartridge from backend/brands when one exists
     stage: str = "outlier"             # outlier|scripted|staged|sourced|assembled|ready|scheduled|posted
     angle: str = ""                    # keystone field
     outlier_id: Optional[int] = Field(default=None, foreign_key="outlier.id")
@@ -148,7 +148,7 @@ class Ticket(SQLModel, table=True):
     # --- Autopilot orchestration (the autonomous driver owns this row when True) ---
     autopilot: bool = False            # the orchestrator advances this ticket automatically
     # Auto-voiceover toggle: before assembling, TTS every scene's spoken_line into its
-    # voiceover slot (ElevenLabs, default MasterDee voice) — for silent-B-roll tickets
+    # voiceover slot (ElevenLabs, the configured default voice) — for silent-B-roll tickets
     # where the user provides script + clips and wants the voice generated.
     auto_voiceover: bool = False
     gate: Optional[str] = None         # None|awaiting_approval|awaiting_footage|parked|done
@@ -275,20 +275,11 @@ def _migrate() -> None:
         "beat": {"caption_timings": "TEXT"},
     }
     with _engine.connect() as conn:
-        added: set[tuple[str, str]] = set()
         for table, cols in wanted.items():
             existing = {row[1] for row in conn.execute(text(f"PRAGMA table_info({table})"))}
             for col, decl in cols.items():
                 if col not in existing:
                     conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col} {decl}"))
-                    added.add((table, col))
-        # One-time backfill: the user's existing reels are all NoCrapDiet. Stamp blank
-        # caption projects ONCE — gated on the brand column being freshly added, so a brand
-        # the user later clears in the UI is never silently re-stamped on the next boot.
-        if ("project", "brand") in added:
-            conn.execute(text(
-                "UPDATE project SET brand='NoCrapDiet' "
-                "WHERE mode='caption' AND (brand IS NULL OR brand='')"))
         conn.commit()
 
 

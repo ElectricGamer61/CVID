@@ -294,7 +294,11 @@ class ClaudeScorer(ScorerBackend):
 
 
 class HeuristicScorer(ScorerBackend):
-    """No-LLM fallback: split into evenly spaced ~40s windows on sentence-ish breaks."""
+    """No-LLM fallback: evenly spaced ~40s windows, snapped to sentence breaks by _normalize.
+
+    This is what a keyless install with no Ollama gets, so it must still look finished: each
+    clip is titled with its own opening words and quotes its first sentence, instead of six
+    cards all called "Moment N"."""
     name = "heuristic"
 
     def score(self, words: list[dict], n: int) -> list[dict]:
@@ -303,17 +307,41 @@ class HeuristicScorer(ScorerBackend):
         total = words[-1]["end"] - words[0]["start"]
         target = max(settings.MIN_CLIP_SEC, min(settings.MAX_CLIP_SEC, 40))
         n = max(1, min(n, int(total // target) or 1))
-        clips = []
-        for i in range(n):
-            start = words[0]["start"] + i * (total / n)
-            clips.append({
-                "start": start,
-                "end": start + target,
-                "title": f"Moment {i + 1}",
-                "score": 50,
-                "reason": "Evenly sampled (no LLM brain available).",
-            })
-        return _normalize(clips, words)
+        clips = [{
+            "start": words[0]["start"] + i * (total / n),
+            "end": words[0]["start"] + i * (total / n) + target,
+            "title": f"Moment {i + 1}", "score": 50,
+            "reason": "Picked at even intervals through the video. Add an OpenAI key or run "
+                      "Ollama for AI-scored picks.",
+        } for i in range(n)]
+        # Title and hook come from the words INSIDE the final, sentence-snapped range, so a
+        # clip never opens with words its own title does not start with.
+        out = _normalize(clips, words)
+        for i, c in enumerate(out):
+            spoken = [w["word"].strip() for w in words
+                      if w["start"] >= c["start"] - 0.01 and w["start"] < c["end"] and w["word"].strip()]
+            c["title"] = _title_from_words(spoken, i)[:120]
+            c["hook"] = _first_sentence(spoken)[:200]
+        return out
+
+
+def _title_from_words(spoken: list[str], index: int, max_words: int = 6) -> str:
+    """'Truth Be Told I Never Graduated' rather than 'Moment 1'."""
+    head = [w.strip(".,!?;:\"'") for w in spoken[:max_words]]
+    head = [w for w in head if w]
+    if not head:
+        return f"Moment {index + 1}"
+    title = " ".join(head)
+    return title[:1].upper() + title[1:]
+
+
+def _first_sentence(spoken: list[str], max_words: int = 24) -> str:
+    out: list[str] = []
+    for w in spoken:
+        out.append(w)
+        if w.endswith((".", "!", "?")) or len(out) >= max_words:
+            break
+    return " ".join(out)
 
 
 _OLLAMA_PROBE_TTL = 30.0
@@ -342,9 +370,21 @@ def ollama_reachable() -> bool:
     return ok
 
 
+# The brains that need a key, and the setting that holds it.
+_KEYED_BRAINS = {"openai": "OPENAI_API_KEY", "claude": "ANTHROPIC_API_KEY",
+                 "gemini": "GEMINI_API_KEY"}
+
+
 def effective_default_brain() -> str:
-    """settings.DEFAULT_BRAIN, demoted to `heuristic` when it names an Ollama nobody runs."""
+    """The finder that will ACTUALLY run for a new project, given this machine right now.
+
+    settings.DEFAULT_BRAIN is what was asked for. A cloud brain without its key, or an
+    Ollama nobody started, cannot run - find_moments() would fall through to the next one
+    silently, and the UI would keep saying "Cloud categorizer" over clips that were sampled
+    evenly. Resolve the same chain here, up front, so the picker names the truth."""
     default = settings.DEFAULT_BRAIN
+    if default in _KEYED_BRAINS and not getattr(settings, _KEYED_BRAINS[default], ""):
+        default = "ollama"
     if default == "ollama" and not ollama_reachable():
         return "heuristic"
     return default
@@ -397,7 +437,17 @@ def fallback_order(requested: str) -> list[str]:
 
 
 def find_moments(words: list[dict], brain: str, n: Optional[int] = None) -> list[dict]:
+    """Try the requested brain, then supported fallbacks. See find_moments_detailed."""
+    return find_moments_detailed(words, brain, n)[0]
+
+
+def find_moments_detailed(words: list[dict], brain: str,
+                          n: Optional[int] = None) -> tuple[list[dict], str]:
     """Try the requested brain, then supported fallbacks, without touching source media.
+
+    Returns (clips, brain_that_produced_them). The second value is what the project should
+    record: when the requested brain was unavailable the user must see the finder that
+    really ran, not the one they asked for.
 
     A backend can fail at import, initialisation, timeout, or malformed output.  Each
     attempt is isolated and the same transcript is reused; a failed scorer never mutates
@@ -415,7 +465,7 @@ def find_moments(words: list[dict], brain: str, n: Optional[int] = None) -> list
             if merged:
                 if candidate != brain:
                     print(f"[brain] {brain} unavailable; recovered with {candidate}")
-                return merged
+                return merged, candidate
             failures.append(f"{candidate}: returned no clips")
         except Exception as e:  # noqa: BLE001 - provider failures are recoverable
             failures.append(f"{candidate}: {type(e).__name__}: {e}")
