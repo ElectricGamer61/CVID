@@ -292,6 +292,24 @@ def cuda_available() -> bool:
     return True
 
 
+def merge_word_pieces(words: list[dict]) -> list[dict]:
+    """Rejoin hyphenated words Whisper splits in two ("decision" + "-maker").
+
+    faster-whisper marks a continuation by giving it no leading space; for hyphens it still
+    reports a separate word, so the transcript read "decision -maker" and the captions burned
+    "-MAKER" on its own. A piece with no leading space that starts with "-" is folded into the
+    word before it, taking over its end time. Idempotent, and nothing else is touched."""
+    out: list[dict] = []
+    for w in words:
+        text = w.get("word", "")
+        if out and text[:1] == "-" and not text[:1].isspace():
+            prev = out[-1]
+            out[-1] = {**prev, "word": prev["word"] + text, "end": max(prev["end"], w["end"])}
+        else:
+            out.append(dict(w))
+    return out
+
+
 def _run(device: str, model_name: str, compute: str, audio_path: Path,
          progress: Callable[[int, str], None] | None):
     """Build model + fully consume transcription on one device. Raises on failure."""
@@ -317,7 +335,7 @@ def _run(device: str, model_name: str, compute: str, audio_path: Path,
         "language": info.language,
         "duration": total,
         "text": "".join(text_parts).strip(),
-        "words": words,
+        "words": merge_word_pieces(words),
     }
 
 

@@ -426,4 +426,6 @@ def get_words(project_id: int) -> list[dict]:
     f = settings.project_dir(project_id) / "words.json"
     if not f.exists():
         return []
-    return json.loads(f.read_text(encoding="utf-8")).get("words", [])
+    from .pipeline.transcribe import merge_word_pieces
+    # Normalised on read too, so transcripts made before the merge existed read correctly.
+    return merge_word_pieces(json.loads(f.read_text(encoding="utf-8")).get("words", []))

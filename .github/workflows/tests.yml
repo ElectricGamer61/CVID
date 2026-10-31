@@ -48,3 +48,5 @@ jobs:
         working-directory: backend
       - run: python test_captions_fit.py
         working-directory: backend
+      - run: python test_word_pieces.py
+        working-directory: backend

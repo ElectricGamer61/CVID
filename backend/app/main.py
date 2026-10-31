@@ -1695,9 +1695,13 @@ def patch_clip(cid: int, body: ClipPatch):
         if "crop_center" in data and clip.crop_track_json and \
                 abs(float(data["crop_center"]) - float(clip.crop_center)) > 1e-4:
             clip.crop_track_json = None
+        framing_changed = any(k in data and data[k] != getattr(clip, k)
+                              for k in ("crop_center", "start", "end", "aspect"))
         for k, v in data.items():
             setattr(clip, k, v)
         clip.status = "suggested"  # edits invalidate any previous render
+        if framing_changed:
+            _drop_clip_thumb(clip.project_id, cid)
         s.add(clip)
         s.commit()
         s.refresh(clip)
@@ -1753,6 +1757,10 @@ def ai_effects(cid: int, body: AIEffectsBody):
     return {"clip": clip.model_dump(), "words": words, "effects": eff,
             "counts": {"emphasis": len(sug["emphasis"]), "emoji": len(sug["emoji"]),
                        "zoom": len(sug["zoom"]), "sfx": len(sug["sfx"])}}
+
+
+def _drop_clip_thumb(pid: int, cid: int) -> None:
+    (settings.project_dir(pid) / "clips" / f"clip_{cid}.jpg").unlink(missing_ok=True)
 
 
 def _set_clip(cid: int, **fields):
@@ -1871,6 +1879,7 @@ def _render_clip_job(cid: int):
             clip.crop_track_json = json.dumps(track) if track else None
             s.add(clip)
             s.commit()
+        _drop_clip_thumb(pid, cid)          # re-cut with the framing this export used
     except Exception as e:  # noqa: BLE001
         traceback.print_exc()
         _set_clip(cid, status="error", stage="", error=f"{type(e).__name__}: {e}")
@@ -2161,12 +2170,15 @@ def clip_thumb(cid: int):
             raise HTTPException(404, "clip not found")
         pid, start, end = clip.project_id, clip.start, clip.end
         aspect, center = clip.aspect, clip.crop_center
+        track = json.loads(clip.crop_track_json) if clip.crop_track_json else None
     thumb = settings.project_dir(pid) / "clips" / f"clip_{cid}.jpg"
     if not thumb.exists():
         src = _preview_source(pid)
         if not src:
             raise HTTPException(404, "no source for thumbnail yet")
-        _make_thumb(src, thumb, (start + end) / 2, aspect, center)
+        mid = (start + end) / 2
+        # Frame the thumbnail the way the export frames that moment (per-shot when tracked).
+        _make_thumb(src, thumb, mid, aspect, reframe.track_center_at(track, mid, center) if track else center)
     if not thumb.exists():
         raise HTTPException(404, "thumbnail unavailable")
     return FileResponse(str(thumb), media_type="image/jpeg")
@@ -2232,6 +2244,7 @@ def clip_auto_center(cid: int):
         clip.status = "suggested"
         s.add(clip)
         s.commit()
+    _drop_clip_thumb(pid, cid)
     return {"center": center, "track": track}
 
 

@@ -91,6 +91,9 @@ via `render_scene_reel` (voice-first) or `assemble_ticket`.
   **`extract_voiceover()` = 48 kHz stereo** (for recorded voice that ends up in the export — do NOT
   run voiceovers through the 16 kHz Whisper path or they sound bad).
 - **transcribe.py** — `local` faster-whisper / `elevenlabs` Scribe. Output → `words.json`.
+  `merge_word_pieces()` rejoins hyphenated words Whisper splits ("decision" + "-maker" → one word,
+  spanning both timings); applied when a transcript is written and again in `jobs.get_words()`, so
+  older transcripts read and caption correctly too. Covered by `test_word_pieces.py`.
   **Local always works with no key and no GPU**, and every route ends on CPU:
   `cuda_available()` (a cheap CTranslate2 probe) decides whether `auto` even tries the GPU,
   so a laptop never downloads the 3 GB `large-v3` just to find out it has no CUDA; a GPU that
