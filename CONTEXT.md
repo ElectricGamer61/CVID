@@ -142,14 +142,34 @@ via `render_scene_reel` (voice-first) or `assemble_ticket`.
   `brain_used` back onto the Project, so the card never credits "Cloud categorizer" for clips the
   basic finder sampled. A fresh keyless install therefore says "Basic moment finder" everywhere.
   chunking + cross-chunk de-dupe, sentence-boundary snapping. Fields must be in `_CLIPS_SCHEMA` required.
-- **reframe.py** — 9:16 crop center via OpenCV **YuNet DNN** (+ Haar fallback). `crop_filter()` builds
-  the ffmpeg crop+scale. **No MediaPipe.** **Detection never fails the export:** an OpenCV build
+- **reframe.py** — 9:16 crop via OpenCV **YuNet DNN** (+ Haar fallback). `crop_filter()` builds
+  the ffmpeg crop+scale. **No MediaPipe.** **Shot-aware:** `detect_track()` finds hard cuts
+  (HSV-histogram correlation < 0.55 every 0.25 s, shots under 0.75 s folded away), finds the face in
+  each shot (median of 5 frames; a faceless shot - slide, B-roll - is centered), merges neighbours
+  within 0.05 and stores `{start,end,shots:[{start,center}]}` on `Clip.crop_track_json`. The export
+  turns it into a piecewise crop `x` expression (`track_x_expr`, remapped across cuts), so the crop
+  moves only at camera cuts, never pans inside a shot. Computed on the first export (center 0.5) or
+  by the editor's Auto-center, recomputed when a trim leaves the covered range; PATCHing a different
+  `crop_center` (dragging the crop) drops the track. **One YuNet detector per thread**
+  (`threading.local`): the render pool runs two exports at once and a shared `FaceDetectorYN`
+  corrupted both searches (a shot framed at 65% alone came out at 37% under load); the model
+  download is atomic. Covered by `test_reframe_track.py`. The editor preview uses the same track
+  (`reframeTrack.ts`) and `objectPositionFor()`, which converts a center into the CSS
+  `object-position` that shows exactly the export's clamped crop window (the raw percentage drifted
+  up to ~15% of the frame off-centre). **Detection never fails the export:** an OpenCV build
   without the Haar XML raises `!empty()` out of `detectMultiScale` (it doesn't just find nothing),
   which used to kill the render and dump a raw C++ assertion into the editor. `_haar_cascade()`
   checks `cascade.empty()` up front and `detect_center()` catches anything else, falling back to a
   mid-frame crop — the behavior the docstring always promised. Covered by `backend/test_reframe.py`.
-- **captions.py** — word-synced ASS. `PRESETS` capcut/hormozi/beasty/clean (mirrored in
-  `captionStyles.ts`). `build_ass(words, clip_start, clip_end, preset, overrides, out_w, out_h)`.
+- **captions.py** — word-synced ASS. `PRESETS` cinematic/capcut/hormozi/beasty/clean (mirrored in
+  `captionStyles.ts`). **No line ever leaves the frame:** the Base style never wraps (WrapStyle 2),
+  so `fit_layout()` measures each line with Arial Bold advance widths (including the 1.12 active /
+  1.18 emphasis pop and any emoji) against the 80 px margins; a line that would need to shrink below
+  80% goes onto two rows (`\N`) at the best word boundary, then `{\fsN}` shrinks only as far as the
+  widest row needs (floor 45%; the outline is a fixed width, so only the font share scales). Lines
+  that fit are byte-identical. `captionStyles.fitLayout` mirrors it exactly and `CaptionOverlay` uses
+  it (nowrap, same margins), so preview == export; `test_captions_fit.py` + `captionFit.test.ts` pin
+  the same numbers. Emoji burn in as single-colour glyphs (libass draws no colour fonts). `build_ass(words, clip_start, clip_end, preset, overrides, out_w, out_h)`.
   **Inline color must be `{\1c&HBBGGRR&}`** (6-digit + trailing &). ASS keeps a 1080×1920 PlayRes
   baseline; libass scales it to the real frame — **don't pass real out_w/out_h to `write_ass`** for
   hi-res, only to the render's crop/scale. `write_ass(..., title=)` also burns the **big
@@ -172,6 +192,11 @@ via `render_scene_reel` (voice-first) or `assemble_ticket`.
   `frontend/src/looks.ts` — same ids, margins and fit maths, so preview == export. Covered by
   `backend/test_look.py`.
 - **render.py** — clip export. Three paths, chosen in `main._render_clip_job`:
+  - **AI zoom keeps sync:** `_zoom_filter(zoom, w, h, fps)` takes the SOURCE frame rate
+    (`reframe.probe_fps`, avg_frame_rate first) and prepends `fps=` so variable-rate footage is
+    constant first. zoompan emits one frame per input frame at its `fps`; the old hard-coded 30 on a
+    24 fps source made 43 s of picture into 35 s, so video and captions ran 25% ahead of the voice.
+    `test_render_sync.py` renders 24/29.97/25/60 fps sources with zoom, with and without cuts.
   - **plain** `render_clip(... voiceover=?)` — cut [start,end] → crop → burn ASS. If the clip has a
     `voiceover`, it's muxed as the audio (`-map 1:a:0 -shortest`).
   - **middle-cuts** `kept_segments()` + `render_clip_segments()` — when `cuts_json` removes inner

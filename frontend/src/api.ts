@@ -40,6 +40,7 @@ export interface Clip {
   caption_preset: string;
   resolution: string;
   crop_center: number;
+  crop_track_json?: string | null;   // automatic per-shot framing (reframeTrack.ts)
   status: string;
   stage?: string;
   output_path?: string;
@@ -323,6 +324,6 @@ export const api = {
   clipThumbUrl: (cid: number) => `/api/clips/${cid}/thumb`,
   projectThumbUrl: (pid: number) => `/api/projects/${pid}/thumb`,
   frameUrl: (pid: number, t: number) => `/api/projects/${pid}/frame?t=${t.toFixed(2)}`,
-  autoCenter: (cid: number): Promise<{ center: number }> =>
+  autoCenter: (cid: number): Promise<{ center: number; track?: import("./reframeTrack").CropTrack }> =>
     req(`/api/clips/${cid}/auto-center`, { method: "POST" }),
 };

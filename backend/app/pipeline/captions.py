@@ -188,6 +188,93 @@ def _ts(seconds: float) -> str:
     return f"{h:d}:{m:02d}:{s:02d}.{cs:02d}"
 
 
+# --- fit: one caption line must never run off the frame -----------------------------------
+# The Base style never wraps (WrapStyle 2), and the default "cinematic" look is 126 px, two
+# words at a time. Two long words ("GRATIFICATION MONKEY", plus the 12% active-word pop) are
+# wider than the 1080 px frame, and libass simply draws them off both edges. Each line is
+# measured against Arial Bold's real advance widths (em units) and, only when it would not
+# fit between the style's 80 px margins, its font size is reduced for that line alone.
+# Mirrored exactly by frontend/src/captionStyles.ts (fitScale), so the preview matches.
+_ARIAL_BOLD_EM = {
+    **dict(zip("ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+               (.722, .722, .722, .722, .667, .611, .778, .722, .278, .556, .722, .611, .833,
+                .722, .778, .667, .778, .722, .667, .611, .722, .667, .944, .667, .667, .611))),
+    **dict(zip("abcdefghijklmnopqrstuvwxyz",
+               (.556, .611, .556, .611, .556, .333, .611, .611, .278, .278, .556, .278, .889,
+                .611, .611, .611, .611, .389, .556, .333, .611, .556, .778, .556, .556, .500))),
+    **{d: .556 for d in "0123456789"},
+    " ": .278, ".": .278, ",": .278, ":": .333, ";": .333, "!": .333, "?": .611, "'": .238,
+    '"': .474, "-": .333, "%": .889, "$": .556, "&": .722, "(": .333, ")": .333, "/": .278,
+}
+_DEFAULT_EM = .611          # an unlisted letter (accented, other scripts)
+_EMOJI_EM = 1.15            # a fallback-font emoji
+FIT_MARGIN = 80             # Base style MarginL / MarginR, in PlayRes px
+FIT_MIN_SCALE = 0.45        # never shrink a line below 45% of its style size
+ACTIVE_POP = 1.12           # \fscx112 on the spoken word
+EMPHASIS_POP = 1.18         # \fscx118 on an AI-emphasised word
+
+
+def text_em(text: str) -> float:
+    """Width of a string in em units of Arial Bold."""
+    total = 0.0
+    for ch in text:
+        if ord(ch) > 0x2000 and not ch.isalnum():
+            total += _EMOJI_EM
+        else:
+            total += _ARIAL_BOLD_EM.get(ch, _DEFAULT_EM)
+    return total
+
+
+SPLIT_BELOW = 0.8           # one row would need to shrink past 80%: try two rows instead
+
+
+def _word_em(w: dict) -> float:
+    word = w["word"] + (f" {w['emoji']}" if w.get("emoji") else "")
+    return text_em(word) * (EMPHASIS_POP if w.get("emphasis") else ACTIVE_POP)
+
+
+def _row_em(widths: list[float]) -> float:
+    return sum(widths) + _ARIAL_BOLD_EM[" "] * max(0, len(widths) - 1)
+
+
+def fit_layout(line: list[dict], size: float, outline: float, out_w: int) -> tuple[float, int | None]:
+    """(scale, split) for one caption line so it never runs off the frame.
+
+    scale 1.0 and split None = the line fits as it is (the common case; output unchanged).
+    Otherwise, when one row would have to shrink below SPLIT_BELOW, the line is broken onto
+    two rows at the word boundary that keeps the widest row narrowest - "GRATIFICATION" over
+    "MONKEY" reads far better at 74% than both words crammed onto one row at 45%. `split` is
+    the index of the first word on the second row. Every event of a line uses the same
+    layout, so the caption never jumps size word to word."""
+    if not line:
+        return 1.0, None
+    widths = [_word_em(w) for w in line]
+    available = out_w - 2 * FIT_MARGIN
+
+    def scale_for(row_em: float) -> float:
+        # \fs shrinks the glyphs but not the outline (a fixed style width), so only the
+        # font share of the row scales: row_em*size*k + 2*outline must fit.
+        if row_em * size + 2 * outline <= available:
+            return 1.0
+        return max(FIT_MIN_SCALE, (available - 2 * outline) / (row_em * size))
+
+    one_row = scale_for(_row_em(widths))
+    if one_row >= SPLIT_BELOW or len(line) < 2:
+        return one_row, None
+    best_scale, best_split = one_row, None
+    for split in range(1, len(line)):
+        widest = max(_row_em(widths[:split]), _row_em(widths[split:]))
+        k = scale_for(widest)
+        if k > best_scale + 1e-9:
+            best_scale, best_split = k, split
+    return best_scale, best_split
+
+
+def fit_scale(line: list[dict], size: float, outline: float, out_w: int) -> float:
+    """The scale part of fit_layout (kept for callers that only need the size)."""
+    return fit_layout(line, size, outline, out_w)[0]
+
+
 def _group_lines(words: list[dict], max_words: int) -> list[list[dict]]:
     lines, cur = [], []
     for w in words:
@@ -233,6 +320,9 @@ def build_ass(words: list[dict], clip_start: float, clip_end: float,
     for line in _group_lines(local, p.max_words):
         if not line:
             continue
+        # Re-lay out only the lines that would not fit; every other line is byte-identical.
+        k, split = fit_layout(line, p.size, p.outline, out_w)
+        fit = f"{{\\fs{int(p.size * k)}}}" if k < 1.0 else ""
         for i, w in enumerate(line):
             start = max(0.0, w["start"])
             end = max(start + 0.05, w["end"])
@@ -247,8 +337,11 @@ def build_ass(words: list[dict], clip_start: float, clip_end: float,
                     )
                 else:
                     parts.append(_render(lw))
-            text = " ".join(parts)
-            body.append(f"Dialogue: 0,{_ts(start)},{_ts(end)},Base,,0,0,0,,{text}")
+            if split:
+                text = " ".join(parts[:split]) + "\\N" + " ".join(parts[split:])
+            else:
+                text = " ".join(parts)
+            body.append(f"Dialogue: 0,{_ts(start)},{_ts(end)},Base,,0,0,0,,{fit}{text}")
     if t:
         body.extend(_title_events(t, out_w, out_h))
     return _ass_header(p, out_w, out_h, t) + "\n".join(body) + "\n"

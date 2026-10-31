@@ -20,7 +20,9 @@ spec. Read `CONTEXT.md` before changing anything.
   assert against `import appSource from "./App.tsx?raw"`, which is how the copy guards work.
 - Backend: every `backend/test_*.py` EXCEPT `test_api.py`, `test_api2.py`, `test_brain.py` and
   `test_full.py` runs offline with the venv python and no server: `test_intake.py` (script parser),
-  `test_ingest_auth.py` (YouTube fallback ladder), `test_launcher_env.py` / `test_launcher_update.py`
+  `test_local_scorer.py` (built-in finder), `test_captions_fit.py` (no caption leaves the frame),
+  `test_render_sync.py` (zoom keeps picture and sound in sync; real ffmpeg), `test_reframe_track.py`
+  (shot-aware crop; real ffmpeg), `test_ingest_auth.py` (YouTube fallback ladder), `test_launcher_env.py` / `test_launcher_update.py`
   (the PowerShell launchers, live), `test_longform_fallback.py` (brain fallback), `test_look.py`,
   `test_reframe.py`, `test_transcribe.py`, `test_youtube_job_recovery.py` (real analyze worker on a
   throwaway DB) and `test_ytdlp_health.py`. Each prints `ALL PASSED` or the failures. The four

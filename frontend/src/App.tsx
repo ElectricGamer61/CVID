@@ -3,6 +3,7 @@ import { api, isNotFound, Beat, Clip, ClipEffects, ExportItem, Folder, Presets, 
 import { CaptionOverlay } from "./CaptionOverlay";
 import { CaptionStyle, DEFAULT_PRESET, FALLBACK_PRESETS, groupLines, isBigSubtitleStyle, presetHint, presetLabel, Word, wordsInRange } from "./captionStyles";
 import { fillerRanges, mergeRanges, newRanges, pauseRanges, totalSeconds } from "./cleanup";
+import { aspectValue, objectPositionFor, parseTrack, previewCenter } from "./reframeTrack";
 import { DEFAULT_STRENGTH, emptyTitle, FALLBACK_LOOKS, LookSetting, lookLayers, STRENGTHS, TitleCard, TITLE_PLACES, TITLE_STYLES } from "./looks";
 import { TitleOverlay } from "./TitleOverlay";
 import { Sidebar } from "./Sidebar";
@@ -1713,6 +1714,11 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
   });
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [autoBusy, setAutoBusy] = useState(false);
+  // Automatic per-shot framing (crop moves only at camera cuts) and the position it was
+  // stored with; dragging the crop away from that position switches to the hand-placed one.
+  const [track, setTrack] = useState(() => parseTrack(clip.crop_track_json));
+  const [trackBase, setTrackBase] = useState(clip.crop_center);
+  const [sourceAspect, setSourceAspect] = useState(16 / 9);
   const videoRef = useRef<HTMLVideoElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
   const boxRef = useRef<HTMLDivElement>(null);
@@ -1873,7 +1879,12 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
     window.addEventListener("keydown", h); return () => window.removeEventListener("keydown", h);
   }, [undo, redo]);
 
-  const onLoaded = () => { if (videoRef.current) videoRef.current.currentTime = doc.start; };
+  const onLoaded = () => {
+    const v = videoRef.current;
+    if (!v) return;
+    if (v.videoWidth && v.videoHeight) setSourceAspect(v.videoWidth / v.videoHeight);
+    v.currentTime = doc.start;
+  };
   // Keep the preview parked at the (possibly trimmed) clip start. When a trim moves
   // the kept range and we're idle, re-seek so the visible frame — and the NEXT
   // recording — begin at the trimmed start, not the old pre-trim position (otherwise
@@ -1996,7 +2007,19 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
   const playReel = (startIdx = 0) => { previewChain.current = true; setPreviewMode("reel"); runScene(startIdx); };
   const selectScene = (i: number) => { if (previewMode !== "off") stopPreview(); const j = Math.max(0, Math.min(i, markers.length - 1)); setSceneIdx(j); if (markers[j]) seek(Math.max(markers[j].start, clipStart)); };
   const choosePreset = (name: string) => set({ preset: name, style: presetMap[name] ?? FALLBACK_PRESETS[DEFAULT_PRESET] });
-  const doAutoCenter = async () => { setAutoBusy(true); try { const r = await api.autoCenter(clip.id); set({ center: r.center }); toast("Centered on the speaker", "ok"); } catch { toast("Auto-center failed", "err"); } finally { setAutoBusy(false); } };
+  const doAutoCenter = async () => {
+    setAutoBusy(true);
+    try {
+      const r = await api.autoCenter(clip.id);
+      setTrack(r.track ?? null); setTrackBase(r.center); set({ center: r.center });
+      const n = r.track?.shots.length ?? 1;
+      toast(n > 1 ? `Framed the speaker in ${n} shots` : "Centered on the speaker", "ok");
+    } catch { toast("Auto-center failed", "err"); } finally { setAutoBusy(false); }
+  };
+  // What the preview frames right now: the automatic track at this moment, or the hand-placed
+  // crop. Converted to the object-position that shows exactly the window the export crops.
+  const shownCenter = previewCenter(track, trackBase, doc.center, time);
+  const shownPosition = objectPositionFor(shownCenter, sourceAspect, aspectValue(clip.aspect));
   const onPreviewDown = (e: React.PointerEvent) => {
     if (tool !== "reframe") return;
     const move = (ev: PointerEvent) => { const r = boxRef.current!.getBoundingClientRect(); set({ center: Math.max(0, Math.min(1, (ev.clientX - r.left) / r.width)) }); };
@@ -2077,7 +2100,7 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
             style={tool === "reframe" ? undefined : { cursor: "pointer" }}
             onClick={() => { if (tool !== "reframe") togglePlay(); }}
             title={tool === "reframe" ? undefined : "Click or press Space to play / pause"}>
-            <video ref={videoRef} src={api.sourceUrl(pid)} onLoadedMetadata={onLoaded} style={{ objectPosition: `${doc.center * 100}% 50%`, transform: zoomScale !== 1 ? `scale(${zoomScale})` : undefined, transition: "transform 0.12s ease-out", filter: layers.filter }} playsInline />
+            <video ref={videoRef} src={api.sourceUrl(pid)} onLoadedMetadata={onLoaded} style={{ objectPosition: `${shownPosition}% 50%`, transform: zoomScale !== 1 ? `scale(${zoomScale})` : undefined, transition: "transform 0.12s ease-out", filter: layers.filter }} playsInline />
             <audio ref={audioRef} src={hasScenes ? undefined : (voUrl ?? undefined)} preload="auto" />
             {/* The look's tint + vignette sit UNDER the text, exactly like the export
                 (ffmpeg grades the picture, then burns the subtitles on top). */}
@@ -2085,7 +2108,7 @@ function ClipEditor({ pid, clip, words, duration, presets, onChange, onBack }: {
             {layers.vignette > 0 && <div className="look-layer" style={{ background: `radial-gradient(ellipse at center, rgba(0,0,0,0) 45%, rgba(0,0,0,${layers.vignette}) 100%)` }} />}
             <CaptionOverlay words={editedWords} time={editedTime} style={doc.style} containerHeight={boxH} />
             <TitleOverlay title={doc.bigTitle} time={editedTime} style={doc.style} containerHeight={boxH} />
-            {tool === "reframe" && <div className="reframe-guide" style={{ left: `${doc.center * 100}%` }} />}
+            {tool === "reframe" && <div className="reframe-guide" style={{ left: `${shownCenter * 100}%` }} />}
           </div>
           {tool === "voice" && <Teleprompter words={activeScene ? wordsInRange(editedWords, srcToEdited(Math.max(activeScene.start, clipStart), segments), srcToEdited(Math.min(activeScene.end, doc.end), segments)) : editedWords} time={editedTime} maxWords={doc.style.max_words} />}
           <div className="play-row">

@@ -57,6 +57,9 @@ class Clip(SQLModel, table=True):
     caption_preset: str = "cinematic"   # big cinematic subtitles (captions.DEFAULT_PRESET)
     resolution: str = settings.DEFAULT_RESOLUTION  # 1080p | 1440p | 4k
     crop_center: float = 0.5          # horizontal crop center, 0..1
+    # Per-shot crop positions found automatically: {"start","end","shots":[{start,center}]}.
+    # Present only while the crop is automatic; moving the crop by hand clears it.
+    crop_track_json: Optional[str] = None
     status: str = "suggested"         # suggested|rendering|rendered|error
     stage: str = ""                   # human-readable render step (e.g. "Downloading video")
     output_path: Optional[str] = None
@@ -265,7 +268,7 @@ def _migrate() -> None:
                  "markers_json": "TEXT", "voiceover_path": "TEXT", "scene_vo_json": "TEXT",
                  "stage": "TEXT DEFAULT ''", "hook": "TEXT DEFAULT ''",
                  "resolution": f"TEXT DEFAULT '{settings.DEFAULT_RESOLUTION}'",
-                 "folder": "TEXT", "brand": "TEXT"},
+                 "folder": "TEXT", "brand": "TEXT", "crop_track_json": "TEXT"},
         "project": {"transcribe_backend": "TEXT DEFAULT 'local'",
                     "mode": "TEXT DEFAULT 'moments'", "folder": "TEXT", "brand": "TEXT"},
         "ticket": {"folder": "TEXT", "post_meta": "TEXT", "ai_generated": "INTEGER DEFAULT 0",

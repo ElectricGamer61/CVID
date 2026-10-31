@@ -96,3 +96,64 @@ export function captionAt(
 export function wordsInRange(words: Word[], start: number, end: number): Word[] {
   return words.filter((w) => w.end > start && w.start < end);
 }
+
+// --- fit: a caption line must never run off the frame (mirror of captions.fit_layout) ------
+// Arial Bold advance widths in em units. Same table, constants and rule as the backend, so
+// the preview lays out exactly what the export burns: two long words go onto two rows, and
+// only then shrink as far as the widest row needs. Lines that fit are untouched.
+const UPPER = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+const UPPER_EM = [.722, .722, .722, .722, .667, .611, .778, .722, .278, .556, .722, .611, .833,
+  .722, .778, .667, .778, .722, .667, .611, .722, .667, .944, .667, .667, .611];
+const LOWER = "abcdefghijklmnopqrstuvwxyz";
+const LOWER_EM = [.556, .611, .556, .611, .556, .333, .611, .611, .278, .278, .556, .278, .889,
+  .611, .611, .611, .611, .389, .556, .333, .611, .556, .778, .556, .556, .500];
+const PUNCT_EM: Record<string, number> = {
+  " ": .278, ".": .278, ",": .278, ":": .333, ";": .333, "!": .333, "?": .611, "'": .238,
+  '"': .474, "-": .333, "%": .889, "$": .556, "&": .722, "(": .333, ")": .333, "/": .278,
+};
+const DEFAULT_EM = .611;
+const EMOJI_EM = 1.15;
+export const FIT_MARGIN = 80;      // Base style MarginL / MarginR on the 1080-wide canvas
+export const FIT_MIN_SCALE = 0.45;
+export const ACTIVE_POP = 1.12;
+export const EMPHASIS_POP = 1.18;
+const SPLIT_BELOW = 0.8;
+
+const charEm = (ch: string): number => {
+  const u = UPPER.indexOf(ch); if (u >= 0) return UPPER_EM[u];
+  const l = LOWER.indexOf(ch); if (l >= 0) return LOWER_EM[l];
+  if (ch >= "0" && ch <= "9") return .556;
+  if (ch in PUNCT_EM) return PUNCT_EM[ch];
+  const cp = ch.codePointAt(0) ?? 0;
+  return cp > 0x2000 && !/[\p{L}\p{N}]/u.test(ch) ? EMOJI_EM : DEFAULT_EM;
+};
+
+/** Width of a string in em units of Arial Bold (iterates code points, like Python). */
+export const textEm = (text: string): number => [...text].reduce((s, ch) => s + charEm(ch), 0);
+
+const wordEm = (w: Word, uppercase: boolean): number => {
+  const base = uppercase ? w.word.trim().toUpperCase() : w.word.trim();
+  const text = base + (w.emoji ? ` ${w.emoji}` : "");
+  return textEm(text) * (w.emphasis ? EMPHASIS_POP : ACTIVE_POP);
+};
+const rowEm = (widths: number[]): number =>
+  widths.reduce((a, b) => a + b, 0) + PUNCT_EM[" "] * Math.max(0, widths.length - 1);
+
+/** { scale, split } for one caption line: split = index of the first word on row two. */
+export function fitLayout(line: Word[], style: CaptionStyle, outW = 1080): { scale: number; split: number | null } {
+  if (!line.length) return { scale: 1, split: null };
+  const widths = line.map((w) => wordEm(w, style.uppercase));
+  const available = outW - 2 * FIT_MARGIN;
+  // The outline is a fixed style width (\fs does not shrink it): only the font share scales.
+  const scaleFor = (em: number) =>
+    em * style.size + 2 * style.outline <= available ? 1
+      : Math.max(FIT_MIN_SCALE, (available - 2 * style.outline) / (em * style.size));
+  const oneRow = scaleFor(rowEm(widths));
+  if (oneRow >= SPLIT_BELOW || line.length < 2) return { scale: oneRow, split: null };
+  let best: { scale: number; split: number | null } = { scale: oneRow, split: null };
+  for (let split = 1; split < line.length; split++) {
+    const k = scaleFor(Math.max(rowEm(widths.slice(0, split)), rowEm(widths.slice(split))));
+    if (k > best.scale + 1e-9) best = { scale: k, split };
+  }
+  return best;
+}

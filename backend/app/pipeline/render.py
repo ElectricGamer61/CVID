@@ -6,7 +6,7 @@ import subprocess
 from pathlib import Path
 
 import settings
-from .reframe import crop_filter, probe_size
+from .reframe import crop_filter, crop_width, probe_fps, probe_size, track_x_expr
 
 
 def _escape_subtitles_path(p: Path) -> str:
@@ -162,19 +162,35 @@ def remap_keyframes_for_cuts(keyframes: list[dict], segments: list[tuple[float, 
     return out
 
 
-def _zoom_filter(zoom: list[dict] | None, out_w: int, out_h: int, fps: int = 30) -> str:
+def _rate_value(rate: str) -> float:
+    num, _, den = str(rate).partition("/")
+    try:
+        value = float(num) / float(den or 1)
+    except (ValueError, ZeroDivisionError):
+        return 30.0
+    return value if value > 0 else 30.0
+
+
+def _zoom_filter(zoom: list[dict] | None, out_w: int, out_h: int, fps: str = "30/1") -> str:
     """A zoompan punch-in over the given EDITED-time windows. Empty -> "" (no filter appended,
     so a clip with no zoom renders exactly as before). Applied AFTER the aspect-crop so it never
-    re-picks the crop — it just magnifies the finished frame."""
+    re-picks the crop — it just magnifies the finished frame.
+
+    `fps` MUST be the source's own frame rate (render.probe_fps). zoompan emits one frame per
+    input frame (d=1) and stamps them at its `fps`; a hard-coded 30 on a 24 fps source turned
+    43 s of picture into 35 s, so the video and its burned captions ran 25% ahead of the voice.
+    The leading fps= filter also makes variable-rate phone footage constant first, so that
+    one-in-one-out mapping holds for it too."""
     if not zoom:
         return ""
+    rate = _rate_value(fps)
     terms = []
     for k in zoom:
         t = float(k.get("t", 0)); dur = max(0.2, float(k.get("duration", 0.6)))
         amp = max(0.0, float(k.get("scale", 1.15)) - 1.0)
-        terms.append(f"{amp:.3f}*between(on,{int(t * fps)},{int((t + dur) * fps)})")
+        terms.append(f"{amp:.3f}*between(on,{int(t * rate)},{int((t + dur) * rate)})")
     zexpr = "min(1.6,1+" + "+".join(terms) + ")"
-    return (f"zoompan=z='{zexpr}':d=1:fps={fps}:s={out_w}x{out_h}"
+    return (f"fps={fps},zoompan=z='{zexpr}':d=1:fps={fps}:s={out_w}x{out_h}"
             f":x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'")
 
 
@@ -206,18 +222,41 @@ def mix_sfx(video_path: Path, sfx: list[dict], sfx_dir: Path) -> Path:
     return video_path
 
 
+def _track_expr(track: dict | None, src_w: int, src_h: int, aspect: str,
+                segments: list[tuple[float, float]]) -> str | None:
+    """Per-shot crop x for the OUTPUT timeline of these kept segments, or None."""
+    shots = (track or {}).get("shots") or []
+    if len(shots) < 2:
+        return None
+    bounds, base = [], 0.0
+    for a, b in segments:
+        bounds.append((a, b, base)); base += (b - a)
+
+    def to_edited(t: float) -> float:
+        for a, b, eb in bounds:
+            if t < a:
+                return eb
+            if t <= b:
+                return eb + (t - a)
+        return base
+
+    times = [to_edited(sh["start"]) for sh in shots]
+    return track_x_expr(track, src_w, crop_width(src_w, src_h, aspect), times)
+
+
 def render_clip_segments(source: Path, out_path: Path,
                          segments: list[tuple[float, float]], aspect: str,
                          ass_path: Path, center: float = 0.5,
                          out_w: int = settings.OUT_W, out_h: int = settings.OUT_H,
                          voiceover: Path | None = None,
                          zoom: list[dict] | None = None,
-                         look: str = "") -> Path:
+                         look: str = "", track: dict | None = None) -> Path:
     """Render kept segments concatenated into one vertical short (middle parts cut
     out), then crop to aspect + burn captions. ASS must already be retimed to the
-    compressed timeline (see remap_words_for_cuts)."""
+    compressed timeline (see remap_words_for_cuts). `track` = per-shot crop positions."""
     src_w, src_h = probe_size(source)
-    crop = crop_filter(src_w, src_h, aspect, center, out_w, out_h)
+    crop = crop_filter(src_w, src_h, aspect, center, out_w, out_h,
+                       _track_expr(track, src_w, src_h, aspect, segments))
     subs = f"subtitles='{_escape_subtitles_path(ass_path)}'"
     fd = _fonts_dir()
     if fd:
@@ -233,7 +272,8 @@ def render_clip_segments(source: Path, out_path: Path,
     concat_in = "".join(f"[v{i}]" + (f"[a{i}]" if audio else "") for i in range(len(segments)))
     parts.append(f"{concat_in}concat=n={len(segments)}:v=1:a={1 if audio else 0}"
                  f"{'[vc][ac];' if audio else '[vc];'}")
-    chain = video_chain(crop, look, subs, _zoom_filter(zoom, out_w, out_h),
+    chain = video_chain(crop, look, subs,
+                        _zoom_filter(zoom, out_w, out_h, probe_fps(source) if zoom else "30/1"),
                         _voice_pad_filter(voiceover, sum(b - a for a, b in segments)))
     parts.append(f"[vc]{chain}[vout]")
     filter_complex = "".join(parts)
@@ -258,15 +298,17 @@ def render_clip(source: Path, out_path: Path, start: float, end: float,
                 aspect: str, ass_path: Path, center: float = 0.5,
                 out_w: int = settings.OUT_W, out_h: int = settings.OUT_H,
                 voiceover: Path | None = None, zoom: list[dict] | None = None,
-                look: str = "") -> Path:
+                look: str = "", track: dict | None = None) -> Path:
     src_w, src_h = probe_size(source)
-    crop = crop_filter(src_w, src_h, aspect, center, out_w, out_h)
+    crop = crop_filter(src_w, src_h, aspect, center, out_w, out_h,
+                       _track_expr(track, src_w, src_h, aspect, [(start, end)]))
     subs = f"subtitles='{_escape_subtitles_path(ass_path)}'"
     fd = _fonts_dir()
     if fd:
         subs += f":fontsdir='{fd}'"
     # Hold the last frame if the voiceover overruns the clip, so its tail isn't cut.
-    vf = video_chain(crop, look, subs, _zoom_filter(zoom, out_w, out_h),
+    vf = video_chain(crop, look, subs,
+                     _zoom_filter(zoom, out_w, out_h, probe_fps(source) if zoom else "30/1"),
                      _voice_pad_filter(voiceover, end - start))
 
     cmd = ["ffmpeg", "-y", "-ss", f"{start:.3f}", "-to", f"{end:.3f}", "-i", str(source)]

@@ -1691,6 +1691,10 @@ def patch_clip(cid: int, body: ClipPatch):
             clip.splits_json = json.dumps(splits)
         if effects is not None:
             clip.effects_json = json.dumps(effects)
+        # Moving the crop by hand replaces the automatic per-shot track with that position.
+        if "crop_center" in data and clip.crop_track_json and \
+                abs(float(data["crop_center"]) - float(clip.crop_center)) > 1e-4:
+            clip.crop_track_json = None
         for k, v in data.items():
             setattr(clip, k, v)
         clip.status = "suggested"  # edits invalidate any previous render
@@ -1773,6 +1777,7 @@ def _render_clip_job(cid: int):
         pid = clip.project_id
         start, end = clip.start, clip.end
         aspect, preset, center = clip.aspect, clip.caption_preset, clip.crop_center
+        track = json.loads(clip.crop_track_json) if clip.crop_track_json else None
         resolution = clip.resolution or settings.DEFAULT_RESOLUTION
         style = json.loads(clip.style_json) if clip.style_json else None
         words = json.loads(clip.words_json) if clip.words_json else None
@@ -1798,8 +1803,13 @@ def _render_clip_job(cid: int):
             ingest.download_full(source_url, source)
 
         _set_clip(cid, stage="Rendering")
-        if abs(center - 0.5) < 1e-6:
-            center = reframe.detect_center(source, start, end)
+        # Automatic framing: a per-shot track (see reframe.detect_track). Computed when the
+        # clip has never been framed (center 0.5), and again when a trim moved the clip past
+        # the range the stored track covers. A hand-placed crop has no track and is kept.
+        if abs(center - 0.5) < 1e-6 or (track and not reframe.track_covers(track, start, end)):
+            _set_clip(cid, stage="Framing the speaker")
+            track = reframe.detect_track(source, start, end)
+            center = reframe.track_median(track)
         out_w, out_h = settings.output_dims(aspect, resolution)
         vo_path = Path(voiceover) if voiceover else None
         segments = render.kept_segments(start, end, cuts)
@@ -1832,7 +1842,7 @@ def _render_clip_job(cid: int):
                 caps.write_ass(words, start, end, preset, ass, overrides=style, title=title)
                 render.render_clip(source, out, start, end, aspect, ass, center,
                                    out_w=out_w, out_h=out_h, voiceover=vo_path, zoom=zoom_kfs,
-                                   look=grade)
+                                   look=grade, track=track)
         elif cuts and len(segments) != 1:
             # Middle parts removed → concat kept segments + retime captions.
             # ASS keeps the 1080×1920 PlayRes baseline; libass scales it to the frame.
@@ -1840,13 +1850,13 @@ def _render_clip_job(cid: int):
             caps.write_ass(local_words, 0.0, total, preset, ass, overrides=style, title=title)
             render.render_clip_segments(source, out, segments, aspect, ass, center,
                                         out_w=out_w, out_h=out_h, voiceover=vo_path, zoom=zoom_kfs,
-                                        look=grade)
+                                        look=grade, track=track)
         else:
             # No cuts → unchanged single-range fast path.
             caps.write_ass(words, start, end, preset, ass, overrides=style, title=title)
             render.render_clip(source, out, start, end, aspect, ass, center,
                                out_w=out_w, out_h=out_h, voiceover=vo_path, zoom=zoom_kfs,
-                               look=grade)
+                               look=grade, track=track)
 
         # SFX: isolated post-pass (no-op without cues; a failure keeps the clean render).
         if sfx_cues:
@@ -1858,6 +1868,7 @@ def _render_clip_job(cid: int):
             clip.stage = ""
             clip.output_path = str(out)
             clip.crop_center = center
+            clip.crop_track_json = json.dumps(track) if track else None
             s.add(clip)
             s.commit()
     except Exception as e:  # noqa: BLE001
@@ -2211,8 +2222,17 @@ def clip_auto_center(cid: int):
     src = _preview_source(pid)
     if not src:
         raise HTTPException(404, "no source yet")
-    center = reframe.detect_center(src, start, end)
-    return {"center": round(float(center), 4)}
+    # The per-shot track, stored as the clip's automatic framing (the editor previews it and
+    # the export uses it). Positions are fractions of the width, so the 360p proxy is enough.
+    track = reframe.detect_track(src, start, end)
+    center = reframe.track_median(track)
+    with get_session() as s:
+        clip = s.get(Clip, cid)
+        clip.crop_center, clip.crop_track_json = center, json.dumps(track)
+        clip.status = "suggested"
+        s.add(clip)
+        s.commit()
+    return {"center": center, "track": track}
 
 
 @app.get("/api/projects/{pid}/source")

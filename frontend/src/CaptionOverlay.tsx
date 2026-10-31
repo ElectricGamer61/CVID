@@ -1,4 +1,5 @@
-import { CaptionStyle, captionAt, Word } from "./captionStyles";
+import { Fragment } from "react";
+import { ACTIVE_POP, CaptionStyle, EMPHASIS_POP, FIT_MARGIN, captionAt, fitLayout, Word } from "./captionStyles";
 
 // Renders the active caption line over the 9:16 preview, with the current word
 // highlighted — mirrors how the burned ASS will look.
@@ -15,9 +16,12 @@ export function CaptionOverlay({
 }) {
   const cap = captionAt(words, time, style.max_words);
   if (!cap) return null;
+  // Same layout rule the export uses: two rows and/or a smaller size for a line that would
+  // otherwise run off the frame (captions.fit_layout). Identical inputs, identical result.
+  const fit = fitLayout(cap.line, style);
 
   // ASS size is on a 1920-tall canvas; scale to the actual preview height.
-  const px = (style.size / 1920) * containerHeight;
+  const px = (style.size / 1920) * containerHeight * fit.scale;
   const outline = Math.max(1, (style.outline / 1920) * containerHeight);
   const pos =
     style.position === "top"
@@ -39,7 +43,10 @@ export function CaptionOverlay({
         position: "absolute",
         left: 0,
         right: 0,
-        padding: "0 6%",
+        // The style's 80 px side margins on the 1080-wide canvas. The line never wraps on its
+        // own (WrapStyle 2 in the export): fitLayout decides any break.
+        padding: `0 ${(FIT_MARGIN / 1080) * 100}%`,
+        whiteSpace: "nowrap",
         textAlign: "center",
         fontFamily: `${style.font}, Arial, sans-serif`,
         fontWeight: style.bold ? 800 : 600,
@@ -55,10 +62,11 @@ export function CaptionOverlay({
         const active = i === cap.activeIdx;
         // Opt-in AI emphasis: persistent pop in the highlight color (mirrors the burned ASS).
         const emph = !!w.emphasis;
-        const scale = active ? 1.12 : emph ? 1.16 : 1;
+        const scale = active ? ACTIVE_POP : emph ? EMPHASIS_POP : 1;
         return (
+          <Fragment key={i}>
+          {fit.split === i ? <br /> : null}
           <span
-            key={i}
             style={{
               color: active || emph ? style.highlight : style.color,
               fontWeight: emph ? 900 : undefined,
@@ -74,6 +82,7 @@ export function CaptionOverlay({
             {style.uppercase ? w.word.trim().toUpperCase() : w.word.trim()}
             {w.emoji ? <span style={{ marginLeft: "0.15em" }}>{w.emoji}</span> : null}
           </span>
+          </Fragment>
         );
       })}
     </div>
