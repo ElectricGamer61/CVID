@@ -1,79 +1,84 @@
 # Cvideo
 
-**Cvideo turns one long video into short vertical clips you can post.**
+**Turn one long video into short clips you can post.** Free, open source, and it runs on your
+own PC.
 
-Give it a YouTube link or a video file. It listens to the whole thing, picks the strongest
-moments, crops each one to a phone-shaped 9:16 video, burns in the big moving captions, and
-hands you finished clips to download. It runs on your own PC and it is free.
-
-It does the job you would pay OpusClip or wayinvideo a monthly fee for, except nothing leaves
-your machine unless you ask it to, and there is nothing to subscribe to.
-
-### How you use it
-
-1. **Paste a link** (or drag in a video file) on the **Clipping** screen.
-2. **Wait.** It writes down everything said in the video and finds the best moments.
-3. **Look at what it found** - a grid of clips, each scored out of 100 with the line that makes it work.
-4. **Open one in the editor.** Trim it, cut the boring middle out, remove every "um" and long
-   pause with one click, change the caption style, move the crop onto the speaker, add a colour look.
-5. **Export, then download.** The finished clip lands in the folder you choose.
-
-That is the whole app. It does not post for you, it has no accounts, and it never asks for a
-card.
-
-### What you need
-
-A Windows PC. That is it. A graphics card and API keys both make it better, and neither is
-required: transcription runs free on your processor, and the built-in finder scores moments
-from the transcript itself (questions, hooks, numbers, emotion, pace) with no AI service at all.
-An OpenAI key or a local Ollama model makes the picks smarter; it is not needed to start.
+Give it a podcast, a talk or a stream. It writes down every word, picks the best moments,
+frames the speaker in a phone-shaped 9:16 video, adds big moving captions, and hands you
+finished clips. It does the job of OpusClip, Submagic and Descript in one app, and nothing
+leaves your computer unless you choose a cloud service.
 
 ---
 
-## Install it
+## Get it
 
-### The easy way: hand it to an AI agent
+### Windows: one line
 
-If you use an AI coding agent (Claude Code, Cursor, Codex, and so on), open this folder in it
-and say:
+Open **PowerShell** (Start menu, type `PowerShell`, press Enter), paste this, press Enter:
+
+```powershell
+iwr -useb https://raw.githubusercontent.com/ElectricGamer61/CVID/main/scripts/bootstrap.ps1 | iex
+```
+
+That is the whole install. It:
+
+1. downloads Cvideo into a `CVID` folder in your user folder,
+2. installs what it needs (Git, Python 3.11, Node, ffmpeg),
+3. asks for two **optional** keys - press Enter twice to skip both,
+4. puts a **Cvideo** icon on your Desktop and opens the app.
+
+Allow about 10 minutes the first time. From then on, double-click the Desktop icon.
+
+### Using an AI coding agent?
+
+Claude Code, Cursor, Codex and similar: clone the repo, open the folder, and say:
 
 > Read INSTALL.md and install Cvideo on this machine.
 
-**[INSTALL.md](INSTALL.md)** is written for exactly that: every command, the check that proves
-each step worked, the fix for each way it can fail, and the traps that hang an agent (two of
-the scripts wait for a keypress, and the server script never exits). It is also a perfectly
-good checklist to follow yourself.
+[INSTALL.md](INSTALL.md) gives the agent every command, the check that proves each step
+worked, and the fix for each way it can fail.
 
-### Doing it yourself (Windows, about 10 minutes)
+### Mac or Linux?
 
-**1.** Open PowerShell and install Git (skip if you already have it):
+Section 8 of [INSTALL.md](INSTALL.md) has the commands.
 
-```powershell
-winget install -e --id Git.Git
-```
+---
 
-Close and reopen PowerShell so `git` is on PATH.
+## Use it in three steps
 
-**2.** Clone the repo (no account or sign-in needed):
+1. **Paste a link.** On the Clipping screen, paste a YouTube link or upload a video, then press
+   **Generate clips**.
+2. **Give it a minute.** Cvideo writes down every word and picks the best moments, each scored
+   out of 100. A 14-minute talk took 80 seconds on a PC with a graphics card; a laptop without
+   one is slower.
+3. **Edit, export, post.** Open any clip to change the captions or the crop, then press
+   **Export** and **Download**.
 
-```powershell
-git clone https://github.com/ElectricGamer61/CVID.git
-```
+The app shows these same three steps the first time you open it, and **Help** in the sidebar
+brings them back.
 
-**3.** Open the new `CVID` folder and double-click **`install.cmd`**.
+In the editor you can also trim, cut the boring middle out, remove every "um" and long pause
+with one click, edit the video by editing its transcript, add zooms and sound effects, and give
+the clip a film look.
 
-It installs everything else (Python, Node, ffmpeg), builds the app, offers to save your
-**ElevenLabs** and **cloud categorizer** keys (press Enter twice to skip - you can add them
-later in `backend\.env`), and starts it.
+### What you need
 
-It also puts a **`Cvideo` icon on your Desktop**. From then on, opening the app is one
-double-click: it starts the local server if it is not already running and opens Cvideo in its
-own window. Missing or moved? Double-click **`install-shortcut.cmd`** to put it back, or run
-**`serve.cmd`** to start the server by hand.
+A Windows PC. A graphics card and API keys make it better, and neither is required:
+transcription runs free on your processor, and the built-in finder scores moments from the
+transcript itself. An OpenAI key or a local [Ollama](https://ollama.com) model makes the picks
+smarter.
 
-**Not on Windows?** Section 8 of [INSTALL.md](INSTALL.md) has the macOS and Linux commands.
+<details>
+<summary><b>Prefer to install by hand?</b></summary>
 
-<sub>Already cloned the repo? Just double-click **`install.cmd`**.</sub>
+1. Install Git: `winget install -e --id Git.Git`, then close and reopen PowerShell.
+2. `git clone https://github.com/ElectricGamer61/CVID.git`
+3. Open the new `CVID` folder and double-click **`install.cmd`**.
+
+That runs the same installer as the one-liner. If the Desktop icon goes missing, double-click
+**`install-shortcut.cmd`**; to start the server by hand, run **`serve.cmd`**.
+
+</details>
 
 ---
 

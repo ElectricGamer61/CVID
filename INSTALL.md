@@ -5,6 +5,9 @@ checklist for a person too. Hand your agent this one line:
 
 > Read INSTALL.md and install Cvideo on this machine.
 
+**A person on Windows** can skip all of this: the one-line installer at the top of
+[README.md](README.md) does every step below, interactively.
+
 Everything below is a step, a command, and the check that proves the step worked. Do them in
 order. Do not skip section 6.
 

@@ -2,12 +2,20 @@
 # Installs the prerequisites, gets the code, builds it, saves your keys, and launches.
 # ASCII-only on purpose: em-dash / ellipsis chars break PowerShell 5.1 parsing.
 #
-# Run this single line in PowerShell (nothing else needed):
+# Run this single line in PowerShell (nothing else needed - no account, no git first):
 #   iwr -useb https://raw.githubusercontent.com/ElectricGamer61/CVID/main/scripts/bootstrap.ps1 | iex
 #
 # Or, if you already cloned the repo, just double-click  install.cmd  at its root.
 
 $ErrorActionPreference = "Stop"
+
+# Stop the install WITHOUT closing the window. Pasted as `iwr ... | iex`, this script runs
+# inside the user's own PowerShell session, where `exit` closes that window at once - the
+# message explaining what went wrong vanished with it. A throw stops the script and leaves
+# the window (and the message) on screen; under install.cmd it still ends with code 1.
+function Stop-Install {
+  throw "Cvideo install stopped - read the message above, fix it, then run the same line again."
+}
 
 function Refresh-Path {
   # winget updates the registry PATH, not this shell - re-read it so freshly installed tools appear.
@@ -24,7 +32,7 @@ function Ensure-Tool($cmd, $wingetId, $label) {
   if (-not (Get-Command $cmd -ErrorAction SilentlyContinue)) {
     Write-Host ("  [!!] {0} was installed but isn't on PATH in this window yet." -f $label) -ForegroundColor Yellow
     Write-Host "       Close this window, open a NEW PowerShell, and run the one-liner again." -ForegroundColor Yellow
-    exit 1
+    Stop-Install
   }
   Write-Host ("  [ok] {0}" -f $label) -ForegroundColor Green
 }
@@ -42,7 +50,7 @@ function Set-EnvKey($path, $key, $value) {
 
 if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
   Write-Host "winget is required (it ships with Windows 11). Update Windows / install 'App Installer' from the Microsoft Store, then re-run." -ForegroundColor Red
-  exit 1
+  Stop-Install
 }
 
 Write-Host "=== Cvideo installer ===" -ForegroundColor Cyan
@@ -64,7 +72,7 @@ if ($hasPy311) {
   Refresh-Path
   if (-not (Get-Command py -ErrorAction SilentlyContinue) -or (& py -3.11 -c "print('ok')" 2>$null) -ne 'ok') {
     Write-Host "  [!!] Python 3.11 installed but not visible yet. Open a NEW PowerShell and re-run the one-liner." -ForegroundColor Yellow
-    exit 1
+    Stop-Install
   }
   Write-Host "  [ok] Python 3.11" -ForegroundColor Green
 }
@@ -90,7 +98,7 @@ if ($PSScriptRoot -and (Test-Path (Join-Path $PSScriptRoot "..\backend"))) {
 # --- 3. Build (venv + bare deps + UI) --------------------------------------
 Write-Host "3. Building (this is the long part - a few minutes)" -ForegroundColor White
 & powershell -ExecutionPolicy Bypass -File (Join-Path $root "scripts\setup-laptop.ps1")
-if ($LASTEXITCODE -ne 0) { Write-Host "Build failed - see errors above." -ForegroundColor Red; exit 1 }
+if ($LASTEXITCODE -ne 0) { Write-Host "Build failed - see errors above." -ForegroundColor Red; Stop-Install }
 
 # --- 4. API keys ------------------------------------------------------------
 Write-Host "4. Your API keys (press Enter to skip any - you can paste them into backend\.env later)" -ForegroundColor White

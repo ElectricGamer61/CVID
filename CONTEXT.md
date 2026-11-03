@@ -378,6 +378,10 @@ section label even though `SECTION_LABELS` names it for the sidebar.
   shoot-drop watcher is a no-op unless `SHOOT_DROP_DIR` is set. Deleting them is a **follow-up**,
   gated on the `backend/test_*.py` suites that need a running server + real media.
 
+- **Onboarding.tsx** — the first-run welcome: three plain steps (paste a link, give it a minute,
+  edit/export/post) in a modal shown once (`localStorage["cv.onboarded.v1"]`; storage that throws
+  counts as seen, so it can never stick) and again from **Help** at the foot of the sidebar. Help is
+  deliberately not one of the four `item()` stops. Escape and the backdrop close it. `onboarding.test.ts`.
 - **App.tsx** — routes (home | board | library | video | project | **editorStart** |
   **editor** with an optional `from:"board"`), shell, and all screens + the **ClipEditor** workspace. A top **backend-offline
   banner** polls `GET /api/health` every 5 s and warns "edits are NOT saving" the instant the server dies.

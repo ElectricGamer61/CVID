@@ -787,3 +787,15 @@ button.primary.danger-solid:hover { background: #db3a48; border-color: #db3a48; 
 
 /* Moment card: a column whose action row sits at the foot, so buttons line up across a grid row. */
 .moment-delete { padding: 5px 8px; font-size: 12.5px; border-radius: 9px; }
+
+/* First-run welcome (Onboarding.tsx) */
+.sb-help { margin-top: auto; }
+.modal.onboarding { width: min(540px, 92vw); padding: 32px; text-align: left; }
+.onb-logo { width: 48px; height: 48px; border-radius: 14px; display: grid; place-items: center; font-weight: 800; font-size: 22px; color: #fff; background: linear-gradient(135deg, var(--primary), var(--accent)); margin-bottom: 16px; }
+.modal.onboarding h3 { margin: 0 0 6px; font-size: 24px; font-weight: 800; }
+.onb-lead { margin: 0 0 20px; font-size: 15.5px; color: var(--text-2); }
+.onb-steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 14px; }
+.onb-steps li { display: flex; gap: 14px; align-items: flex-start; }
+.onb-steps li > span:last-child { display: flex; flex-direction: column; gap: 3px; font-size: 14.5px; line-height: 1.45; }
+.onb-num { flex: none; width: 30px; height: 30px; border-radius: 999px; display: grid; place-items: center; font-weight: 800; font-size: 14px; color: var(--primary); background: var(--primary-soft); }
+.onb-note { margin: 20px 0 0; font-size: 13px; }

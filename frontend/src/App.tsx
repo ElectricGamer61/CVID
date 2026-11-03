@@ -6,6 +6,7 @@ import { fillerRanges, mergeRanges, newRanges, pauseRanges, totalSeconds } from 
 import { aspectValue, objectPositionFor, parseTrack, previewCenter } from "./reframeTrack";
 import { DEFAULT_STRENGTH, emptyTitle, FALLBACK_LOOKS, LookSetting, lookLayers, STRENGTHS, TitleCard, TITLE_PLACES, TITLE_STYLES } from "./looks";
 import { TitleOverlay } from "./TitleOverlay";
+import { markOnboarded, Onboarding, shouldShowOnboarding } from "./Onboarding";
 import { Sidebar } from "./Sidebar";
 import { useToast } from "./Toast";
 import { useConfirm, usePrompt } from "./Dialog";
@@ -96,6 +97,9 @@ export default function App() {
   const [route, setRoute] = useState<Route>({ name: "home" });
   const [projName, setProjName] = useState("");
   const [backendDown, setBackendDown] = useState(false);
+  // First launch: a three-step welcome. Remembered once dismissed; Help in the sidebar reopens it.
+  const [onboarding, setOnboarding] = useState(() => shouldShowOnboarding(typeof localStorage === "undefined" ? null : localStorage));
+  const closeOnboarding = () => { markOnboarded(typeof localStorage === "undefined" ? null : localStorage); setOnboarding(false); };
   // ffmpeg missing = every export will fail. Say so at the top, in words, before the first click.
   const [ffmpegMissing, setFfmpegMissing] = useState(false);
   const toast = useToast();
@@ -141,7 +145,8 @@ export default function App() {
 
   return (
     <div className="shell">
-      <Sidebar view={sbView} onHome={goHome} onBoard={goBoard} onEditor={goEditor} onLibrary={goLibrary} />
+      <Sidebar view={sbView} onHome={goHome} onBoard={goBoard} onEditor={goEditor} onLibrary={goLibrary} onHelp={() => setOnboarding(true)} />
+      {onboarding && <Onboarding onClose={closeOnboarding} />}
       <main className="main">
         {backendDown && (
           <div className="backend-down-banner" role="alert">

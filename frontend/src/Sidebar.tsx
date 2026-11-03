@@ -27,7 +27,7 @@ const ICONS: Record<string, JSX.Element> = {
   ),
 };
 
-export function Sidebar({ view, onHome, onBoard, onEditor, onLibrary }: { view: View; onHome: () => void; onBoard?: () => void; onEditor?: () => void; onLibrary?: () => void }) {
+export function Sidebar({ view, onHome, onBoard, onEditor, onLibrary, onHelp }: { view: View; onHome: () => void; onBoard?: () => void; onEditor?: () => void; onLibrary?: () => void; onHelp?: () => void }) {
   const item = (key: string, label: string, active: boolean, onClick?: () => void, title?: string) => (
     <button className={"nav-item" + (active ? " on" : "")} onClick={onClick} title={title ?? label} disabled={!onClick}>
       {ICONS[key]}
@@ -49,6 +49,15 @@ export function Sidebar({ view, onHome, onBoard, onEditor, onLibrary }: { view: 
         {item("editor", "Editor", view === "editor", onEditor, "Edit your video — or drop footage in to start")}
         {item("library", "Downloads", view === "library", onLibrary, "Every video you've exported")}
       </nav>
+      {/* Not a stop: reopens the three-step welcome from first launch. */}
+      {onHelp && (
+        <button className="nav-item sb-help" onClick={onHelp} title="How Cvideo works, in three steps">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="12" cy="12" r="9.5" /><path d="M9.6 9.2a2.5 2.5 0 0 1 4.8 1c0 1.7-2.4 2.2-2.4 3.8" /><path d="M12 17.2h.01" />
+          </svg>
+          <span>Help</span>
+        </button>
+      )}
     </aside>
   );
 }
