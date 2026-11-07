@@ -12,6 +12,13 @@
       "runtimeExecutable": "backend/.venv/Scripts/python.exe",
       "runtimeArgs": ["-m", "uvicorn", "app.main:app", "--app-dir", "backend", "--port", "8000"],
       "port": 8000
+    },
+    {
+      "name": "studio",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev", "--prefix", "studio"],
+      "port": 3200,
+      "url": "http://localhost:3200"
     }
   ]
 }

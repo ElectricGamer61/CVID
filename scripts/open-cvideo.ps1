@@ -2,6 +2,11 @@
 # Starts the app server if it isn't already running, then opens Cvideo in its own
 # clean window (Chrome/Edge app mode) - no browser tabs, looks like a real app.
 # ASCII-only on purpose: fancy dashes break PowerShell 5.1 parsing.
+#
+# -Page opens a different page of the same server: the Cvideo Studio shortcut passes
+# -Page /studio/ (one backend, two apps).
+
+param([string]$Page = "")
 
 $ErrorActionPreference = "Stop"
 $root = Split-Path $PSScriptRoot -Parent
@@ -62,6 +67,7 @@ $chrome = @("$env:ProgramFiles\Google\Chrome\Application\chrome.exe",
 $edge = @("${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe",
           "$env:ProgramFiles\Microsoft\Edge\Application\msedge.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1
 
-if ($chrome)   { Start-Process $chrome "--app=$url" }
-elseif ($edge) { Start-Process $edge   "--app=$url" }
-else           { Start-Process $url }
+$open = $url + $Page
+if ($chrome)   { Start-Process $chrome "--app=$open" }
+elseif ($edge) { Start-Process $edge   "--app=$open" }
+else           { Start-Process $open }

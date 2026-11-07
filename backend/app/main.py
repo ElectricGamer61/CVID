@@ -24,6 +24,8 @@ from .jobs import (get_words, recover_interrupted, start_shootdrop_watcher, subm
                    submit_shootdrop)
 from .pipeline import captions as caps
 from .pipeline import brain, ingest, look, reframe, render, shootdrop
+from .studio import processing as studio_processing
+from .studio.routes import router as studio_router
 
 # Every launcher pipes the backend through Tee-Object into dataackend.log, and a piped
 # Python stdout is block-buffered: the pipeline's "[ingest] ..." / "[brain] ..." lines only
@@ -91,6 +93,9 @@ def _startup():
     # Keep the YouTube downloader able to download. Runs off the startup path (see
     # ytdlp_health) because a pip run is slower than the launcher's health-check window.
     ytdlp_health.check_in_background()
+    # Studio clips that were mid-processing when the last process died pick up where they
+    # left off: their media and every finished step are still on disk.
+    studio_processing.resume_all()
 
 
 def _recover_interrupted_renders() -> None:
@@ -2325,6 +2330,19 @@ def health():
 # never shadows the /api routes above. Dev still uses the Vite server on :3000 when
 # dist/ is absent.
 # --------------------------------------------------------------------------- #
+app.include_router(studio_router)
+# Studio's own UI at /studio once built (`cd studio && npm run build`). Mounted before "/"
+# so Cvideo's catch-all never swallows it.
+_STUDIO_DIST = settings.PROJECT_ROOT / "studio" / "dist"
+if _STUDIO_DIST.exists():
+    from fastapi.responses import RedirectResponse
+
+    @app.get("/studio", include_in_schema=False)
+    def _studio_slash():
+        # The mount only matches "/studio/..."; a typed "/studio" fell through to Cvideo's 404.
+        return RedirectResponse("/studio/")
+
+    app.mount("/studio", StaticFiles(directory=str(_STUDIO_DIST), html=True), name="studio")
 _FRONTEND_DIST = settings.PROJECT_ROOT / "frontend" / "dist"
 if _FRONTEND_DIST.exists():
     app.mount("/", StaticFiles(directory=str(_FRONTEND_DIST), html=True), name="frontend")

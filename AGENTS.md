@@ -28,6 +28,11 @@ spec. Read `CONTEXT.md` before changing anything.
   throwaway DB) and `test_ytdlp_health.py`. Each prints `ALL PASSED` or the failures. The four
   excluded ones and `verify_*.py` need a **running server** and real media.
 
+- Studio (`CONTEXT.md` §10): `cd studio && npm test && npm run build`, and
+  `backend/test_studio.py` (offline, real ffmpeg; it must FAIL with `export.SEAM_FADE = 0`, which
+  is how the click check was proven to see clicks). Dev UI: `npm run dev --prefix studio` →
+  <http://localhost:3200/studio/>. In dev, `window.studioPlayer` is the preview player.
+
 ## Running it on WSL/Linux (the docs assume Windows)
 
 The app runs fine on Linux for verification, but nothing in-repo sets that up:
@@ -179,6 +184,21 @@ The app runs fine on Linux for verification, but nothing in-repo sets that up:
   removed vocabulary (autopilot, gate, schedule, post, brand picker, Advanced) never returns to
   the source, so re-adding any of it fails `npm test` on purpose. Deleting the dormant backend is
   a follow-up that needs the `backend/test_*.py` suites which want a running server + real media.
+
+- **Studio can only cut the junk the speech engine writes down.** Whisper writes no "um"s or
+  cut-off words at all (`data/bakeoff`, 7 engines × 4 files), so Studio's engine order puts it
+  last and the keyless default is Parakeet. Judge any engine change by what it writes for
+  disfluencies, not by word error rate.
+- **Never time media with `requestAnimationFrame`.** A visible-but-occluded window got 0-2 frames
+  a second, so a rAF-timed preview played straight through cuts. Studio's player times seams
+  with timers from the media clock and re-plans on `waiting`/`playing`; rAF only paints.
+- **Rounding hides in long edits.** ffmpeg rounds every trimmed piece to frames; over 51 cuts a
+  4-minute export ran 0.2 s long and its captions drifted. Make each piece an exact frame count
+  (picture and sound) and time everything else from those counts. Fade a piece's sound where
+  the SOUND ends, never at a padded end (that clicked).
+- **`useHistory` (and any hook returning a fresh object) is not a stable dependency.** Depending
+  on it re-armed Studio's autosave on every render: a save ~10x a second. Depend on its
+  functions.
 
 ## Maintaining this file
 

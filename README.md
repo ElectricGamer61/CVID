@@ -91,6 +91,14 @@ That runs the same installer as the one-liner. If the Desktop icon goes missing,
   clips, trim / cut / clean up fillers and pauses / caption / reframe in the editor, export,
   download.
 
+### Cvideo Studio (long videos)
+A second app on the same server, at <http://127.0.0.1:8000/studio> (or the **Cvideo Studio**
+icon): drop in a pile of clips and edit them by editing the words. It writes down every word,
+finds the ums, stumbles, retakes, long pauses and dead air, lets you hear each cut before you
+make it, and exports one MP4 plus captions (SRT) from your original files.
+For the best "um" detection run **`install-crisper.cmd`** once (about 6 GB, non-commercial
+licence); without it Studio uses ElevenLabs Scribe with a key, or the free Parakeet engine.
+
 ## What gets installed on your PC
 
 `install.cmd` puts all of this there for you. Listed so you know what is on the machine:

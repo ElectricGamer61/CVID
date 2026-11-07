@@ -260,21 +260,30 @@ function Sync-CvideoUi {
   # Rebuild frontend\dist when the UI sources moved (or it was never built). serve.ps1 and
   # open-cvideo.ps1 only build when dist is MISSING, so without this an update would start
   # new backend code behind the old screens.
+  # Two UIs: Cvideo (frontend\, served at /) and Studio (studio\, served at /studio). Each
+  # rebuilds on its own; a Studio build failure never stops Cvideo from starting.
   param([string]$Root, [string[]]$Changed = @(), [switch]$Force)
   $ErrorActionPreference = "Continue"   # npm writes to stderr; see Invoke-CvideoGit.
-  $dist = Join-Path $Root "frontend\dist\index.html"
-  $needs = $Force -or (-not (Test-Path -LiteralPath $dist)) -or
-           (@($Changed | Where-Object { $_ -like "frontend/*" }).Count -gt 0)
-  if (-not $needs) { return "UI: unchanged." }
-  if (-not (Get-Command npm -ErrorAction SilentlyContinue)) { return "UI: npm not found - skipped." }
-  Write-Host "Rebuilding the app UI..." -ForegroundColor Cyan
-  Push-Location (Join-Path $Root "frontend")
-  try {
-    if (-not (Test-Path "node_modules")) { cmd /c "npm install 2>&1" | Out-Null }
-    cmd /c "npm run build 2>&1" | Out-Null
-    if ($LASTEXITCODE -ne 0) { return "UI: rebuild failed - the previously built UI is still being served." }
-  } finally { Pop-Location }
-  return "UI: rebuilt."
+  $results = @()
+  foreach ($app in @(@{ Dir = "frontend"; Name = "UI" }, @{ Dir = "studio"; Name = "Studio UI" })) {
+    $src = Join-Path $Root $app.Dir
+    if (-not (Test-Path -LiteralPath (Join-Path $src "package.json"))) { continue }
+    $dist = Join-Path $src "dist\index.html"
+    $prefix = $app.Dir + "/*"
+    $needs = $Force -or (-not (Test-Path -LiteralPath $dist)) -or
+             (@($Changed | Where-Object { $_ -like $prefix }).Count -gt 0)
+    if (-not $needs) { $results += "$($app.Name): unchanged."; continue }
+    if (-not (Get-Command npm -ErrorAction SilentlyContinue)) { $results += "$($app.Name): npm not found - skipped."; continue }
+    Write-Host "Rebuilding the $($app.Name)..." -ForegroundColor Cyan
+    Push-Location $src
+    try {
+      if (-not (Test-Path "node_modules")) { cmd /c "npm install 2>&1" | Out-Null }
+      cmd /c "npm run build 2>&1" | Out-Null
+      if ($LASTEXITCODE -ne 0) { $results += "$($app.Name): rebuild failed - the previously built one is still being served." }
+      else { $results += "$($app.Name): rebuilt." }
+    } finally { Pop-Location }
+  }
+  return ($results -join " ")
 }
 
 function Update-CvideoInstall {

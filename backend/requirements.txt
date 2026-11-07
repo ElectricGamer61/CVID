@@ -17,6 +17,10 @@ python-multipart==0.0.20
 #    current without anyone editing this file.
 yt-dlp[default,deno]>=2026.8.19
 faster-whisper==1.1.1
+# Studio's keyless speech engine: NVIDIA Parakeet v3 (int8 ONNX, CPU, no PyTorch, CC-BY-4.0).
+# Unlike Whisper it writes down the "um"s, which is what Studio's Cut room cuts; without it
+# a keyless laptop's Studio finds no fillers at all. 670 MB model on first use.
+onnx-asr[cpu,hub]==0.12.0
 # opencv-contrib (not plain opencv-python) — includes the YuNet DNN face detector
 # (cv2.FaceDetectorYN) used for speaker-tracked reframe.
 opencv-contrib-python==4.13.0.92

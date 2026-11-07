@@ -8,6 +8,9 @@ A local, free clone of wayinvideo / OpusClip. Two creation paths, one editor:
 
 Runs entirely on this machine. Built to replace a paid wayinvideo sub.
 
+**Cvideo Studio** (`studio/` + `backend/app/studio/`, served at `/studio/`) is a separate long-form
+app on the same backend: edit a pile of clips by editing their transcript. See §10.
+
 > This file is the single source of truth for *how Cvideo works today*. `SPEC.md` is the
 > original spec; `README.md` is setup. When in doubt, trust this file + the code.
 
@@ -631,3 +634,67 @@ section label even though `SECTION_LABELS` names it for the sidebar.
 - Schema check: `PRAGMA table_info(clip)` should include cuts_json/markers_json/voiceover_path/scene_vo_json.
 - Reel smoothness: probe an exported reel's `v:0` `pts_time` deltas — uniform ~0.0333 s, no >50 ms gaps.
 - `backend/verify_render.py`, `backend/test_api2.py`, `backend/verify_pt4.py`.
+
+---
+
+## 10. Cvideo Studio (long-form editing by words)
+
+A second app on the same backend: long video in, long video out, edited Descript-style by
+editing the transcript. Built 2026-11-06. It shares Cvideo's process, ffmpeg and launchers and
+**nothing else**: no SQLite tables, no imports from `frontend/`. Cvideo's own UI is untouched
+(its "only an editor" guard in `App.test.ts` covers `frontend/` only).
+
+- **Where:** backend `backend/app/studio/`, UI `studio/` (React + Vite + TS, plain CSS, Cvideo's
+  tokens). Dev: `npm run dev --prefix studio` → <http://localhost:3200/studio/> (proxies `/api`
+  to :8000). Built: the backend serves `studio/dist` at **`/studio/`** (`/studio` redirects).
+  `cvideo-update.ps1` › `Sync-CvideoUi` rebuilds it like Cvideo's UI; a Studio build failure
+  never blocks Cvideo. The "Cvideo Studio" shortcut is `open-cvideo.ps1 -Page /studio/`.
+- **Storage:** one folder per project, `data/studio/<pid>/`, with **`project.json` as the
+  single source of truth** (`store.py`, pydantic, atomic writes): clips (timeline order),
+  cuts (`{clip, start, end, reason}` in each clip's own time), settings. Per clip,
+  `clips/<cid>/` holds `audio.wav` (16 kHz), `words.json`, `energy.bin` (dB+100 every 10 ms),
+  `proxy.mp4` (720p, keyframe every 0.5 s), `thumb.jpg`. Editor writes carry `edit_rev`
+  (stale → 409 with the current project); processing writes don't touch it.
+- **Processing** (`processing.py`): probe → speech audio + loudness → transcript (queued) →
+  proxy. Clips that finish reading within 3 s share **one model load**. A clip with under
+  0.5 s of sound above -40 dB is **silent B-roll**: no engine is called (`transcript: "none"`).
+  An engine that returns no words for audio with >3 s of sound has failed quietly and the
+  next engine gets the clip. Live percentages live in memory; restart re-queues unfinished
+  clips (`resume_all`).
+- **Speech engines** (`engines.py`, `ENGINE_ORDER`): CrisperWhisper 2.0 → Scribe → Parakeet
+  v3 → Whisper, first one installed wins; per-project override in settings. Chosen by the
+  bake-off in `data/bakeoff/` (scripts + listen page there): **Whisper writes no fillers or
+  cut-off words at all**, so it is last. CrisperWhisper needs PyTorch and runs from its own
+  venv (`install-crisper.cmd` → `data/engines/crisper`, `CVIDEO_CRISPER_PYTHON` overrides),
+  **non-commercial weights**; its fast ct2 runtime is Linux-only, so Windows uses the
+  transformers path. Parakeet (`onnx-asr`, int8, 670 MB) is the keyless CPU path every
+  install has. Workers are child processes speaking `worker_protocol.py`; `words.py`
+  normalises every engine's spelling to `{start, end, word, kind?}` (`filler|cutoff|event`).
+- **The Cut room** (`studio/src`): `detect.ts` finds fillers, stumbles (cut-off words),
+  repeated words, **retakes** (a phrase said again within 3 phrases; asides in between go
+  with it; the LAST take is kept; works across a clip boundary), long pauses (shortened,
+  never removed) and dead air at clip ends. `snap.ts` places every cut edge on the quietest
+  10 ms nearby, allowed 45 ms into neighbouring words because in fluent speech one word's end
+  IS the next one's start. Delete = keep the pause before, close the pause after.
+  `timeline.ts` mirrors `export.kept_segments`. Selecting words + Backspace cuts (or brings
+  back, if all already cut); Review cycles a type with a card (Cut / Keep it / Hear it cut);
+  "Clean up the obvious" = fillers, stumbles, pauses, dead air (not retakes/repeats).
+- **Preview** (`player.ts`): two `<video>` decks take turns; the waiting one pre-rolls
+  silently 120 ms early and the sound crossfades 6 ms at the seam (Web Audio). **Seams are
+  timed with timers from the media clock, never animation frames** (an occluded window gets
+  0-2 frames a second: the preview played through cuts and replayed). `timeupdate` drives the
+  clock when frames don't come.
+- **Export** (`export.py`): one ffmpeg pass from the ORIGINAL files: per clip `split`/`trim`
+  in time order, scale+pad to the first video clip's size and rate, concat FILTER. Every
+  piece is a **whole number of output frames** in picture (`tpad` + `trim=end_frame`) and
+  sound (`apad` + `atrim`), and the SRT is timed on those lengths: without it 51 cuts drifted
+  0.2 s on a 4-minute talk. Every seam gets an 8 ms fade **at the end of the real sound**, not
+  the padded end (that clicked). Sound-only clips get a black picture. libx264 CRF 18 + AAC.
+
+**Not built yet** (the next Studio phases): handoff to DaVinci/Premiere
+(OTIO → FCPXML/xmeml/EDL + CFR conform), B-roll and music tracks (a voiceover currently
+plays over black), HyperFrames motion graphics, audio clean-up, AI "edit for clarity".
+
+**Verify:** `cd backend && .\.venv\Scripts\python.exe test_studio.py` (word labels, storage,
+silence rule, and a REAL ffmpeg export checked for frame-exact length, A/V sync and seam
+clicks: with `SEAM_FADE = 0` it must fail) and `cd studio && npm test && npm run build`.

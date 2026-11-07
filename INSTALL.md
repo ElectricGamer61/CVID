@@ -157,6 +157,10 @@ For the person, the normal way in afterwards is the **Cvideo icon on the Desktop
 (`install-shortcut.cmd` creates it any time). It starts the server only if it is not already
 running and opens the app in its own window.
 
+**Cvideo Studio** (long-form editing) is served by the same backend at
+<http://127.0.0.1:8000/studio/>. Optional, for its best speech engine: `.\install-crisper.cmd`
+(about 6 GB; returns when done; ends with `CrisperWhisper is ready`).
+
 **Check:**
 
 ```powershell

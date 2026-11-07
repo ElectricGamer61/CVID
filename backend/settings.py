@@ -93,6 +93,24 @@ _DEFAULT_TRANSCRIBE = (os.getenv("CVIDEO_DEFAULT_TRANSCRIBE") or "local").strip(
 DEFAULT_TRANSCRIBE = ("local" if _DEFAULT_TRANSCRIBE == "elevenlabs" and not ELEVENLABS_API_KEY
                       else _DEFAULT_TRANSCRIBE)
 
+# --- Studio (long-form editor: edit by words, hand off to DaVinci) ----------------
+# One folder per project under data/studio, each holding a project.json.
+STUDIO_DIR = DATA_DIR / "studio"
+# Which speech engine writes Studio transcripts. "auto" walks the list in
+# app/studio/engines.ENGINE_ORDER and takes the first one this install can run. Studio needs
+# a VERBATIM transcript: the Cut room can only cut the "um"s and stutters the engine writes
+# down, and Whisper writes none of them (data/bakeoff, 2026-11-06), so Whisper is last.
+STUDIO_ENGINE = (os.getenv("CVIDEO_STUDIO_ENGINE") or "auto").strip().lower()
+STUDIO_LANGUAGE = (os.getenv("CVIDEO_STUDIO_LANGUAGE") or "en").strip().lower()
+# CrisperWhisper 2.0 needs PyTorch, which Cvideo's own venv deliberately never installs.
+# It runs from its own venv (install-crisper.cmd builds one at data/engines/crisper)
+# or from any Python you point CVIDEO_CRISPER_PYTHON at. Its weights are NON-COMMERCIAL
+# (nyra-health licence): fine for your own videos, not for a build you sell.
+_CRISPER_DEFAULT = DATA_DIR / "engines" / "crisper" / (
+    "Scripts/python.exe" if os.name == "nt" else "bin/python")
+CRISPER_PYTHON = Path(os.getenv("CVIDEO_CRISPER_PYTHON") or _CRISPER_DEFAULT)
+CRISPER_MODEL = (os.getenv("CVIDEO_CRISPER_MODEL") or "large").strip().lower()
+
 # --- YouTube browser-cookie fallback -----------------------------------------
 # When YouTube answers an anonymous download with "Sign in to confirm you're not a bot",
 # Cvideo can retry through the cookie store of a browser you are already signed in to on
